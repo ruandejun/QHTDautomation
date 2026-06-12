@@ -33,6 +33,7 @@ build/
 # Runtime and automation data (Portable Chrome, logs, caches)
 chrome/
 LabelImg/
+iOSAutomationDesktop/
 geckodriver.log
 *.pkl
 *.crt
