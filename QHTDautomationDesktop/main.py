@@ -48,6 +48,8 @@ def get_app_dir():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
+CLIENT_VERSION = "1.0.4"
+
 # Database Helper cho Quản lý Thẻ (Hỗ trợ cả Offline SQLite và Online REST API)
 class CardDatabase:
     def __init__(self, db_path=None, online_mode=False, api_url="", api_token=""):
@@ -69,12 +71,27 @@ class CardDatabase:
                 expiry_date TEXT,
                 cvv TEXT,
                 status TEXT NOT NULL DEFAULT 'Chưa sử dụng',
-                extra_info TEXT
+                extra_info TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                used_count INTEGER DEFAULT 0
             )
         """)
-        # Thực hiện di trú (migration) nếu cột extra_info chưa tồn tại
+        # Thực hiện di trú (migration) nếu các cột mới chưa tồn tại
         try:
             cursor.execute("ALTER TABLE cards ADD COLUMN extra_info TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE cards ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE cards ADD COLUMN updated_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE cards ADD COLUMN used_count INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         conn.commit()
@@ -105,12 +122,14 @@ class CardDatabase:
             except Exception as e:
                 print(f"Lỗi kết nối API add_card: {str(e)}")
 
+        import datetime
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO cards (card_number, expiry_date, cvv, status, extra_info)
-            VALUES (?, ?, ?, ?, ?)
-        """, (card_number, expiry_date, cvv, status, extra_info))
+            INSERT INTO cards (card_number, expiry_date, cvv, status, extra_info, created_at, updated_at, used_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        """, (card_number, expiry_date, cvv, status, extra_info, now_str, now_str))
         card_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -136,7 +155,10 @@ class CardDatabase:
                         c_cvv = c.get('cvv', '')
                         c_status = c.get('status', 'Chưa sử dụng')
                         c_extra = c.get('extra_info', '')
-                        rows.append((c_id, c_num, c_exp, c_cvv, c_status, c_extra))
+                        c_created = c.get('created_at', '')
+                        c_updated = c.get('updated_at', '')
+                        c_used = c.get('used_count', 0)
+                        rows.append((c_id, c_num, c_exp, c_cvv, c_status, c_extra, c_created, c_updated, c_used))
                     return rows
                 else:
                     print(f"Lỗi API get_all_cards: {r.status_code} {r.text}")
@@ -145,7 +167,7 @@ class CardDatabase:
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        query = "SELECT id, card_number, expiry_date, cvv, status, extra_info FROM cards WHERE 1=1"
+        query = "SELECT id, card_number, expiry_date, cvv, status, extra_info, created_at, updated_at, used_count FROM cards WHERE 1=1"
         params = []
         if search_query:
             query += " AND card_number LIKE ?"
@@ -166,7 +188,7 @@ class CardDatabase:
                 r = requests.get(url, headers=self._get_headers(), timeout=10)
                 if r.status_code == 200:
                     c = r.json()
-                    return (c.get('id'), c.get('card_number', ''), c.get('expiry_date', ''), c.get('cvv', ''), c.get('status', ''), c.get('extra_info', ''))
+                    return (c.get('id'), c.get('card_number', ''), c.get('expiry_date', ''), c.get('cvv', ''), c.get('status', ''), c.get('extra_info', ''), c.get('created_at', ''), c.get('updated_at', ''), c.get('used_count', 0))
                 else:
                     print(f"Lỗi API get_card: {r.status_code} {r.text}")
             except Exception as e:
@@ -175,7 +197,7 @@ class CardDatabase:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, card_number, expiry_date, cvv, status, extra_info FROM cards WHERE id = ?", (card_id,))
+            cursor.execute("SELECT id, card_number, expiry_date, cvv, status, extra_info, created_at, updated_at, used_count FROM cards WHERE id = ?", (card_id,))
             row = cursor.fetchone()
             conn.close()
             return row
@@ -183,10 +205,20 @@ class CardDatabase:
             return None
 
     def update_card_status(self, card_id, status):
+        card = self.get_card(card_id)
+        old_status = card[4] if card and len(card) > 4 else ""
+        old_used = card[8] if card and len(card) > 8 else 0
+        
+        counting_statuses = ["Đã sử dụng", "Thẻ sống", "Thẻ tốt", "Thẻ chết"]
+        is_old_counting = old_status in counting_statuses
+        is_new_counting = status in counting_statuses
+        should_increment = (not is_old_counting) and is_new_counting
+        new_used = old_used + 1 if should_increment else old_used
+
         if self.online_mode and self.api_url:
             try:
                 url = f"{self.api_url}/api/cards/{card_id}/"
-                data = {"status": status}
+                data = {"status": status, "used_count": new_used}
                 r = requests.patch(url, headers=self._get_headers(), json=data, timeout=10)
                 if r.status_code == 200:
                     return True
@@ -195,14 +227,26 @@ class CardDatabase:
             except Exception as e:
                 print(f"Lỗi kết nối API update_card_status: {str(e)}")
 
+        import datetime
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("UPDATE cards SET status = ? WHERE id = ?", (status, card_id))
+        cursor.execute("UPDATE cards SET status = ?, used_count = ?, updated_at = ? WHERE id = ?", (status, new_used, now_str, card_id))
         conn.commit()
         conn.close()
         return True
 
     def update_card(self, card_id, card_number, expiry_date, cvv, status, extra_info):
+        card = self.get_card(card_id)
+        old_status = card[4] if card and len(card) > 4 else ""
+        old_used = card[8] if card and len(card) > 8 else 0
+        
+        counting_statuses = ["Đã sử dụng", "Thẻ sống", "Thẻ tốt", "Thẻ chết"]
+        is_old_counting = old_status in counting_statuses
+        is_new_counting = status in counting_statuses
+        should_increment = (not is_old_counting) and is_new_counting
+        new_used = old_used + 1 if should_increment else old_used
+
         if self.online_mode and self.api_url:
             try:
                 url = f"{self.api_url}/api/cards/{card_id}/"
@@ -211,7 +255,8 @@ class CardDatabase:
                     "expiry_date": expiry_date,
                     "cvv": cvv,
                     "status": status,
-                    "extra_info": extra_info
+                    "extra_info": extra_info,
+                    "used_count": new_used
                 }
                 r = requests.put(url, headers=self._get_headers(), json=data, timeout=10)
                 if r.status_code == 200:
@@ -221,13 +266,15 @@ class CardDatabase:
             except Exception as e:
                 print(f"Lỗi kết nối API update_card: {str(e)}")
 
+        import datetime
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE cards 
-            SET card_number = ?, expiry_date = ?, cvv = ?, status = ?, extra_info = ? 
+            SET card_number = ?, expiry_date = ?, cvv = ?, status = ?, extra_info = ?, used_count = ?, updated_at = ? 
             WHERE id = ?
-        """, (card_number, expiry_date, cvv, status, extra_info, card_id))
+        """, (card_number, expiry_date, cvv, status, extra_info, new_used, now_str, card_id))
         conn.commit()
         conn.close()
         return True
@@ -250,6 +297,186 @@ class CardDatabase:
         conn.commit()
         conn.close()
         return True
+
+
+class CardLoadWorker(QThread):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, search_query="", status_filter="Tất cả", parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.search_query = search_query
+        self.status_filter = status_filter
+
+    def run(self):
+        try:
+            cards = self.db.get_all_cards(self.search_query, self.status_filter)
+            self.finished.emit(cards)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CardAddWorker(QThread):
+    finished = pyqtSignal(int, int)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, cards_list, status, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.cards_list = cards_list
+        self.status = status
+
+    def run(self):
+        try:
+            success_count = 0
+            invalid_count = 0
+            for card in self.cards_list:
+                if card["is_valid"]:
+                    self.db.add_card(
+                        card["card_number"],
+                        card["expiry"],
+                        card["cvv"],
+                        self.status,
+                        card["extra_info"]
+                    )
+                    success_count += 1
+                else:
+                    invalid_count += 1
+            self.finished.emit(success_count, invalid_count)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CardStatusUpdateWorker(QThread):
+    finished = pyqtSignal(int, str, bool)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, card_id, status, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.card_id = card_id
+        self.status = status
+
+    def run(self):
+        try:
+            success = self.db.update_card_status(self.card_id, self.status)
+            self.finished.emit(self.card_id, self.status, success)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CardUpdateWorker(QThread):
+    finished = pyqtSignal(int, bool)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, card_id, card_number, expiry_date, cvv, status, extra_info, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.card_id = card_id
+        self.card_number = card_number
+        self.expiry_date = expiry_date
+        self.cvv = cvv
+        self.status = status
+        self.extra_info = extra_info
+
+    def run(self):
+        try:
+            success = self.db.update_card(self.card_id, self.card_number, self.expiry_date, self.cvv, self.status, self.extra_info)
+            self.finished.emit(self.card_id, success)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CardDeleteWorker(QThread):
+    finished = pyqtSignal(list, bool)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, card_ids, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.card_ids = card_ids
+
+    def run(self):
+        try:
+            for card_id in self.card_ids:
+                self.db.delete_card(card_id)
+            self.finished.emit(self.card_ids, True)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class CardViewFetchWorker(QThread):
+    finished = pyqtSignal(tuple)
+    error = pyqtSignal(str)
+
+    def __init__(self, db, card_id, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.card_id = card_id
+
+    def run(self):
+        try:
+            card_info = self.db.get_card(self.card_id)
+            if card_info:
+                self.finished.emit(card_info)
+            else:
+                self.error.emit("Không tìm thấy thẻ trong cơ sở dữ liệu.")
+        except Exception as e:
+            self.error.emit(str(e))
+
+class UpdateCheckWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, current_version, api_url, parent=None):
+        super().__init__(parent)
+        self.current_version = current_version
+        self.api_url = api_url
+
+    def run(self):
+        try:
+            url = f"{self.api_url}/static/version.json"
+            r = requests.get(url, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                self.finished.emit(data)
+            else:
+                self.error.emit(f"Server returned status {r.status_code}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class DownloadUpdateWorker(QThread):
+    progress = pyqtSignal(int, int)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, download_url, parent=None):
+        super().__init__(parent)
+        self.download_url = download_url
+
+    def run(self):
+        try:
+            r = requests.get(self.download_url, stream=True, timeout=15)
+            if r.status_code != 200:
+                self.error.emit(f"Server returned status {r.status_code}")
+                return
+                
+            total_size = int(r.headers.get('content-length', 0))
+            temp_path = os.path.join(get_app_dir(), "QHTDautomation_new.exe")
+            
+            downloaded = 0
+            with open(temp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        self.progress.emit(downloaded, total_size)
+                        
+            self.finished.emit(temp_path)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class AddCardDialog(QDialog):
@@ -575,10 +802,8 @@ class ViewCardDialog(QDialog):
             # Nếu người dùng hủy hoặc đóng hộp thoại chọn, khôi phục lại trạng thái ban đầu của thẻ
             final_status = self.status
             
-        if self.parent() and hasattr(self.parent(), "db"):
-            self.parent().db.update_card_status(self.card_id, final_status)
-            self.parent().log(f"Trạng thái thẻ ID {self.card_id} được đặt thành: '{final_status}'")
-            self.parent().load_cards_table()
+        if self.parent() and hasattr(self.parent(), "update_card_status_async"):
+            self.parent().update_card_status_async(self.card_id, final_status)
 
     def accept(self):
         self.prompt_status_update()
@@ -2097,6 +2322,8 @@ class TrollStoreGuideDialog(QDialog):
         super().__init__(parent)
         self.connected_devices = []
         self.dopamine_worker = None
+        self.worker = None
+        self.scan_worker = None
         self.init_ui()
         
     def init_ui(self):
@@ -2547,10 +2774,16 @@ class TrollStoreGuideDialog(QDialog):
 
     def closeEvent(self, event):
         self.cleanup_dopamine_server()
-        if self.auto_worker and self.auto_worker.isRunning():
+        if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
             try:
-                self.auto_worker.requestInterruption()
-                self.auto_worker.wait(1000)
+                self.worker.requestInterruption()
+                self.worker.wait(1000)
+            except Exception:
+                pass
+        if hasattr(self, 'scan_worker') and self.scan_worker and self.scan_worker.isRunning():
+            try:
+                self.scan_worker.requestInterruption()
+                self.scan_worker.wait(1000)
             except Exception:
                 pass
         event.accept()
@@ -3424,27 +3657,22 @@ class AutomationRunner(QThread):
     def update_card_in_db(self, card_id, status, error_detail=""):
         try:
             card_info = self.db.get_card(card_id)
-            current_extra = card_info[5] if card_info and len(card_info) > 5 else ""
+            if not card_info:
+                return
+            current_extra = card_info[5] or ""
             if error_detail:
                 new_extra = f"{current_extra} | Error: {error_detail}" if current_extra else f"Error: {error_detail}"
             else:
                 new_extra = current_extra
                 
-            if self.db.online_mode:
-                if card_info:
-                    card_num = card_info[1]
-                    exp_date = card_info[2]
-                    cvv = card_info[3]
-                    self.db.update_card(card_id, card_num, exp_date, cvv, status, new_extra)
+            card_num = card_info[1]
+            exp_date = card_info[2]
+            cvv = card_info[3]
+            
+            if error_detail:
+                self.db.update_card(card_id, card_num, exp_date, cvv, status, new_extra)
             else:
-                if error_detail:
-                    conn = sqlite3.connect(self.db.db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE cards SET status = ?, extra_info = ? WHERE id = ?", (status, new_extra, card_id))
-                    conn.commit()
-                    conn.close()
-                else:
-                    self.db.update_card_status(card_id, status)
+                self.db.update_card_status(card_id, status)
             self.log(f"💾 Cập nhật Database: Thẻ ID {card_id} -> '{status}'", "success")
         except Exception as e:
             self.log(f"❌ Lỗi ghi Database: {str(e)}", "error")
@@ -3484,7 +3712,7 @@ class StoragonLoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Đăng nhập Storagon 🔐")
-        self.setFixedSize(400, 360)
+        self.setFixedSize(400, 310)
         self.is_register_mode = False
         self.init_ui()
         self.load_saved_server_url()
@@ -3507,10 +3735,12 @@ class StoragonLoginDialog(QDialog):
         self.form_layout = QGridLayout()
         self.form_layout.setSpacing(10)
 
-        self.form_layout.addWidget(QLabel("Server URL:"), 0, 0)
+        # Ẩn trường Server URL
+        self.server_label = QLabel("Server URL:")
         self.server_input = QLineEdit()
-        self.server_input.setPlaceholderText("http://localhost:8000")
-        self.form_layout.addWidget(self.server_input, 0, 1)
+        self.server_input.setPlaceholderText("https://toinhaphang.com")
+        self.server_label.hide()
+        self.server_input.hide()
 
         self.form_layout.addWidget(QLabel("Tài khoản:"), 1, 0)
         self.username_input = QLineEdit()
@@ -3559,12 +3789,12 @@ class StoragonLoginDialog(QDialog):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                api_url = data.get("api_url", "http://localhost:8000")
+                api_url = data.get("api_url", "https://toinhaphang.com")
                 self.server_input.setText(api_url)
             except Exception:
                 pass
         if not self.server_input.text():
-            self.server_input.setText("http://localhost:8000")
+            self.server_input.setText("https://toinhaphang.com")
 
     def toggle_mode(self):
         self.is_register_mode = not self.is_register_mode
@@ -3575,7 +3805,7 @@ class StoragonLoginDialog(QDialog):
             self.switch_mode_btn.setText("Đã có tài khoản? Đăng nhập")
             self.email_label.show()
             self.email_input.show()
-            self.setFixedSize(400, 400)
+            self.setFixedSize(400, 350)
         else:
             self.setWindowTitle("Đăng nhập Storagon 🔐")
             self.subtitle_label.setText("Đăng nhập hệ thống Storagon để sử dụng công cụ")
@@ -3583,7 +3813,7 @@ class StoragonLoginDialog(QDialog):
             self.switch_mode_btn.setText("Chưa có tài khoản? Đăng ký ngay")
             self.email_label.hide()
             self.email_input.hide()
-            self.setFixedSize(400, 360)
+            self.setFixedSize(400, 310)
 
     def handle_submit(self):
         server_url = self.server_input.text().strip()
@@ -3732,8 +3962,11 @@ class QHTDStoreDesktop(QMainWindow):
         self.load_stylesheet()
         self.load_saved_credentials()
         
+        # Kiểm tra cập nhật sau 2 giây
+        QTimer.singleShot(2000, self.check_for_updates)
+        
     def init_ui(self):
-        self.setWindowTitle("QHTD Automation 🚀")
+        self.setWindowTitle(f"QHTD Automation 🚀 - v{CLIENT_VERSION}")
         self.resize(1350, 820)
         self.setMinimumSize(1200, 750)
         
@@ -3866,7 +4099,7 @@ class QHTDStoreDesktop(QMainWindow):
         
         self.device_scan_btn = QPushButton("Quét thiết bị")
         self.device_scan_btn.setObjectName("secondaryButton")
-        self.device_scan_btn.clicked.connect(self.handle_check_device)
+        self.device_scan_btn.clicked.connect(self.handle_manual_check_device)
         
         self.activate_device_btn = QPushButton("Kích hoạt iPhone (USA/EN)...")
         self.activate_device_btn.setObjectName("secondaryButton")
@@ -4092,6 +4325,10 @@ class QHTDStoreDesktop(QMainWindow):
         # Tự động quét thiết bị sau khi khởi động xong giao diện
         QTimer.singleShot(500, self.handle_check_device)
 
+    def handle_manual_check_device(self):
+        self.is_manual_scan = True
+        self.handle_check_device()
+
     def handle_check_device(self):
         self.device_scan_btn.setEnabled(False)
         self.device_scan_btn.setText("Đang quét...")
@@ -4146,8 +4383,9 @@ class QHTDStoreDesktop(QMainWindow):
             self.mock_phone_conn.setStyleSheet("color: #ffffff; background-color: transparent;")
             
             # Nếu người dùng click thủ công mà bị lỗi thì thông báo
-            if self.sender():
+            if getattr(self, "is_manual_scan", False):
                 QMessageBox.critical(self, "Lỗi kết nối", f"Không thể đọc thông tin từ iPhone:\n{error_msg}")
+            self.is_manual_scan = False
 
     def handle_table_app_selected(self, item):
         row = self.apps_table.row(item)
@@ -4180,11 +4418,6 @@ class QHTDStoreDesktop(QMainWindow):
         self.add_card_btn.clicked.connect(self.handle_add_card)
         
         # Các nút thao tác hàng loạt
-        self.bulk_view_btn = QPushButton("Xem")
-        self.bulk_view_btn.setEnabled(False)
-        self.bulk_view_btn.setFixedWidth(60)
-        self.bulk_view_btn.clicked.connect(self.handle_bulk_view)
-        
         self.bulk_edit_btn = QPushButton("Sửa")
         self.bulk_edit_btn.setEnabled(False)
         self.bulk_edit_btn.setFixedWidth(60)
@@ -4199,19 +4432,25 @@ class QHTDStoreDesktop(QMainWindow):
         self.select_all_chk = QCheckBox("Chọn tất cả")
         self.select_all_chk.stateChanged.connect(self.handle_select_all_changed)
         
+        self.reload_card_btn = QPushButton("Làm mới")
+        self.reload_card_btn.setObjectName("secondaryButton")
+        self.reload_card_btn.setFixedWidth(80)
+        self.reload_card_btn.clicked.connect(self.load_cards_table)
+        
         self.card_search_input = QLineEdit()
         self.card_search_input.setPlaceholderText("Tìm kiếm theo số thẻ...")
         self.card_search_input.textChanged.connect(self.handle_search_changed)
         
         self.card_status_filter = QComboBox()
         self.card_status_filter.addItems(["Tất cả", "Chưa sử dụng", "Đang sử dụng", "Đã sử dụng", "Thẻ chết", "Thẻ sống", "Thẻ tốt"])
+        self.card_status_filter.setCurrentText("Chưa sử dụng")
         self.card_status_filter.currentIndexChanged.connect(self.load_cards_table)
         
+        top_bar.addWidget(self.select_all_chk)
         top_bar.addWidget(self.add_card_btn)
-        top_bar.addWidget(self.bulk_view_btn)
         top_bar.addWidget(self.bulk_edit_btn)
         top_bar.addWidget(self.bulk_delete_btn)
-        top_bar.addWidget(self.select_all_chk)
+        top_bar.addWidget(self.reload_card_btn)
         top_bar.addStretch()
         top_bar.addWidget(QLabel("Tìm kiếm:"))
         top_bar.addWidget(self.card_search_input)
@@ -4219,34 +4458,34 @@ class QHTDStoreDesktop(QMainWindow):
         top_bar.addWidget(self.card_status_filter)
         tab2_layout.addLayout(top_bar)
         
-        # Cấu hình Online Card Management
-        online_bar = QHBoxLayout()
+        # Cấu hình Online Card Management (Ẩn hoàn toàn khỏi UI)
         self.online_mode_cb = QCheckBox("Chế độ Online")
         self.online_mode_cb.stateChanged.connect(self.save_online_cards_config)
+        self.online_mode_cb.hide()
         
         self.api_url_input = QLineEdit()
         self.api_url_input.setPlaceholderText("API URL (ví dụ: http://localhost:8000)")
         self.api_url_input.setFixedWidth(250)
         self.api_url_input.editingFinished.connect(self.save_online_cards_config)
+        self.api_url_input.hide()
         
         self.api_token_input = QLineEdit()
         self.api_token_input.setPlaceholderText("API Token")
         self.api_token_input.setEchoMode(QLineEdit.Password)
         self.api_token_input.setFixedWidth(280)
         self.api_token_input.editingFinished.connect(self.save_online_cards_config)
+        self.api_token_input.hide()
         
-        online_bar.addWidget(self.online_mode_cb)
-        online_bar.addWidget(QLabel("Server URL:"))
-        online_bar.addWidget(self.api_url_input)
-        online_bar.addWidget(QLabel("API Token:"))
-        online_bar.addWidget(self.api_token_input)
-        online_bar.addStretch()
-        tab2_layout.addLayout(online_bar)
+        self.api_url_label = QLabel("Server URL:")
+        self.api_url_label.hide()
+        
+        self.api_token_label = QLabel("API Token:")
+        self.api_token_label.hide()
         
         # Bảng hiển thị thẻ
         self.cards_table = QTableWidget()
-        self.cards_table.setColumnCount(5)
-        self.cards_table.setHorizontalHeaderLabels(["Chọn", "Số thẻ", "Ngày hết hạn", "CVV", "Trạng thái"])
+        self.cards_table.setColumnCount(8)
+        self.cards_table.setHorizontalHeaderLabels(["Chọn", "Số thẻ", "Ngày hết hạn", "CVV", "Trạng thái", "Ngày tạo", "Cập nhật", "Số lần dùng"])
         self.cards_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.cards_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.cards_table.verticalHeader().setVisible(False)
@@ -4271,8 +4510,19 @@ class QHTDStoreDesktop(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.Interactive) # Trạng thái
         self.cards_table.setColumnWidth(4, 180)
         
+        header.setSectionResizeMode(5, QHeaderView.Interactive) # Ngày tạo
+        self.cards_table.setColumnWidth(5, 140)
+        
+        header.setSectionResizeMode(6, QHeaderView.Interactive) # Cập nhật
+        self.cards_table.setColumnWidth(6, 140)
+        
+        header.setSectionResizeMode(7, QHeaderView.Interactive) # Số lần dùng
+        self.cards_table.setColumnWidth(7, 100)
+        
         # Kết nối sự kiện Double Click dòng
         self.cards_table.doubleClicked.connect(self.handle_table_double_click)
+        # Kết nối sự kiện Click ô để chọn checkbox
+        self.cards_table.cellClicked.connect(self.handle_cell_clicked)
         
         tab2_layout.addWidget(self.cards_table)
         
@@ -4304,15 +4554,15 @@ class QHTDStoreDesktop(QMainWindow):
 
     def load_online_cards_config(self):
         config_path = os.path.join(get_app_dir(), "online_cards_config.json")
-        online_mode = False
-        api_url = "http://localhost:8000"
+        online_mode = True
+        api_url = "https://toinhaphang.com"
         api_token = ""
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                online_mode = data.get("online_mode", False)
-                api_url = data.get("api_url", "http://localhost:8000")
+                online_mode = data.get("online_mode", True)
+                api_url = data.get("api_url", "https://toinhaphang.com")
                 api_token = data.get("api_token", "")
             except Exception:
                 pass
@@ -4340,27 +4590,66 @@ class QHTDStoreDesktop(QMainWindow):
         self.load_cards_table()
 
     def handle_view_card(self, card_id):
-        # Lấy thông tin thẻ từ DB
-        card_info = self.db.get_card(card_id)
-        if card_info:
-            card_id, card_number, expiry_date, cvv, status, extra_info = card_info
-            if status == "Đang sử dụng":
-                QMessageBox.warning(
-                    self,
-                    "Thẻ đang được sử dụng",
-                    "Thẻ này đang ở trạng thái 'Đang sử dụng'. Vui lòng chọn thẻ khác!"
-                )
-                return
+        worker = CardViewFetchWorker(self.db, card_id, self)
+        worker.finished.connect(self.on_view_card_fetched)
+        worker.error.connect(self.on_view_card_fetch_error)
+        worker.start()
+        
+        if not hasattr(self, "_active_workers"):
+            self._active_workers = []
+        self._active_workers.append(worker)
+
+    def on_view_card_fetch_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
             
-            # Tự động chuyển trạng thái thẻ sang "Đang sử dụng"
-            self.db.update_card_status(card_id, "Đang sử dụng")
+        QMessageBox.critical(self, "Lỗi", f"Không thể lấy thông tin thẻ: {err_msg}")
+
+    def on_view_card_fetched(self, card_info):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        
+        card_id, card_number, expiry_date, cvv, status, extra_info = card_info[:6]
+        if status == "Đang sử dụng":
+            QMessageBox.warning(
+                self,
+                "Thẻ đang được sử dụng",
+                "Thẻ này đang ở trạng thái 'Đang sử dụng'. Vui lòng chọn thẻ khác!"
+            )
+            return
+            
+        # Tự động chuyển trạng thái thẻ sang "Đang sử dụng"
+        update_worker = CardStatusUpdateWorker(self.db, card_id, "Đang sử dụng", self)
+        update_worker.card_details = (card_id, card_number, expiry_date, cvv, status, extra_info)
+        update_worker.finished.connect(self.on_auto_use_status_updated)
+        update_worker.error.connect(self.on_auto_use_status_update_error)
+        update_worker.start()
+        
+        self._active_workers.append(update_worker)
+
+    def on_auto_use_status_updated(self, card_id, status, success):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+            
+        card_details = getattr(worker, "card_details", None)
+        if card_details:
+            card_id, card_number, expiry_date, cvv, original_status, extra_info = card_details
             self.log(f"Hệ thống tự động chuyển trạng thái thẻ ID {card_id} sang: 'Đang sử dụng'")
             self.load_cards_table()
             
-            dialog = ViewCardDialog(card_id, card_number, expiry_date, cvv, status, extra_info, self)
+            # Mở dialog xem thẻ
+            dialog = ViewCardDialog(card_id, card_number, expiry_date, cvv, original_status, extra_info, self)
             dialog.exec_()
-        else:
-            QMessageBox.critical(self, "Lỗi", "Không tìm thấy thẻ trong cơ sở dữ liệu.")
+
+    def on_auto_use_status_update_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"❌ Lỗi tự động chuyển trạng thái thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể tự động chuyển trạng thái thẻ sang 'Đang sử dụng': {err_msg}")
 
     def mask_card_number(self, num):
         num = re.sub(r'\D', '', num)
@@ -4386,25 +4675,102 @@ class QHTDStoreDesktop(QMainWindow):
 
     def handle_table_status_change(self, card_id, combo):
         new_status = combo.currentText()
-        self.db.update_card_status(card_id, new_status)
-        self.style_status_combo(combo, new_status)
-        self.log(f"Đã cập nhật trạng thái thẻ ID {card_id} thành: '{new_status}'")
+        combo.setEnabled(False)
+        
+        worker = CardStatusUpdateWorker(self.db, card_id, new_status, self)
+        worker.combo = combo
+        worker.finished.connect(self.on_status_updated)
+        worker.error.connect(lambda err, cb=combo: self.on_status_update_error(err, cb))
+        worker.start()
+        
+        if not hasattr(self, "_active_workers"):
+            self._active_workers = []
+        self._active_workers.append(worker)
+
+    def on_status_updated(self, card_id, status, success):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+            
+        combo = getattr(worker, "combo", None)
+        if combo:
+            combo.setEnabled(True)
+            self.style_status_combo(combo, status)
+            
+        self.log(f"Đã cập nhật trạng thái thẻ ID {card_id} thành: '{status}'")
+        self.load_cards_table()
+
+    def on_status_update_error(self, err_msg, combo):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+            
+        if combo:
+            combo.setEnabled(True)
+        self.log(f"❌ Lỗi cập nhật trạng thái thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể cập nhật trạng thái thẻ: {err_msg}")
+
+    def update_card_status_async(self, card_id, status):
+        worker = CardStatusUpdateWorker(self.db, card_id, status, self)
+        worker.finished.connect(self.on_status_updated_from_dialog)
+        worker.error.connect(self.on_status_update_from_dialog_error)
+        worker.start()
+        
+        if not hasattr(self, "_active_workers"):
+            self._active_workers = []
+        self._active_workers.append(worker)
+
+    def on_status_updated_from_dialog(self, card_id, status, success):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"Trạng thái thẻ ID {card_id} được đặt thành: '{status}'")
+        self.load_cards_table()
+
+    def on_status_update_from_dialog_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"❌ Lỗi cập nhật trạng thái thẻ từ dialog: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể cập nhật trạng thái thẻ: {err_msg}")
 
     def handle_search_changed(self):
         self.search_timer.stop()
         self.search_timer.start(500)
 
     def load_cards_table(self):
+        self.reload_card_btn.setEnabled(False)
+        self.reload_card_btn.setText("Đang tải...")
+        
         search_query = self.card_search_input.text().strip()
         status_filter = self.card_status_filter.currentText()
         
-        cards = self.db.get_all_cards(search_query, status_filter)
+        self.card_load_worker = CardLoadWorker(self.db, search_query, status_filter, self)
+        self.card_load_worker.finished.connect(self.on_cards_loaded)
+        self.card_load_worker.error.connect(self.on_cards_load_error)
+        self.card_load_worker.start()
+
+    def on_cards_load_error(self, err_msg):
+        self.reload_card_btn.setEnabled(True)
+        self.reload_card_btn.setText("Làm mới")
+        self.log(f"❌ Lỗi tải danh sách thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể tải danh sách thẻ: {err_msg}")
+
+    def on_cards_loaded(self, cards):
+        self.reload_card_btn.setEnabled(True)
+        self.reload_card_btn.setText("Làm mới")
         
         self.cards_table.setRowCount(0)
         self.cards_table.setRowCount(len(cards))
         
         for row_idx, card in enumerate(cards):
-            card_id, card_number, expiry_date, cvv, status, extra_info = card
+            if len(card) < 9:
+                card_id, card_number, expiry_date, cvv, status, extra_info = card[:6]
+                created_at = card[6] if len(card) > 6 else ""
+                updated_at = card[7] if len(card) > 7 else ""
+                used_count = card[8] if len(card) > 8 else 0
+            else:
+                card_id, card_number, expiry_date, cvv, status, extra_info, created_at, updated_at, used_count = card
             
             # Chọn (Checkbox)
             chk_widget = QWidget()
@@ -4441,12 +4807,26 @@ class QHTDStoreDesktop(QMainWindow):
             self.style_status_combo(status_combo, status)
             
             # Connect status change signal
-            # Sử dụng lambda với các đối số mặc định để tránh tham chiếu đến biến vòng lặp cuối cùng
             status_combo.currentIndexChanged.connect(
                 lambda idx, cid=card_id, cb=status_combo: self.handle_table_status_change(cid, cb)
             )
             
             self.cards_table.setCellWidget(row_idx, 4, status_combo)
+
+            # Ngày tạo
+            created_item = QTableWidgetItem(self.format_datetime(created_at))
+            created_item.setTextAlignment(Qt.AlignCenter)
+            self.cards_table.setItem(row_idx, 5, created_item)
+
+            # Cập nhật
+            updated_item = QTableWidgetItem(self.format_datetime(updated_at))
+            updated_item.setTextAlignment(Qt.AlignCenter)
+            self.cards_table.setItem(row_idx, 6, updated_item)
+
+            # Số lần dùng
+            used_item = QTableWidgetItem(str(used_count))
+            used_item.setTextAlignment(Qt.AlignCenter)
+            self.cards_table.setItem(row_idx, 7, used_item)
             
         # Cập nhật trạng thái các nút hành động hàng loạt
         self.select_all_chk.blockSignals(True)
@@ -4458,59 +4838,68 @@ class QHTDStoreDesktop(QMainWindow):
         for i in range(len(cards)):
             self.cards_table.setRowHeight(i, 42)
 
+    def format_datetime(self, dt_str):
+        if not dt_str:
+            return "-"
+        try:
+            if 'T' in dt_str:
+                parts = dt_str.split('T')
+                date_part = parts[0]
+                time_part = parts[1].split('.')[0]
+                time_part = time_part.split('+')[0]
+                if time_part.endswith('Z'):
+                    time_part = time_part[:-1]
+                return f"{date_part} {time_part}"
+            elif '.' in dt_str:
+                return dt_str.split('.')[0]
+            return dt_str
+        except Exception:
+            return dt_str
+
     def handle_add_card(self):
         dialog = AddCardDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             cards_list, status = dialog.get_data()
             
-            success_count = 0
-            invalid_count = 0
+            self.log("Đang import thẻ vào hệ thống...")
             
-            for card in cards_list:
-                if card["is_valid"]:
-                    # Lưu vào db
-                    self.db.add_card(
-                        card["card_number"], 
-                        card["expiry"], 
-                        card["cvv"], 
-                        status, 
-                        card["extra_info"]
-                    )
-                    success_count += 1
-                else:
-                    invalid_count += 1
-                    self.log(f"Bỏ qua thẻ không hợp lệ (Dòng: '{card['raw_line']}')")
+            worker = CardAddWorker(self.db, cards_list, status, self)
+            worker.cards_list = cards_list
+            worker.finished.connect(self.on_cards_added)
+            worker.error.connect(self.on_cards_add_error)
+            worker.start()
             
-            # Reload table
-            self.load_cards_table()
+            if not hasattr(self, "_active_workers"):
+                self._active_workers = []
+            self._active_workers.append(worker)
+
+    def on_cards_added(self, success_count, invalid_count):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
             
-            summary = f"Đã nhập thành công {success_count} thẻ."
-            if invalid_count > 0:
-                summary += f" Bỏ qua {invalid_count} dòng dữ liệu không hợp lệ."
-                QMessageBox.warning(self, "Kết quả nhập thẻ", summary)
-            else:
-                QMessageBox.information(self, "Kết quả nhập thẻ", summary)
+        self.load_cards_table()
+        
+        cards_list = getattr(worker, "cards_list", [])
+        for card in cards_list:
+            if not card.get("is_valid", False):
+                self.log(f"Bỏ qua thẻ không hợp lệ (Dòng: '{card.get('raw_line')}')")
                 
-            self.log(summary)
-
-
-            if status == "Đang sử dụng":
-                QMessageBox.warning(
-                    self,
-                    "Thẻ đang được sử dụng",
-                    "Thẻ này đang ở trạng thái 'Đang sử dụng'. Vui lòng chọn thẻ khác!"
-                )
-                return
-            
-            # Tự động chuyển trạng thái thẻ sang "Đang sử dụng"
-            self.db.update_card_status(card_id, "Đang sử dụng")
-            self.log(f"Hệ thống tự động chuyển trạng thái thẻ ID {card_id} sang: 'Đang sử dụng'")
-            self.load_cards_table()
-            
-            dialog = ViewCardDialog(card_id, card_number, expiry_date, cvv, status, extra_info, self)
-            dialog.exec_()
+        summary = f"Đã nhập thành công {success_count} thẻ."
+        if invalid_count > 0:
+            summary += f" Bỏ qua {invalid_count} dòng dữ liệu không hợp lệ."
+            QMessageBox.warning(self, "Kết quả nhập thẻ", summary)
         else:
-            QMessageBox.critical(self, "Lỗi", "Không tìm thấy thẻ trong cơ sở dữ liệu.")
+            QMessageBox.information(self, "Kết quả nhập thẻ", summary)
+            
+        self.log(summary)
+
+    def on_cards_add_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"❌ Lỗi thêm thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể thêm thẻ: {err_msg}")
 
     def handle_delete_card(self, card_id):
         reply = QMessageBox.question(
@@ -4521,9 +4910,21 @@ class QHTDStoreDesktop(QMainWindow):
             QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            self.db.delete_card(card_id)
-            self.load_cards_table()
-            self.log(f"Đã xóa thẻ ID {card_id} khỏi hệ thống.")
+            worker = CardDeleteWorker(self.db, [card_id], self)
+            worker.finished.connect(lambda ids, success, cid=card_id: self.on_single_card_deleted(cid))
+            worker.error.connect(self.on_cards_delete_error)
+            worker.start()
+            
+            if not hasattr(self, "_active_workers"):
+                self._active_workers = []
+            self._active_workers.append(worker)
+
+    def on_single_card_deleted(self, card_id):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.load_cards_table()
+        self.log(f"Đã xóa thẻ ID {card_id} khỏi hệ thống.")
 
     def get_selected_card_ids_and_data(self):
         selected = []
@@ -4542,15 +4943,12 @@ class QHTDStoreDesktop(QMainWindow):
         count = len(selected)
         total_rows = self.cards_table.rowCount()
         
-        self.bulk_view_btn.setEnabled(count == 1)
         self.bulk_edit_btn.setEnabled(count == 1)
         self.bulk_delete_btn.setEnabled(count > 0)
         
         if count == 1:
-            self.bulk_view_btn.setStyleSheet("background-color: #0284c7; color: white;")
             self.bulk_edit_btn.setStyleSheet("background-color: #d97706; color: white;")
         else:
-            self.bulk_view_btn.setStyleSheet("")
             self.bulk_edit_btn.setStyleSheet("")
             
         if count > 0:
@@ -4561,30 +4959,53 @@ class QHTDStoreDesktop(QMainWindow):
         # Cập nhật trạng thái checkbox Chọn tất cả
         self.select_all_chk.blockSignals(True)
         if total_rows > 0 and count == total_rows:
-            self.select_all_chk.setCheckState(Qt.Checked)
-        elif count > 0 and count < total_rows:
-            self.select_all_chk.setCheckState(Qt.PartiallyChecked)
+            self.select_all_chk.setChecked(True)
         else:
-            self.select_all_chk.setCheckState(Qt.Unchecked)
+            self.select_all_chk.setChecked(False)
         self.select_all_chk.blockSignals(False)
 
-    def handle_bulk_view(self):
-        selected = self.get_selected_card_ids_and_data()
-        if len(selected) == 1:
-            card_id, _ = selected[0]
-            self.handle_view_card(card_id)
+    def handle_cell_clicked(self, row, column):
+        if column == 0:
+            return
+        for r in range(self.cards_table.rowCount()):
+            widget = self.cards_table.cellWidget(r, 0)
+            if widget:
+                chk = widget.findChild(QCheckBox)
+                if chk:
+                    chk.setChecked(r == row)
 
     def handle_bulk_edit(self):
         selected = self.get_selected_card_ids_and_data()
         if len(selected) == 1:
             card_id, card_data = selected[0]
-            card_id, card_number, expiry_date, cvv, status, extra_info = card_data
+            card_id, card_number, expiry_date, cvv, status, extra_info = card_data[:6]
             dialog = EditCardDialog(card_number, expiry_date, cvv, status, extra_info, self)
             if dialog.exec_() == QDialog.Accepted:
                 new_num, new_expiry, new_cvv, new_status, new_extra = dialog.get_data()
-                self.db.update_card(card_id, new_num, new_expiry, new_cvv, new_status, new_extra)
-                self.log(f"Đã cập nhật thông tin thẻ ID {card_id} thành công.")
-                self.load_cards_table()
+                
+                worker = CardUpdateWorker(self.db, card_id, new_num, new_expiry, new_cvv, new_status, new_extra, self)
+                worker.finished.connect(self.on_card_edited)
+                worker.error.connect(self.on_card_edit_error)
+                worker.start()
+                
+                if not hasattr(self, "_active_workers"):
+                    self._active_workers = []
+                self._active_workers.append(worker)
+
+    def on_card_edited(self, card_id, success):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+            
+        self.log(f"Đã cập nhật thông tin thẻ ID {card_id} thành công.")
+        self.load_cards_table()
+
+    def on_card_edit_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"❌ Lỗi cập nhật thông tin thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể cập nhật thông tin thẻ: {err_msg}")
 
     def handle_bulk_delete(self):
         selected = self.get_selected_card_ids_and_data()
@@ -4599,10 +5020,31 @@ class QHTDStoreDesktop(QMainWindow):
             QMessageBox.Yes | QMessageBox.No
         )
         if confirm == QMessageBox.Yes:
-            for card_id, _ in selected:
-                self.db.delete_card(card_id)
-            self.log(f"Đã xóa thành công {count} thẻ khỏi hệ thống.")
-            self.load_cards_table()
+            card_ids = [card_id for card_id, _ in selected]
+            
+            worker = CardDeleteWorker(self.db, card_ids, self)
+            worker.finished.connect(self.on_cards_deleted)
+            worker.error.connect(self.on_cards_delete_error)
+            worker.start()
+            
+            if not hasattr(self, "_active_workers"):
+                self._active_workers = []
+            self._active_workers.append(worker)
+
+    def on_cards_deleted(self, card_ids, success):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+            
+        self.log(f"Đã xóa thành công {len(card_ids)} thẻ khỏi hệ thống.")
+        self.load_cards_table()
+
+    def on_cards_delete_error(self, err_msg):
+        worker = self.sender()
+        if worker in getattr(self, "_active_workers", []):
+            self._active_workers.remove(worker)
+        self.log(f"❌ Lỗi xóa thẻ: {err_msg}", "error")
+        QMessageBox.critical(self, "Lỗi", f"Không thể xóa các thẻ đã chọn: {err_msg}")
 
     def handle_select_all_changed(self, state):
         checked = (state == Qt.Checked)
@@ -4622,9 +5064,122 @@ class QHTDStoreDesktop(QMainWindow):
         if widget:
             chk = widget.findChild(QCheckBox)
             if chk:
+                for r in range(self.cards_table.rowCount()):
+                    w = self.cards_table.cellWidget(r, 0)
+                    if w:
+                        c = w.findChild(QCheckBox)
+                        if c:
+                            c.setChecked(r == row)
                 card_id = chk.property("card_id")
                 if card_id:
                     self.handle_view_card(card_id)
+
+    def check_for_updates(self):
+        api_url = self.db.api_url if (hasattr(self, "db") and self.db.api_url) else "https://toinhaphang.com"
+        self.update_worker = UpdateCheckWorker(CLIENT_VERSION, api_url, self)
+        self.update_worker.finished.connect(self.on_update_check_finished)
+        self.update_worker.start()
+
+    def on_update_check_finished(self, data):
+        new_version = data.get("version")
+        download_url = data.get("download_url")
+        changelog = data.get("changelog", "Không có thông tin thay đổi.")
+        
+        if not new_version or not download_url:
+            return
+            
+        try:
+            curr_parts = [int(x) for x in CLIENT_VERSION.split('.')]
+            new_parts = [int(x) for x in new_version.split('.')]
+            has_new = new_parts > curr_parts
+        except Exception:
+            has_new = new_version != CLIENT_VERSION
+            
+        if has_new:
+            reply = QMessageBox.question(
+                self,
+                "Có phiên bản mới!",
+                f"Phát hiện phiên bản mới: v{new_version}\n\nNội dung cập nhật:\n{changelog}\n\nBạn có muốn tự động tải về và cập nhật không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.start_download_update(download_url)
+
+    def start_download_update(self, download_url):
+        self.update_dialog = QDialog(self)
+        self.update_dialog.setWindowTitle("Đang cập nhật...")
+        self.update_dialog.setFixedSize(350, 120)
+        self.update_dialog.setWindowFlags(self.update_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        layout = QVBoxLayout(self.update_dialog)
+        self.update_label = QLabel("Đang tải xuống phiên bản mới...")
+        self.update_bar = QProgressBar()
+        self.update_bar.setRange(0, 100)
+        self.update_bar.setValue(0)
+        
+        layout.addWidget(self.update_label)
+        layout.addWidget(self.update_bar)
+        
+        self.download_worker = DownloadUpdateWorker(download_url, self)
+        self.download_worker.progress.connect(self.on_download_progress)
+        self.download_worker.finished.connect(self.on_download_finished)
+        self.download_worker.error.connect(self.on_download_error)
+        self.download_worker.start()
+        
+        self.update_dialog.exec_()
+
+    def on_download_progress(self, downloaded, total):
+        if total > 0:
+            val = int((downloaded / total) * 100)
+            self.update_bar.setValue(val)
+            self.update_label.setText(f"Đang tải: {downloaded // 1024} KB / {total // 1024} KB")
+
+    def on_download_finished(self, temp_path):
+        self.update_dialog.accept()
+        QMessageBox.information(
+            self,
+            "Tải xuống hoàn tất",
+            "Đã tải xong phiên bản mới. Ứng dụng sẽ tự động khởi động lại để hoàn tất cập nhật."
+        )
+        
+        current_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(sys.argv[0])
+        self.apply_update_and_restart(current_exe, temp_path)
+
+    def on_download_error(self, err_msg):
+        self.update_dialog.reject()
+        QMessageBox.critical(self, "Lỗi tải xuống", f"Không thể tải xuống bản cập nhật: {err_msg}")
+
+    def apply_update_and_restart(self, current_exe_path, new_exe_path):
+        if not getattr(sys, 'frozen', False):
+            QMessageBox.information(
+                self,
+                "Chế độ phát triển",
+                f"Đang ở chế độ code. File mới được tải về tại: {new_exe_path}. Sẽ không thực hiện tự động cập nhật đè file nguồn."
+            )
+            return
+            
+        if os.name == 'nt':
+            bat_path = current_exe_path + ".update.bat"
+            bat_content = f"""@echo off
+:loop
+taskkill /F /PID {os.getpid()} >nul 2>&1
+timeout /t 1 /nobreak >nul
+del /f /q "{current_exe_path}" >nul 2>&1
+if exist "{current_exe_path}" goto loop
+
+move /y "{new_exe_path}" "{current_exe_path}" >nul
+start "" "{current_exe_path}"
+del "%~f0"
+"""
+            try:
+                with open(bat_path, "w", encoding="utf-8") as f:
+                    f.write(bat_content)
+                import subprocess
+                subprocess.Popen(["cmd.exe", "/c", bat_path], creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception as e:
+                print(f"Error creating bat update: {e}")
+        sys.exit(0)
 
     # --- Xử lý Đăng nhập ---
     def handle_login(self):
