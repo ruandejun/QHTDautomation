@@ -1,0 +1,60 @@
+{
+  "originHash" : "be12ed99fd4524d90dc1e16c903296336040e3db4fc054a74f28b206779e0619",
+  "pins" : [
+    {
+      "identity" : "cocoaasyncsocket",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/robbiehanson/CocoaAsyncSocket.git",
+      "state" : {
+        "revision" : "dbdc00669c1ced63b27c3c5f052ee4d28f10150c",
+        "version" : "7.6.5"
+      }
+    },
+    {
+      "identity" : "devicekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/devicekit/DeviceKit",
+      "state" : {
+        "revision" : "581df61650bc457ec00373a592a84be3e7468eb1",
+        "version" : "5.7.0"
+      }
+    },
+    {
+      "identity" : "httpparserc",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Building42/HTTPParserC.git",
+      "state" : {
+        "revision" : "a32b391977a17c30fceec0f38933a359dfdaf112",
+        "version" : "9.2.0"
+      }
+    },
+    {
+      "identity" : "partyui",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jailbreakdotparty/PartyUI",
+      "state" : {
+        "revision" : "daafd273cd912513489d56d96fb185f1b8fb9e69",
+        "version" : "0.5.3"
+      }
+    },
+    {
+      "identity" : "telegraph",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Building42/Telegraph",
+      "state" : {
+        "revision" : "f56b6726195e271fea397b7dd11c4adc36d5a32d",
+        "version" : "0.40.0"
+      }
+    },
+    {
+      "identity" : "zip",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/marmelroy/Zip.git",
+      "state" : {
+        "revision" : "67fa55813b9e7b3b9acee9c0ae501def28746d76",
+        "version" : "2.1.2"
+      }
+    }
+  ],
+  "version" : 3
+}

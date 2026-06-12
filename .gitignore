@@ -1,0 +1,49 @@
+# Virtual environments
+.venv/
+.venv-win/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build and IDE files
+build/
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+*.sln
+
+# Large binaries and temporary archives
+*.zip
+*.ipa
+dist/
+build/
+*.exe
+*.dll
+*.7z
+*.jar
+*.pma
+
+# Runtime and automation data (Portable Chrome, logs, caches)
+chrome/
+LabelImg/
+geckodriver.log
+*.pkl
+*.crt
+*.key
+*.db
+*.bat
+
+# Configuration files
+.env
+login_config.json
+online_cards_config.json
+
+# Scratch and temporary directories
+scratch/

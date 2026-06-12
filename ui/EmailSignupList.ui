@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DialogEmailSignupList</class>
+ <widget class="QDialog" name="DialogEmailSignupList">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1005</width>
+    <height>521</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Dialog</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="1" column="0" colspan="5">
+    <widget class="QTableWidget" name="tableWidgetEmailSignupList">
+     <column>
+      <property name="text">
+       <string>Email</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Password</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Note</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Created date</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item row="0" column="0" colspan="4">
+    <widget class="QLineEdit" name="lineEditEmailSignupListFind"/>
+   </item>
+   <item row="0" column="4">
+    <widget class="QPushButton" name="pushButtonEmailSignupListFind">
+     <property name="text">
+      <string>Find</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="0">
+    <widget class="QComboBox" name="comboBoxEmailSignupListType">
+     <item>
+      <property name="text">
+       <string>Hotmail</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Amazon</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item row="2" column="3" colspan="2">
+    <widget class="QPushButton" name="pushButtonEmailSignupListSpecificList">
+     <property name="text">
+      <string>Create specific list</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="2">
+    <widget class="QPushButton" name="pushButtonEmailSignupListBlackList">
+     <property name="text">
+      <string>Create black list </string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="1">
+    <widget class="QPushButton" name="pushButtonEmailSignupListRefresh">
+     <property name="text">
+      <string>Refresh</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

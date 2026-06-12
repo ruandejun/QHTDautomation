@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1062</width>
+    <height>674</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="6" column="7" rowspan="2" colspan="2">
+    <widget class="QTableWidget" name="tableWidget_iprange">
+     <column>
+      <property name="text">
+       <string>IP Range</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item row="0" column="7" colspan="2">
+    <widget class="QPushButton" name="listportButton_account">
+     <property name="text">
+      <string>Select Account ssh</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="3" colspan="4">
+    <widget class="QLineEdit" name="lineEdit"/>
+   </item>
+   <item row="0" column="3" colspan="4">
+    <widget class="QLineEdit" name="lineEdit_sshpath"/>
+   </item>
+   <item row="5" column="7">
+    <widget class="QComboBox" name="comboBox_iprange">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="8">
+    <widget class="QComboBox" name="scancomboBox">
+     <property name="inputMethodHints">
+      <set>Qt::ImhNone</set>
+     </property>
+     <property name="duplicatesEnabled">
+      <bool>false</bool>
+     </property>
+     <item>
+      <property name="text">
+       <string>All</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>SSH</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>PROXY</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>SOCK5</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item row="0" column="2">
+    <widget class="QPushButton" name="updateButton">
+     <property name="text">
+      <string>Update</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1" colspan="2">
+    <widget class="QPushButton" name="btnscannow">
+     <property name="text">
+      <string>Start Scan</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="7">
+    <widget class="QPushButton" name="savepushButton">
+     <property name="text">
+      <string>Save Valid List</string>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="5">
+    <widget class="QComboBox" name="comboBox_timeout">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <item>
+      <property name="text">
+       <string>3</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>2</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>1</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>0.5</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item row="5" column="6">
+    <widget class="QComboBox" name="comboBox_thread">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <item>
+      <property name="text">
+       <string>500</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>1000</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>1500</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>2000</string>
+      </property>
+     </item>
+    </widget>
+   </item>
+   <item row="5" column="1">
+    <widget class="QPushButton" name="pushButton_addport">
+     <property name="text">
+      <string>Add Port</string>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="1">
+    <widget class="QPushButton" name="stopButton">
+     <property name="text">
+      <string>Stop Scan</string>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="3" colspan="2">
+    <widget class="QLabel" name="statusLabel">
+     <property name="text">
+      <string>Status</string>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="2">
+    <widget class="QComboBox" name="comboBox_port">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="8">
+    <widget class="QPushButton" name="pushButton_addiprange">
+     <property name="text">
+      <string>Add IP Range</string>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="1" rowspan="2" colspan="2">
+    <widget class="QTableWidget" name="tableWidget_port">
+     <column>
+      <property name="text">
+       <string>Scan Port</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item row="6" column="3" rowspan="2" colspan="4">
+    <widget class="QTextEdit" name="validTextEdit">
+     <property name="readOnly">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+  </layout>
+  <zorder>validTextEdit</zorder>
+  <zorder>stopButton</zorder>
+  <zorder>lineEdit_sshpath</zorder>
+  <zorder>listportButton_account</zorder>
+  <zorder>scancomboBox</zorder>
+  <zorder>pushButton_addport</zorder>
+  <zorder>statusLabel</zorder>
+  <zorder>tableWidget_port</zorder>
+  <zorder>tableWidget_iprange</zorder>
+  <zorder>pushButton_addiprange</zorder>
+  <zorder>comboBox_port</zorder>
+  <zorder>comboBox_iprange</zorder>
+  <zorder>updateButton</zorder>
+  <zorder>lineEdit</zorder>
+  <zorder>btnscannow</zorder>
+  <zorder>savepushButton</zorder>
+  <zorder>comboBox_timeout</zorder>
+  <zorder>comboBox_thread</zorder>
+ </widget>
+ <tabstops>
+  <tabstop>validTextEdit</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

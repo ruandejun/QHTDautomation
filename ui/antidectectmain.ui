@@ -1,0 +1,1752 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Antidectect</class>
+ <widget class="QWidget" name="Antidectect">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>858</width>
+    <height>429</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Antidectect browsers</string>
+  </property>
+  <layout class="QHBoxLayout" name="horizontalLayout">
+   <item>
+    <widget class="QTabWidget" name="tabWidgetMain">
+     <property name="currentIndex">
+      <number>6</number>
+     </property>
+     <widget class="QWidget" name="tab_profiles">
+      <attribute name="title">
+       <string>Profiles</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_6">
+       <item row="4" column="0" colspan="6">
+        <widget class="QTableWidget" name="tableWidgetProfiles">
+         <column>
+          <property name="text">
+           <string>ID</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>OS</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Socks5</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy user</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy pass</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Status</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Note</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Launched</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Created</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Action</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="2" column="4">
+        <widget class="QPushButton" name="pushButtonProfileAddaccounts">
+         <property name="text">
+          <string>Add accounts</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="3">
+        <widget class="QPushButton" name="pushButtonProfileUpdateNewProfile">
+         <property name="text">
+          <string>Update new profile</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="5">
+        <widget class="QPushButton" name="pushButtonFind">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="5">
+        <widget class="QPushButton" name="pushButtonQuickCreate">
+         <property name="text">
+          <string>Quick create</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QPushButton" name="pushButtonRefesh">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0" colspan="5">
+        <widget class="QComboBox" name="comboBoxFindProfiles">
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QPushButton" name="pushButtonRemove">
+         <property name="text">
+          <string>Remove</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QPushButton" name="pushButtonImportCookies">
+         <property name="text">
+          <string>Import cookies</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_accounts">
+      <attribute name="title">
+       <string>Accounts</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_7">
+       <item row="2" column="3">
+        <widget class="QPushButton" name="pushButtonRemoveAutoView">
+         <property name="text">
+          <string>Remove auto view</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QPushButton" name="pushButtonSetAutoView">
+         <property name="text">
+          <string>Set auto view</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0" colspan="3">
+        <widget class="QComboBox" name="comboBoxFindAccounts">
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="pushButtonFindAccounts">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QPushButton" name="pushButtonViewAccount">
+         <property name="text">
+          <string>Auto view</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QComboBox" name="comboBoxAccountType">
+         <item>
+          <property name="text">
+           <string>Amazon</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ebay</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Etzy</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="3" column="0" colspan="6">
+        <widget class="QTableWidget" name="tableWidgetAccounts">
+         <column>
+          <property name="text">
+           <string>ID</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>OS</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Socks5</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy user</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy pass</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Type</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Email</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Username</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Password</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Auto view</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Note</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State IP</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Profile id</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Created</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Launched</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Viewed</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="2" column="5">
+        <widget class="QPushButton" name="pushButtonRefeshAccounts">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="5">
+        <widget class="QPushButton" name="pushButtonAccountSetup">
+         <property name="text">
+          <string>Add</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="4">
+        <widget class="QPushButton" name="pushButtonRemoveAccount">
+         <property name="text">
+          <string>Remove</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="4">
+        <widget class="QPushButton" name="pushButtonUpdateNewProfile">
+         <property name="text">
+          <string>Update new profile</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_emails">
+      <attribute name="title">
+       <string>Emails</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_8">
+       <item row="2" column="4" colspan="6">
+        <widget class="QTableWidget" name="tableWidgetEmailSubjects">
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>500</height>
+          </size>
+         </property>
+         <property name="sizeAdjustPolicy">
+          <enum>QAbstractScrollArea::AdjustToContents</enum>
+         </property>
+         <column>
+          <property name="text">
+           <string>Date</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>From</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Subjects</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="3" column="4" colspan="6">
+        <widget class="QTextBrowser" name="textBrowserEmailView"/>
+       </item>
+       <item row="2" column="0" rowspan="2" colspan="4">
+        <widget class="QTableWidget" name="tableWidgetEmails">
+         <property name="minimumSize">
+          <size>
+           <width>700</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <column>
+          <property name="text">
+           <string>Email</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Password</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Proxy</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Socks5</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State IP</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Note</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Created</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Account ID</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Created Accounts</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="1" column="3">
+        <widget class="QPushButton" name="pushButtonRefeshEmails">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="pushButtonFindEmails">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0" colspan="3">
+        <widget class="QComboBox" name="comboBoxFindEmails">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>650</width>
+           <height>16777215</height>
+          </size>
+         </property>
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="9">
+        <widget class="QPushButton" name="pushButtonRefeshEmailsSubjects">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="9">
+        <widget class="QPushButton" name="pushButtonFindSubjects">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="4" colspan="5">
+        <widget class="QComboBox" name="comboBoxEmailsFindSubjects">
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QPushButton" name="pushButtonRemoveEmails">
+         <property name="text">
+          <string>Remove</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QPushButton" name="pushButtonAddEmail">
+         <property name="text">
+          <string>Add</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_data">
+      <attribute name="title">
+       <string>Data</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_9">
+       <item row="0" column="0">
+        <widget class="QLineEdit" name="lineEditFindData"/>
+       </item>
+       <item row="0" column="2">
+        <widget class="QPushButton" name="pushButtonAddData">
+         <property name="text">
+          <string>Add</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0" colspan="4">
+        <widget class="QTableWidget" name="tableWidgetData">
+         <column>
+          <property name="text">
+           <string>ID</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Note</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Emails</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Accounts</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Fisrt name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Last name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Address1</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Address2</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>City</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>State</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Zipcode</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>DOB</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>SSN</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QPushButton" name="pushButtonFindData">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="pushButtonRefeshData">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tab_new_profile">
+      <attribute name="title">
+       <string>New profile</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout">
+       <item row="0" column="4">
+        <widget class="QPushButton" name="pushButtonCreateProfile">
+         <property name="text">
+          <string>Create profile</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="0">
+        <widget class="QLabel" name="label">
+         <property name="text">
+          <string>Profile</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLineEdit" name="lineEditProfileName"/>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="pushButtonRandomProfile">
+         <property name="text">
+          <string>Generate Random</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="2">
+        <widget class="QComboBox" name="comboBoxDevices">
+         <item>
+          <property name="text">
+           <string>Desktop</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>iPhone</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Android</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="1" column="0" colspan="5">
+        <widget class="QTabWidget" name="tabWidgetOverView">
+         <property name="enabled">
+          <bool>true</bool>
+         </property>
+         <property name="currentIndex">
+          <number>0</number>
+         </property>
+         <widget class="QWidget" name="tab">
+          <attribute name="title">
+           <string>Overview</string>
+          </attribute>
+          <layout class="QGridLayout" name="gridLayout_2">
+           <item row="1" column="0">
+            <widget class="QGroupBox" name="groupBox_2">
+             <property name="title">
+              <string>Navigator</string>
+             </property>
+             <layout class="QGridLayout" name="gridLayout_4">
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_2">
+                <property name="text">
+                 <string>Screen Resolution</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QComboBox" name="comboBoxCpu"/>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_4">
+                <property name="text">
+                 <string>Languages</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QLabel" name="label_5">
+                <property name="text">
+                 <string>CPU Threads</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_3">
+                <property name="text">
+                 <string>User-Agent</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0" colspan="2">
+               <widget class="QLineEdit" name="lineEditUserAgent"/>
+              </item>
+              <item row="3" column="0">
+               <widget class="QComboBox" name="comboBoxResoluton"/>
+              </item>
+              <item row="5" column="0" colspan="2">
+               <widget class="QLineEdit" name="lineEditLanguages">
+                <property name="text">
+                 <string>en-US,en;q=0.5</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item row="0" column="0">
+            <widget class="QGroupBox" name="groupBox">
+             <property name="title">
+              <string>Browser</string>
+             </property>
+             <layout class="QGridLayout" name="gridLayout_3">
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_17">
+                <property name="text">
+                 <string>Proxy username</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="0">
+               <widget class="QPushButton" name="pushButtonProfilePath">
+                <property name="text">
+                 <string>Profile Path</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QComboBox" name="comboBoxProxyType">
+                <item>
+                 <property name="text">
+                  <string>No Proxy</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Proxy</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Sock5</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="7" column="0">
+               <widget class="QLabel" name="label_6">
+                <property name="text">
+                 <string>Start URL</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="0">
+               <widget class="QPushButton" name="pushButtonCookies">
+                <property name="text">
+                 <string>Cookies</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QComboBox" name="comboBoxOS">
+                <item>
+                 <property name="text">
+                  <string>Window</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Mac OS X</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Linux</string>
+                 </property>
+                </item>
+                <item>
+                 <property name="text">
+                  <string>Chrome OS</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="0" column="1" colspan="6">
+               <widget class="QLineEdit" name="lineEditProfilePath"/>
+              </item>
+              <item row="2" column="3" colspan="3">
+               <widget class="QComboBox" name="comboBoxVersion"/>
+              </item>
+              <item row="2" column="6">
+               <widget class="QComboBox" name="comboBoxPhoneOS"/>
+              </item>
+              <item row="3" column="1" colspan="6">
+               <widget class="QLineEdit" name="lineEditProxy"/>
+              </item>
+              <item row="7" column="1" colspan="6">
+               <widget class="QLineEdit" name="lineEditStartUrl">
+                <property name="text">
+                 <string>https://iphey.com</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="1" colspan="6">
+               <widget class="QLineEdit" name="lineEditCookies"/>
+              </item>
+              <item row="2" column="1" colspan="2">
+               <widget class="QComboBox" name="comboBoxBrowser">
+                <item>
+                 <property name="text">
+                  <string>Chrome</string>
+                 </property>
+                </item>
+               </widget>
+              </item>
+              <item row="5" column="5" colspan="2">
+               <widget class="QLineEdit" name="lineEditProxyPassword">
+                <property name="text">
+                 <string/>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="4">
+               <widget class="QLabel" name="label_18">
+                <property name="text">
+                 <string>Password</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="1" colspan="3">
+               <widget class="QLineEdit" name="lineEditProxyUsername">
+                <property name="text">
+                 <string/>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+         <widget class="QWidget" name="tab_2">
+          <attribute name="title">
+           <string>Fingerprinter</string>
+          </attribute>
+          <layout class="QGridLayout" name="gridLayout_5">
+           <item row="0" column="0">
+            <widget class="QLabel" name="label_7">
+             <property name="text">
+              <string>Canvas</string>
+             </property>
+            </widget>
+           </item>
+           <item row="0" column="1">
+            <widget class="QComboBox" name="comboBoxCanvas">
+             <item>
+              <property name="text">
+               <string>Noise</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Block</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="1" column="0">
+            <widget class="QLabel" name="label_10">
+             <property name="text">
+              <string>Client Rects</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="1">
+            <widget class="QComboBox" name="comboBoxFont">
+             <item>
+              <property name="text">
+               <string>Noise</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Block</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="1" column="1">
+            <widget class="QComboBox" name="comboBoxRects">
+             <item>
+              <property name="text">
+               <string>Noise</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Block</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="5" column="0">
+            <widget class="QLabel" name="label_14">
+             <property name="text">
+              <string>Time Zone</string>
+             </property>
+            </widget>
+           </item>
+           <item row="4" column="1">
+            <widget class="QComboBox" name="comboBoxWebgl">
+             <item>
+              <property name="text">
+               <string>Noise</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Block</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="8" column="0">
+            <widget class="QLabel" name="label_12">
+             <property name="text">
+              <string>WebGL Vendor</string>
+             </property>
+            </widget>
+           </item>
+           <item row="3" column="0">
+            <widget class="QLabel" name="label_11">
+             <property name="text">
+              <string>Audio Context</string>
+             </property>
+            </widget>
+           </item>
+           <item row="3" column="1">
+            <widget class="QComboBox" name="comboBoxAudio">
+             <item>
+              <property name="text">
+               <string>Noise</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Block</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="4" column="0">
+            <widget class="QLabel" name="label_8">
+             <property name="text">
+              <string>WebGL</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="0">
+            <widget class="QLabel" name="label_9">
+             <property name="text">
+              <string>Fonts</string>
+             </property>
+            </widget>
+           </item>
+           <item row="6" column="0">
+            <widget class="QLabel" name="label_15">
+             <property name="text">
+              <string>Web RTC</string>
+             </property>
+            </widget>
+           </item>
+           <item row="6" column="1">
+            <widget class="QComboBox" name="comboBoxWebRtc">
+             <item>
+              <property name="text">
+               <string>Follow IP</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Altered</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="5" column="1">
+            <widget class="QComboBox" name="comboBoxTimeZone">
+             <item>
+              <property name="text">
+               <string>Follow IP</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="7" column="1">
+            <widget class="QComboBox" name="comboBoxGeo">
+             <item>
+              <property name="text">
+               <string>Follow IP</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>Off</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item row="7" column="0">
+            <widget class="QLabel" name="label_16">
+             <property name="text">
+              <string>Geolocation</string>
+             </property>
+            </widget>
+           </item>
+           <item row="9" column="0">
+            <widget class="QLabel" name="label_13">
+             <property name="text">
+              <string>WebGL Renderer</string>
+             </property>
+            </widget>
+           </item>
+           <item row="9" column="1">
+            <widget class="QComboBox" name="comboBoxRenderer"/>
+           </item>
+           <item row="8" column="1">
+            <widget class="QComboBox" name="comboBoxVendor"/>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+      <zorder>tabWidgetOverView</zorder>
+      <zorder>pushButtonCreateProfile</zorder>
+      <zorder>label</zorder>
+      <zorder>lineEditProfileName</zorder>
+      <zorder>pushButtonRandomProfile</zorder>
+      <zorder>comboBoxDevices</zorder>
+     </widget>
+     <widget class="QWidget" name="tab_creator">
+      <attribute name="title">
+       <string>Creator</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_10">
+       <item row="5" column="3">
+        <widget class="QPushButton" name="pushButtonCreatorFind">
+         <property name="text">
+          <string>Find</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="1" colspan="2">
+        <widget class="QComboBox" name="comboBoxCreatorFind">
+         <property name="editable">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="13" column="1" colspan="7">
+        <widget class="QTableWidget" name="tableWidgetCreatorStatus">
+         <column>
+          <property name="text">
+           <string>Email</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Password</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Note</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Profile ID</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Status</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item row="0" column="5">
+        <widget class="QComboBox" name="comboBoxCreatorTypePassword">
+         <item>
+          <property name="text">
+           <string>Email list</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Random</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Specific</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="2">
+        <widget class="QComboBox" name="comboBoxCreatorTypeEmail">
+         <item>
+          <property name="text">
+           <string>Email list</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Random</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Specific</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="4">
+        <widget class="QLineEdit" name="lineEditCreatorPassword"/>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLineEdit" name="lineEditCreatorEmail"/>
+       </item>
+       <item row="0" column="0">
+        <widget class="QComboBox" name="comboBoxCreatorType">
+         <item>
+          <property name="text">
+           <string>Hotmail</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Amazon</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="6">
+        <widget class="QLabel" name="label_20">
+         <property name="text">
+          <string>Qty</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QComboBox" name="comboBoxCreatorTypeCaptcha">
+         <item>
+          <property name="text">
+           <string>Anycaptcha.com</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>2captcha</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="7">
+        <widget class="QLineEdit" name="lineEditCreatorQty">
+         <property name="text">
+          <string>100</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QLabel" name="label_19">
+         <property name="text">
+          <string>Password</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="label_22">
+         <property name="text">
+          <string>Phone</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="3">
+        <widget class="QComboBox" name="comboBoxCreatorTypePhone">
+         <item>
+          <property name="text">
+           <string>Viotp</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="2" column="1" colspan="2">
+        <widget class="QLineEdit" name="lineEditCreatorPhone"/>
+       </item>
+       <item row="5" column="0">
+        <widget class="QLabel" name="label_21">
+         <property name="text">
+          <string>Proxy list</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="7">
+        <widget class="QPushButton" name="pushButtonCreatorRun">
+         <property name="text">
+          <string>Run</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="0">
+        <widget class="QComboBox" name="comboBoxCreatorProxy">
+         <item>
+          <property name="text">
+           <string>922 proxy</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Rotating socks5</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Tinsoft</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Socks5</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>None</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="13" column="0">
+        <widget class="QPlainTextEdit" name="plainTextEditCreatorProxies"/>
+       </item>
+       <item row="1" column="1" colspan="7">
+        <widget class="QLineEdit" name="lineEditCreatorCaptchaToken"/>
+       </item>
+       <item row="2" column="4" colspan="4">
+        <widget class="QLineEdit" name="lineEditCreatorPhoneToken"/>
+       </item>
+       <item row="4" column="5" colspan="2">
+        <widget class="QLabel" name="label_23">
+         <property name="text">
+          <string>Threading</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1" colspan="4">
+        <widget class="QLineEdit" name="lineEditCreatorProxyToken"/>
+       </item>
+       <item row="4" column="7">
+        <widget class="QLineEdit" name="lineEditCreatorThreading">
+         <property name="text">
+          <string>10</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="6">
+        <widget class="QPushButton" name="pushButtonCreatorStop">
+         <property name="text">
+          <string>Stop</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="4">
+        <widget class="QPushButton" name="pushButtonCreatorSetBlackList">
+         <property name="text">
+          <string>Set black list</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="5">
+        <widget class="QPushButton" name="pushButtonCreatorRefresh">
+         <property name="text">
+          <string>Refresh</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabChecker">
+      <attribute name="title">
+       <string>Checker</string>
+      </attribute>
+      <layout class="QGridLayout" name="gridLayout_11">
+       <item row="3" column="3">
+        <widget class="QLineEdit" name="lineEditSocksTimes">
+         <property name="text">
+          <string>5</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="4">
+        <widget class="QLabel" name="label_28">
+         <property name="text">
+          <string>Times / Socks</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QPushButton" name="stopButtonChecker">
+         <property name="text">
+          <string>Stop</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="3">
+        <widget class="QLineEdit" name="lineEdittheard">
+         <property name="text">
+          <string>5</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QPushButton" name="startButtonChecker">
+         <property name="text">
+          <string>Start</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="4">
+        <widget class="QLabel" name="label_24">
+         <property name="text">
+          <string>Threading</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="0" rowspan="3" colspan="2">
+        <widget class="QTextEdit" name="socksTextEdit"/>
+       </item>
+       <item row="8" column="2" colspan="3">
+        <widget class="QTextEdit" name="dontsupporttextEdit"/>
+       </item>
+       <item row="6" column="2" colspan="3">
+        <widget class="QTextEdit" name="validTextEdit">
+         <property name="readOnly">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="2">
+        <widget class="QLineEdit" name="lineEditSocksToken"/>
+       </item>
+       <item row="7" column="2">
+        <widget class="QLabel" name="label_27">
+         <property name="text">
+          <string>Dont Support Or Cant Check Please Recheck</string>
+         </property>
+        </widget>
+       </item>
+       <item row="5" column="0" colspan="2">
+        <widget class="QLabel" name="label_25">
+         <property name="text">
+          <string>List socks</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QComboBox" name="comboBoxcheck_ssh_database"/>
+       </item>
+       <item row="3" column="1">
+        <widget class="QComboBox" name="socktypecomboBox">
+         <item>
+          <property name="text">
+           <string>Webshare</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>922 proxy</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Tor</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Rotating socks5</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Auto SSH</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Socks5</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>null</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="5" column="2">
+        <widget class="QLabel" name="statusLabel">
+         <property name="text">
+          <string>Status</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QComboBox" name="checksitecomboBox">
+         <property name="inputMethodHints">
+          <set>Qt::ImhNone</set>
+         </property>
+         <property name="duplicatesEnabled">
+          <bool>false</bool>
+         </property>
+         <item>
+          <property name="text">
+           <string>CCN Gate 2</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>CCN Gate 1</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Get Link Checkout</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Checker bot</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Loc email</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Hotmail not exist</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Amazon exist</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ebay exist</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Belk</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>1800petmeds</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Michaelkors</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>SSH</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Jet</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Quill</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Neimanmarcus</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Beallsflorida</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ebay change password</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Bodybuilding</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Choxi</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Nordstrom</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Bloomingdales</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Mrporter</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Abt</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Shoprunner</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Moosejaw</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Hhgregg</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Samsclub</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Bestbuy</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Jcpenney</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Macys</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Lowes</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Kohls</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Zappos</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Walmart</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Homedepot</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Chefcatalog</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Costco</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Gap</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Overstock</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Wayfair</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Williamssonoma</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Bedbathandbeyond</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Register Paypal</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Ebay</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Email</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>paypal balance</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="0">
+        <widget class="QComboBox" name="comboBoxCheckerType">
+         <item>
+          <property name="text">
+           <string>My computer</string>
+          </property>
+         </item>
+         <item>
+          <property name="text">
+           <string>Telegram</string>
+          </property>
+         </item>
+        </widget>
+       </item>
+       <item row="0" column="4">
+        <widget class="QPushButton" name="listEmailButton">
+         <property name="text">
+          <string>Select Your List</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="4">
+        <widget class="QPushButton" name="savepushButton">
+         <property name="text">
+          <string>Save Valid List</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="2" colspan="2">
+        <widget class="QLineEdit" name="lineEditListCheck"/>
+       </item>
+       <item row="1" column="2" colspan="2">
+        <widget class="QLineEdit" name="lineEditListSave"/>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,59 @@
+# Core GUI
+PyQt5>=5.15.7
+
+# Browser automation
+selenium>=4.4.0
+undetected-chromedriver>=3.4.6
+selenium-stealth>=1.0.6
+
+# HTTP / Web
+requests>=2.28.0
+mechanize>=0.4.8
+cloudscraper>=1.2.71
+certifi>=2022.12.7
+httpagentparser>=1.9.5
+html5lib>=1.1
+
+# HTML parsing
+beautifulsoup4>=4.11.0
+
+# Encryption / Security
+pycryptodome>=3.17.0
+
+# Proxy / Network
+PySocks>=1.7.1
+dnspython>=2.3.0
+
+# GeoIP
+geoip2>=4.6.0
+maxminddb>=2.2.0
+
+# Telegram bot
+pytelegrambotapi>=4.7.0
+
+# Progress bar
+tqdm>=4.64.0
+
+# JavaScript execution (captcha solver)
+PyExecJS>=1.5.1
+
+# Image processing (captcha)
+Pillow>=9.4.0
+
+# Process management
+psutil>=5.9.0
+
+# SSH
+paramiko>=3.1.0
+
+# Env variables
+python-dotenv>=1.0.0
+
+# Additional dependencies
+ShopifyAPI
+pydub
+tufup
+webdriver_manager
+user_agents
+SpeechRecognition
+

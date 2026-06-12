@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Munproxiesmain</class>
+ <widget class="QWidget" name="Munproxiesmain">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1089</width>
+    <height>670</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="0" colspan="10">
+    <widget class="QComboBox" name="comboBoxProxyFind">
+     <property name="enabled">
+      <bool>true</bool>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="10" colspan="2">
+    <widget class="QPushButton" name="pushButtonProxyFind">
+     <property name="text">
+      <string>Find</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="0">
+    <widget class="QLabel" name="label">
+     <property name="text">
+      <string>Bridges</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1" colspan="9">
+    <widget class="QLineEdit" name="lineEditProxyBridges"/>
+   </item>
+   <item row="4" column="0" colspan="12">
+    <widget class="QTableWidget" name="tableWidgetProxies">
+     <column>
+      <property name="text">
+       <string>Id</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Socks5</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Control port</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Rotating time</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Country</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Country name</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Note</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Bridges</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item row="3" column="0">
+    <widget class="QLabel" name="label_3">
+     <property name="text">
+      <string>Rotating Time</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="10">
+    <widget class="QPushButton" name="pushButtonProxyStop">
+     <property name="text">
+      <string>Stop</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="11">
+    <widget class="QPushButton" name="pushButtonProxiesStopAll">
+     <property name="text">
+      <string>Stop All</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="10">
+    <widget class="QPushButton" name="pushButtonProxiesRemove">
+     <property name="text">
+      <string>Remove</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="11">
+    <widget class="QPushButton" name="pushButtonProxiesFresh">
+     <property name="text">
+      <string>Refresh</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="9">
+    <widget class="QPushButton" name="pushButtonProxyCreate">
+     <property name="text">
+      <string>Create</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="8">
+    <widget class="QPushButton" name="pushButtonSwitchIp">
+     <property name="text">
+      <string>Switch Ip</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="6" colspan="2">
+    <widget class="QComboBox" name="comboBoxProxyPort">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="5">
+    <widget class="QLabel" name="label_2">
+     <property name="text">
+      <string>Local port</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="3" colspan="2">
+    <widget class="QComboBox" name="comboBoxProxyCountry"/>
+   </item>
+   <item row="3" column="1" colspan="2">
+    <widget class="QComboBox" name="comboBoxProxyTime">
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

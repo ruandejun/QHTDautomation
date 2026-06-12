@@ -1,0 +1,25 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+     - uses: actions/checkout@v3
+     - name: Select Xcode version
+       run: |
+         sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+         xcodebuild -version
+         swift --version
+     - name: Compile
+       run: make
+     
+     - name: Upload artifact
+       uses: actions/upload-artifact@v4
+       with:
+        name: PancakeStore
+        path: PancakeStore.ipa

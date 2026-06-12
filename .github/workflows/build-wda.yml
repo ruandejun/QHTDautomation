@@ -1,0 +1,116 @@
+name: Build WebDriverAgent IPA
+
+on:
+  workflow_dispatch: # Cho phép người dùng bấm nút chạy thủ công trên giao diện GitHub Actions
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - '.github/workflows/build-wda.yml'
+
+permissions:
+  contents: write # Cấp quyền cho GitHub Actions tạo/cập nhật Releases
+
+jobs:
+  build-wda:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Xcode Version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app
+          xcodebuild -version
+
+      - name: Clone Appium WebDriverAgent
+        run: |
+          git clone https://github.com/appium/WebDriverAgent.git wda-src
+
+      - name: Resolve Swift Package Dependencies
+        run: |
+          cd wda-src
+          xcodebuild -resolvePackageDependencies -project WebDriverAgent.xcodeproj -scheme WebDriverAgentRunner
+
+      - name: Build WebDriverAgentRunner Archive
+        run: |
+          cd wda-src
+          xcodebuild archive \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -configuration Release \
+            -archivePath ../WebDriverAgentRunner.xcarchive \
+            -sdk iphoneos \
+            SKIP_INSTALL=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Package App Bundle into Unsigned IPA
+        run: |
+          mkdir -p Payload
+          
+          # Find the compiled runner app bundle dynamically
+          echo "=== Searching for WebDriverAgentRunner app bundle ==="
+          RUNNER_APP=""
+          
+          if [ -d "WebDriverAgentRunner.xcarchive" ]; then
+            RUNNER_APP=$(find WebDriverAgentRunner.xcarchive -name "WebDriverAgentRunner-Runner.app" -print -quit)
+            if [ -z "$RUNNER_APP" ]; then
+              RUNNER_APP=$(find WebDriverAgentRunner.xcarchive -name "WebDriverAgentRunner.app" -print -quit)
+            fi
+          fi
+          
+          if [ -z "$RUNNER_APP" ] && [ -d ~/Library/Developer/Xcode/DerivedData ]; then
+            RUNNER_APP=$(find ~/Library/Developer/Xcode/DerivedData -name "WebDriverAgentRunner-Runner.app" -print -quit)
+            if [ -z "$RUNNER_APP" ]; then
+              RUNNER_APP=$(find ~/Library/Developer/Xcode/DerivedData -name "WebDriverAgentRunner.app" -print -quit)
+            fi
+          fi
+          
+          if [ -z "$RUNNER_APP" ]; then
+            RUNNER_APP=$(find . -name "WebDriverAgentRunner-Runner.app" -print -quit)
+            if [ -z "$RUNNER_APP" ]; then
+              RUNNER_APP=$(find . -name "WebDriverAgentRunner.app" -print -quit)
+            fi
+          fi
+          
+          if [ -n "$RUNNER_APP" ]; then
+            REAL_RUNNER_APP=$(realpath "$RUNNER_APP")
+            echo "✅ Found WebDriverAgentRunner app bundle at: $RUNNER_APP"
+            echo "✅ Real path: $REAL_RUNNER_APP"
+            APP_NAME=$(basename "$REAL_RUNNER_APP")
+            cp -R "$REAL_RUNNER_APP" "Payload/$APP_NAME"
+            
+            # Ad-hoc sign all Mach-O binaries recursively
+            echo "=== Ad-hoc signing all Mach-O binaries inside Payload ==="
+            find Payload -type f | while read file_path; do
+              if file "$file_path" | grep -q "Mach-O"; then
+                echo "Signing: $file_path"
+                codesign --force --sign - --timestamp=none "$file_path"
+              fi
+            done
+            
+            echo "=== Payload contents ==="
+            ls -la Payload/
+            zip -r WebDriverAgentRunner.ipa Payload/
+          else
+            echo "❌ Error: Could not find WebDriverAgentRunner app bundle!"
+            exit 1
+          fi
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wda-build
+          name: WebDriverAgent Runner Prebuilt
+          body: |
+            Prebuilt unsigned WebDriverAgentRunner.ipa built automatically by GitHub Actions.
+            To use: download WebDriverAgentRunner.ipa and sign it with Sideloadly.
+          files: WebDriverAgentRunner.ipa
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,9 @@
+{
+    "github_repo": "ruandejun/iOSAutomationDesktop",
+    "github_token": "",
+    "wda_host": "http://localhost",
+    "wda_port": 8105,
+    "delay_min": 5,
+    "delay_max": 12,
+    "randomize": true
+}
