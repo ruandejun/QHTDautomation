@@ -48,7 +48,7 @@ def get_app_dir():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-CLIENT_VERSION = "1.0.4"
+CLIENT_VERSION = "1.0.5"
 
 # Database Helper cho Quản lý Thẻ (Hỗ trợ cả Offline SQLite và Online REST API)
 class CardDatabase:
@@ -175,7 +175,7 @@ class CardDatabase:
         if status_filter != "Tất cả":
             query += " AND status = ?"
             params.append(status_filter)
-        query += " ORDER BY id DESC"
+        query += " ORDER BY created_at DESC, id DESC"
         cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()

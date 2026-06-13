@@ -1,5 +1,5 @@
 {
-    "version": "1.0.4",
+    "version": "1.0.5",
     "download_url": "https://toinhaphang.com/static/QHTDautomation.exe",
-    "changelog": "Cập nhật tính năng: Ẩn nút xem thẻ, mặc định bộ lọc sang 'Chưa sử dụng', hỗ trợ click từng dòng chỉ chọn duy nhất dòng đó (trừ khi click trực tiếp checkbox để chọn nhiều dòng), đúp-click xem chi tiết thẻ và bỏ cảnh báo kết nối iPhone khi khởi động."
+    "changelog": "Cập nhật tính năng: Hiển thị quản lý thẻ được sắp xếp theo ngày tạo mới nhất lên đầu."
 }
