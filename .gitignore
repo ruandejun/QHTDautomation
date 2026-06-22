@@ -48,3 +48,7 @@ online_cards_config.json
 
 # Scratch and temporary directories
 scratch/
+
+# Runtime profile data
+QHTDautomationDesktop/chrome_data/
+QHTDautomationDesktop/browser_profiles.json

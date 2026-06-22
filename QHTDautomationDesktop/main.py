@@ -42,6 +42,13 @@ except Exception:
 
 from ipatool import IPATool, extract_app_id, get_app_details_from_itunes
 
+# Anti-Detect Browser
+try:
+    from mun_anti_browser import NodriverBrowserManager, ProfileManager, ScriptLoader, C69ProfileAPI
+    MUN_ANTI_BROWSER_AVAILABLE = True
+except ImportError:
+    MUN_ANTI_BROWSER_AVAILABLE = False
+
 # Lấy thư mục chạy của script hoặc của file exe đóng gói
 def get_app_dir():
     if getattr(sys, 'frozen', False):
@@ -148,17 +155,26 @@ class CardDatabase:
                 if r.status_code == 200:
                     api_cards = r.json()
                     rows = []
-                    for c in api_cards:
-                        c_id = c.get('id')
-                        c_num = c.get('card_number', '')
-                        c_exp = c.get('expiry_date', '')
-                        c_cvv = c.get('cvv', '')
-                        c_status = c.get('status', 'Chưa sử dụng')
-                        c_extra = c.get('extra_info', '')
-                        c_created = c.get('created_at', '')
-                        c_updated = c.get('updated_at', '')
-                        c_used = c.get('used_count', 0)
-                        rows.append((c_id, c_num, c_exp, c_cvv, c_status, c_extra, c_created, c_updated, c_used))
+                    
+                    # Support both direct list and paginated response (dict with 'results' key)
+                    cards_list = []
+                    if isinstance(api_cards, list):
+                        cards_list = api_cards
+                    elif isinstance(api_cards, dict):
+                        cards_list = api_cards.get("results", [])
+                        
+                    for c in cards_list:
+                        if isinstance(c, dict):
+                            c_id = c.get('id')
+                            c_num = c.get('card_number', '')
+                            c_exp = c.get('expiry_date', '')
+                            c_cvv = c.get('cvv', '')
+                            c_status = c.get('status', 'Chưa sử dụng')
+                            c_extra = c.get('extra_info', '')
+                            c_created = c.get('created_at', '')
+                            c_updated = c.get('updated_at', '')
+                            c_used = c.get('used_count', 0)
+                            rows.append((c_id, c_num, c_exp, c_cvv, c_status, c_extra, c_created, c_updated, c_used))
                     return rows
                 else:
                     print(f"Lỗi API get_all_cards: {r.status_code} {r.text}")
@@ -2833,6 +2849,68 @@ class TrollStoreGuideDialog(QDialog):
 
 
 
+class BrowserWorker(QThread):
+    """QThread wrapper to run async nodriver anti-detect browser from PyQt5 UI."""
+    log_signal = pyqtSignal(str)
+    status_signal = pyqtSignal(str, bool)  # (message, is_running)
+
+    def __init__(self, profile_config, profile_name="", proxy_string="", proxy_type="socks5",
+                 proxy_username="", proxy_password="", start_url=""):
+        super().__init__()
+        self.profile_config = profile_config
+        self.profile_name = profile_name or "Default"
+        self.proxy_string = proxy_string
+        self.proxy_type = proxy_type
+        self.proxy_username = proxy_username
+        self.proxy_password = proxy_password
+        self.start_url = start_url
+        self.manager = None
+        self._stop_flag = False
+
+    def run(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_browser())
+        except Exception as e:
+            self.log_signal.emit(f"❌ Browser error: {e}")
+            self.status_signal.emit("Lỗi", False)
+        finally:
+            loop.close()
+
+    async def _run_browser(self):
+        self.manager = NodriverBrowserManager()
+        self.log_signal.emit(f"🚀 Đang khởi chạy Anti-Detect Browser [{self.profile_name}]...")
+        self.status_signal.emit("Đang chạy", True)
+        try:
+            browser, tab = await self.manager.start(
+                profile_config=self.profile_config,
+                proxy_string=self.proxy_string,
+                proxy_type=self.proxy_type,
+                proxy_username=self.proxy_username,
+                proxy_password=self.proxy_password,
+                start_url=self.start_url,
+            )
+            self.log_signal.emit(f"✅ Browser [{self.profile_name}] đã sẵn sàng! Anti-detect ACTIVE.")
+            # Keep browser alive until stop is called
+            while not self._stop_flag:
+                await asyncio.sleep(0.5)
+                # Check if browser process is still running
+                if not self.manager.is_running:
+                    self.log_signal.emit(f"⚠️ Browser [{self.profile_name}] đã bị đóng bởi người dùng.")
+                    break
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi khởi chạy browser: {e}")
+        finally:
+            if self.manager and self.manager.is_running:
+                await self.manager.close()
+            self.status_signal.emit("Đã dừng", False)
+            self.log_signal.emit(f"🛑 Browser [{self.profile_name}] đã đóng.")
+
+    def stop_browser(self):
+        self._stop_flag = True
+
+
 class AutomationRunner(QThread):
     log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str, bool)
@@ -3738,7 +3816,7 @@ class StoragonLoginDialog(QDialog):
         # Ẩn trường Server URL
         self.server_label = QLabel("Server URL:")
         self.server_input = QLineEdit()
-        self.server_input.setPlaceholderText("https://toinhaphang.com")
+        self.server_input.setPlaceholderText("https://c69.us")
         self.server_label.hide()
         self.server_input.hide()
 
@@ -3789,12 +3867,12 @@ class StoragonLoginDialog(QDialog):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                api_url = data.get("api_url", "https://toinhaphang.com")
+                api_url = data.get("api_url", "https://c69.us")
                 self.server_input.setText(api_url)
             except Exception:
                 pass
         if not self.server_input.text():
-            self.server_input.setText("https://toinhaphang.com")
+            self.server_input.setText("https://c69.us")
 
     def toggle_mode(self):
         self.is_register_mode = not self.is_register_mode
@@ -3967,8 +4045,8 @@ class QHTDStoreDesktop(QMainWindow):
         
     def init_ui(self):
         self.setWindowTitle(f"QHTD Automation 🚀 - v{CLIENT_VERSION}")
-        self.resize(1350, 820)
-        self.setMinimumSize(1200, 750)
+        self.resize(1450, 850)
+        self.setMinimumSize(1250, 760)
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -4304,6 +4382,17 @@ class QHTDStoreDesktop(QMainWindow):
         self.tab_widget.addTab(self.auto_tab, "Tự động hóa ⚙️")
         self.init_auto_tab_ui()
         
+        # --- TAB 5: ĐỊNH TUYẾN 🌐 ---
+        self.routing_tab = QWidget()
+        self.tab_widget.addTab(self.routing_tab, "Định tuyến 🌐")
+        self.init_routing_tab_ui()
+        
+        # --- TAB 6: ANTI-DETECT BROWSER 🛡️ ---
+        self.browser_tab = QWidget()
+        self.tab_widget.addTab(self.browser_tab, "Anti-Detect Browser 🛡️")
+        self.init_browser_tab_ui()
+        self.browser_workers = {}  # profile_name -> BrowserWorker
+        
         # --- PHẦN BÊN DƯỚI DÙNG CHUNG CHO CẢ 2 TAB ---
         # Progress Bar
         self.progress_bar = QProgressBar()
@@ -4555,14 +4644,14 @@ class QHTDStoreDesktop(QMainWindow):
     def load_online_cards_config(self):
         config_path = os.path.join(get_app_dir(), "online_cards_config.json")
         online_mode = True
-        api_url = "https://toinhaphang.com"
+        api_url = "https://c69.us"
         api_token = ""
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 online_mode = data.get("online_mode", True)
-                api_url = data.get("api_url", "https://toinhaphang.com")
+                api_url = data.get("api_url", "https://c69.us")
                 api_token = data.get("api_token", "")
             except Exception:
                 pass
@@ -5075,7 +5164,7 @@ class QHTDStoreDesktop(QMainWindow):
                     self.handle_view_card(card_id)
 
     def check_for_updates(self):
-        api_url = self.db.api_url if (hasattr(self, "db") and self.db.api_url) else "https://toinhaphang.com"
+        api_url = self.db.api_url if (hasattr(self, "db") and self.db.api_url) else "https://c69.us"
         self.update_worker = UpdateCheckWorker(CLIENT_VERSION, api_url, self)
         self.update_worker.finished.connect(self.on_update_check_finished)
         self.update_worker.start()
@@ -7209,6 +7298,1055 @@ del "%~f0"
             self.log_auto("✅ Đã xóa giả lập vị trí GPS thành công (đưa về vị trí thực tế).", "success")
         else:
             self.log_auto(f"❌ Xóa giả lập vị trí GPS thất bại: {err_msg}", "error")
+
+    # ==================================================================
+    # --- ANTI-DETECT BROWSER 🛡️ TAB UI ---
+    # ==================================================================
+
+    def init_browser_tab_ui(self):
+        """Initialize the Anti-Detect Browser management tab UI."""
+        if not MUN_ANTI_BROWSER_AVAILABLE:
+            layout = QVBoxLayout(self.browser_tab)
+            layout.addWidget(QLabel("⚠️ Module mun_anti_browser chưa được cài đặt.\n"
+                                     "Vui lòng chạy: pip install nodriver"))
+            return
+
+        browser_layout = QHBoxLayout(self.browser_tab)
+        browser_layout.setContentsMargins(15, 15, 15, 15)
+        browser_layout.setSpacing(15)
+
+        # --- CỘT TRÁI: CẤU HÌNH ---
+        left_col = QWidget()
+        left_col.setFixedWidth(380)
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        # -- Group 1: Tạo Profile --
+        profile_group = QGroupBox("🔧 Tạo Profile Anti-Detect")
+        profile_grid = QGridLayout(profile_group)
+        profile_grid.setSpacing(8)
+
+        profile_grid.addWidget(QLabel("Tên profile:"), 0, 0)
+        self.browser_profile_name = QLineEdit()
+        self.browser_profile_name.setPlaceholderText("VD: Profile_1")
+        profile_grid.addWidget(self.browser_profile_name, 0, 1)
+
+        profile_grid.addWidget(QLabel("Hệ điều hành:"), 1, 0)
+        self.browser_os_combo = QComboBox()
+        self.browser_os_combo.addItems(["Windows", "macOS", "Linux", "Random"])
+        profile_grid.addWidget(self.browser_os_combo, 1, 1)
+
+        profile_grid.addWidget(QLabel("Độ phân giải:"), 2, 0)
+        self.browser_res_combo = QComboBox()
+        self.browser_res_combo.addItems([
+            "1920x1080", "1440x900", "1366x768", "2560x1440",
+            "1536x864", "1280x720", "Random"
+        ])
+        profile_grid.addWidget(self.browser_res_combo, 2, 1)
+
+        profile_grid.addWidget(QLabel("CPU cores:"), 3, 0)
+        self.browser_cpu_combo = QComboBox()
+        self.browser_cpu_combo.addItems(["4", "8", "12", "16", "Random"])
+        self.browser_cpu_combo.setCurrentIndex(1)  # default 8
+        profile_grid.addWidget(self.browser_cpu_combo, 3, 1)
+
+        self.browser_create_btn = QPushButton("➕ Tạo Profile Mới")
+        self.browser_create_btn.setObjectName("primaryButton")
+        self.browser_create_btn.clicked.connect(self.handle_create_browser_profile)
+        profile_grid.addWidget(self.browser_create_btn, 4, 0, 1, 2)
+
+        left_layout.addWidget(profile_group)
+
+        # -- Group 2: Proxy --
+        proxy_group = QGroupBox("🌐 Cấu Hình Proxy")
+        proxy_grid = QGridLayout(proxy_group)
+        proxy_grid.setSpacing(8)
+
+        proxy_grid.addWidget(QLabel("Loại proxy:"), 0, 0)
+        self.browser_proxy_type = QComboBox()
+        self.browser_proxy_type.addItems(["socks5", "http", "Không dùng proxy"])
+        proxy_grid.addWidget(self.browser_proxy_type, 0, 1)
+
+        proxy_grid.addWidget(QLabel("Proxy:"), 1, 0)
+        self.browser_proxy_input = QLineEdit()
+        self.browser_proxy_input.setPlaceholderText("host:port (VD: 1.2.3.4:1080)")
+        proxy_grid.addWidget(self.browser_proxy_input, 1, 1)
+
+        proxy_grid.addWidget(QLabel("Username:"), 2, 0)
+        self.browser_proxy_user = QLineEdit()
+        self.browser_proxy_user.setPlaceholderText("(tùy chọn)")
+        proxy_grid.addWidget(self.browser_proxy_user, 2, 1)
+
+        proxy_grid.addWidget(QLabel("Password:"), 3, 0)
+        self.browser_proxy_pass = QLineEdit()
+        self.browser_proxy_pass.setPlaceholderText("(tùy chọn)")
+        self.browser_proxy_pass.setEchoMode(QLineEdit.Password)
+        proxy_grid.addWidget(self.browser_proxy_pass, 3, 1)
+
+        left_layout.addWidget(proxy_group)
+
+        # -- Group 3: Hành động --
+        action_group = QGroupBox("🚀 Hành Động")
+        action_layout = QVBoxLayout(action_group)
+        action_layout.setSpacing(8)
+
+        self.browser_launch_btn = QPushButton("▶️ Mở Browser (Profile đã chọn)")
+        self.browser_launch_btn.setObjectName("primaryButton")
+        self.browser_launch_btn.clicked.connect(self.handle_launch_browser)
+        action_layout.addWidget(self.browser_launch_btn)
+
+        self.browser_stop_btn = QPushButton("⏹️ Dừng Browser")
+        self.browser_stop_btn.setObjectName("secondaryButton")
+        self.browser_stop_btn.setEnabled(False)
+        self.browser_stop_btn.clicked.connect(self.handle_stop_browser)
+        action_layout.addWidget(self.browser_stop_btn)
+
+        btn_row = QHBoxLayout()
+        self.browser_test_cf_btn = QPushButton("🧪 Test Cloudflare")
+        self.browser_test_cf_btn.setObjectName("secondaryButton")
+        self.browser_test_cf_btn.clicked.connect(self.handle_test_cloudflare)
+        btn_row.addWidget(self.browser_test_cf_btn)
+
+        self.browser_test_fp_btn = QPushButton("🔍 Test Fingerprint")
+        self.browser_test_fp_btn.setObjectName("secondaryButton")
+        self.browser_test_fp_btn.clicked.connect(self.handle_test_fingerprint)
+        btn_row.addWidget(self.browser_test_fp_btn)
+        action_layout.addLayout(btn_row)
+
+        btn_row2 = QHBoxLayout()
+        self.browser_test_iphey_btn = QPushButton("🛡️ Test iphey.com")
+        self.browser_test_iphey_btn.setObjectName("secondaryButton")
+        self.browser_test_iphey_btn.clicked.connect(self.handle_test_iphey)
+        btn_row2.addWidget(self.browser_test_iphey_btn)
+
+        self.browser_test_leak_btn = QPushButton("🌐 Test WebRTC Leak")
+        self.browser_test_leak_btn.setObjectName("secondaryButton")
+        self.browser_test_leak_btn.clicked.connect(self.handle_test_webrtc_leak)
+        btn_row2.addWidget(self.browser_test_leak_btn)
+        action_layout.addLayout(btn_row2)
+
+        # Status indicator
+        self.browser_status_label = QLabel("⏸️ Chưa chạy")
+        self.browser_status_label.setStyleSheet("font-size: 13px; color: #94a3b8; padding: 5px;")
+        action_layout.addWidget(self.browser_status_label)
+
+        left_layout.addWidget(action_group)
+        left_layout.addStretch()
+
+        browser_layout.addWidget(left_col)
+
+        # --- CỘT PHẢI: DANH SÁCH PROFILES ---
+        right_col = QWidget()
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        profiles_group = QGroupBox("📋 Danh Sách Browser Profiles")
+        profiles_layout = QVBoxLayout(profiles_group)
+        profiles_layout.setSpacing(8)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        self.browser_refresh_btn = QPushButton("🔄 Làm mới")
+        self.browser_refresh_btn.setObjectName("secondaryButton")
+        self.browser_refresh_btn.clicked.connect(self.load_browser_profiles_table)
+        toolbar.addWidget(self.browser_refresh_btn)
+
+        self.browser_delete_btn = QPushButton("🗑️ Xóa profile")
+        self.browser_delete_btn.setObjectName("secondaryButton")
+        self.browser_delete_btn.clicked.connect(self.handle_delete_browser_profile)
+        toolbar.addWidget(self.browser_delete_btn)
+
+        self.browser_pull_btn = QPushButton("☁️ Tải từ server")
+        self.browser_pull_btn.setObjectName("secondaryButton")
+        self.browser_pull_btn.clicked.connect(self.handle_pull_profiles_from_server)
+        toolbar.addWidget(self.browser_pull_btn)
+
+        self.browser_push_btn = QPushButton("⬆️ Đẩy lên server")
+        self.browser_push_btn.setObjectName("secondaryButton")
+        self.browser_push_btn.clicked.connect(self.handle_push_profile_to_server)
+        toolbar.addWidget(self.browser_push_btn)
+
+        toolbar.addStretch()
+        profiles_layout.addLayout(toolbar)
+
+        # Profiles Table
+        self.browser_profiles_table = QTableWidget()
+        self.browser_profiles_table.setColumnCount(6)
+        self.browser_profiles_table.setHorizontalHeaderLabels([
+            "Tên", "OS", "Độ phân giải", "Proxy", "Server ID", "Trạng thái"
+        ])
+        header = self.browser_profiles_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)          # Tên
+        header.setSectionResizeMode(1, QHeaderView.Interactive)      # OS
+        header.setSectionResizeMode(2, QHeaderView.Interactive)      # Độ phân giải
+        header.setSectionResizeMode(3, QHeaderView.Stretch)          # Proxy (co-stretch)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)      # Server ID
+        header.setSectionResizeMode(5, QHeaderView.Interactive)      # Trạng thái
+        
+        self.browser_profiles_table.setColumnWidth(1, 80)            # OS
+        self.browser_profiles_table.setColumnWidth(2, 110)           # Resolution
+        self.browser_profiles_table.setColumnWidth(4, 90)            # Server ID
+        self.browser_profiles_table.setColumnWidth(5, 110)           # Status
+        
+        self.browser_profiles_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.browser_profiles_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.browser_profiles_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.browser_profiles_table.verticalHeader().setDefaultSectionSize(35)
+        profiles_layout.addWidget(self.browser_profiles_table)
+
+        right_layout.addWidget(profiles_group)
+        browser_layout.addWidget(right_col, 1)
+
+        # Load saved profiles
+        self._browser_profiles_file = os.path.join(get_app_dir(), "browser_profiles.json")
+        self._browser_profiles = self._load_browser_profiles_json()
+        self.browser_workers = {}  # Track running browser instances by profile name
+        self.load_browser_profiles_table()
+
+    # --- Browser Profile Persistence (JSON) ---
+
+    def _load_browser_profiles_json(self):
+        """Load saved browser profiles from JSON file."""
+        try:
+            if os.path.exists(self._browser_profiles_file):
+                with open(self._browser_profiles_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            self.log(f"⚠️ Lỗi load browser profiles: {e}")
+        return []
+
+    def _save_browser_profiles_json(self):
+        """Save browser profiles to JSON file."""
+        try:
+            with open(self._browser_profiles_file, "w", encoding="utf-8") as f:
+                json.dump(self._browser_profiles, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.log(f"⚠️ Lỗi save browser profiles: {e}")
+
+    def load_browser_profiles_table(self):
+        """Populate the profiles QTableWidget from saved data."""
+        self._browser_profiles = self._load_browser_profiles_json()
+        self.browser_profiles_table.setRowCount(len(self._browser_profiles))
+        for row, profile in enumerate(self._browser_profiles):
+            name_item = QTableWidgetItem(profile.get("name", f"Profile_{row+1}"))
+            os_item = QTableWidgetItem(profile.get("profile_os", "Unknown"))
+            res_item = QTableWidgetItem(profile.get("profile_resolution", "1920x1080"))
+            proxy_text = profile.get("proxy_string", "")
+            proxy_item = QTableWidgetItem(proxy_text if proxy_text else "Không có")
+            # Server ID
+            server_id = profile.get("server_id", "")
+            server_id_item = QTableWidgetItem(str(server_id) if server_id else "—")
+            # Check if running
+            is_running = profile.get("name", "") in self.browser_workers
+            status_item = QTableWidgetItem("🟢 Đang chạy" if is_running else "⚪ Dừng")
+            for item in [name_item, os_item, res_item, proxy_item, server_id_item, status_item]:
+                item.setTextAlignment(Qt.AlignCenter)
+            self.browser_profiles_table.setItem(row, 0, name_item)
+            self.browser_profiles_table.setItem(row, 1, os_item)
+            self.browser_profiles_table.setItem(row, 2, res_item)
+            self.browser_profiles_table.setItem(row, 3, proxy_item)
+            self.browser_profiles_table.setItem(row, 4, server_id_item)
+            self.browser_profiles_table.setItem(row, 5, status_item)
+
+    # --- C69 API Integration ---
+
+    def _get_c69_api(self):
+        """Get a configured C69ProfileAPI instance, or None if not logged in."""
+        if not MUN_ANTI_BROWSER_AVAILABLE:
+            return None
+        config_path = os.path.join(get_app_dir(), "online_cards_config.json")
+        if not os.path.exists(config_path):
+            return None
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            api_url = data.get("api_url", "").rstrip("/")
+            api_token = data.get("api_token", "")
+            if api_url and api_token:
+                return C69ProfileAPI(api_url, api_token)
+        except Exception:
+            pass
+        return None
+
+    def handle_pull_profiles_from_server(self):
+        """Tải tất cả profiles từ server C69 và merge vào danh sách local."""
+        api = self._get_c69_api()
+        if not api:
+            QMessageBox.warning(self, "Chưa đăng nhập",
+                                "Vui lòng đăng nhập Storagon/C69 trước khi đồng bộ!")
+            return
+
+        self.log("☁️ Đang tải profiles từ server...")
+        self.browser_pull_btn.setEnabled(False)
+        try:
+            server_profiles = api.list_profiles()
+        except ConnectionError as e:
+            QMessageBox.critical(self, "Lỗi kết nối", str(e))
+            self.browser_pull_btn.setEnabled(True)
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Không thể tải profiles: {e}")
+            self.browser_pull_btn.setEnabled(True)
+            return
+
+        if not server_profiles:
+            self.log("ℹ️ Server không có profile nào.")
+            self.browser_pull_btn.setEnabled(True)
+            return
+
+        # Build lookup of existing local profiles by server_id
+        local_by_server_id = {}
+        for i, p in enumerate(self._browser_profiles):
+            sid = p.get("server_id")
+            if sid:
+                local_by_server_id[sid] = i
+
+        added = 0
+        updated = 0
+        for sp in server_profiles:
+            sid = sp.get("server_id")
+            if not sid:
+                continue
+
+            if sid in local_by_server_id:
+                # Update existing local profile with server data (server wins)
+                idx = local_by_server_id[sid]
+                local_name = self._browser_profiles[idx].get("name", "")
+                # Preserve local-only fields
+                for key, value in sp.items():
+                    if value is not None and value != "":
+                        self._browser_profiles[idx][key] = value
+                # Keep original local name if it was set
+                if local_name:
+                    self._browser_profiles[idx]["name"] = local_name
+                updated += 1
+            else:
+                # New profile from server — add to local
+                if not sp.get("name"):
+                    sp["name"] = f"Server_{sid}"
+                # Check name conflict
+                existing_names = {p.get("name") for p in self._browser_profiles}
+                if sp["name"] in existing_names:
+                    sp["name"] = f"{sp['name']}_{sid}"
+                self._browser_profiles.append(sp)
+                added += 1
+
+        self._save_browser_profiles_json()
+        self.load_browser_profiles_table()
+        self.log(f"☁️ Đồng bộ xong! Thêm mới: {added}, Cập nhật: {updated} profiles từ server.")
+        self.browser_pull_btn.setEnabled(True)
+
+    def handle_push_profile_to_server(self):
+        """Đẩy profile đang chọn lên server C69."""
+        api = self._get_c69_api()
+        if not api:
+            QMessageBox.warning(self, "Chưa đăng nhập",
+                                "Vui lòng đăng nhập Storagon/C69 trước khi đồng bộ!")
+            return
+
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            return
+
+        name = profile.get("name", "Unknown")
+        server_id = profile.get("server_id")
+
+        self.log(f"⬆️ Đang đẩy profile '{name}' lên server...")
+        self.browser_push_btn.setEnabled(False)
+
+        try:
+            if server_id:
+                # Update existing on server
+                result = api.update_profile(server_id, profile)
+                if result:
+                    self.log(f"✅ Đã cập nhật profile '{name}' trên server (ID: {server_id})")
+                else:
+                    self.log(f"❌ Lỗi cập nhật profile '{name}' trên server")
+            else:
+                # Create new on server
+                result = api.create_profile(profile)
+                if result and result.get("server_id"):
+                    # Save server_id back to local
+                    new_sid = result["server_id"]
+                    for p in self._browser_profiles:
+                        if p.get("name") == name:
+                            p["server_id"] = new_sid
+                            break
+                    self._save_browser_profiles_json()
+                    self.load_browser_profiles_table()
+                    self.log(f"✅ Đã tạo profile '{name}' trên server (ID: {new_sid})")
+                else:
+                    self.log(f"❌ Lỗi tạo profile '{name}' trên server")
+        except Exception as e:
+            self.log(f"❌ Lỗi đẩy profile lên server: {e}")
+        finally:
+            self.browser_push_btn.setEnabled(True)
+
+    def _auto_push_to_server(self, profile_config):
+        """Auto push profile to server after creation (non-blocking)."""
+        api = self._get_c69_api()
+        if not api:
+            return
+        try:
+            result = api.create_profile(profile_config)
+            if result and result.get("server_id"):
+                name = profile_config.get("name", "")
+                for p in self._browser_profiles:
+                    if p.get("name") == name:
+                        p["server_id"] = result["server_id"]
+                        break
+                self._save_browser_profiles_json()
+                self.load_browser_profiles_table()
+                self.log(f"☁️ Auto-sync: profile '{name}' → server (ID: {result['server_id']})")
+        except Exception as e:
+            self.log(f"⚠️ Auto-sync thất bại: {e}")
+
+    def _fetch_server_profile(self, profile_config):
+        """
+        Fetch latest profile data from server (server wins).
+        Returns updated profile_config or original if no server link.
+        """
+        server_id = profile_config.get("server_id")
+        if not server_id:
+            return profile_config
+
+        api = self._get_c69_api()
+        if not api:
+            return profile_config
+
+        try:
+            server_data = api.get_profile(server_id)
+            if server_data:
+                # Server wins: merge server data into local config
+                local_name = profile_config.get("name", "")
+                for key, value in server_data.items():
+                    if value is not None and value != "":
+                        profile_config[key] = value
+                # Preserve local name
+                if local_name:
+                    profile_config["name"] = local_name
+                self.log(f"☁️ Đã tải cấu hình mới nhất từ server (ID: {server_id})")
+            else:
+                self.log(f"⚠️ Profile server ID={server_id} không tìm thấy, dùng config local")
+        except Exception as e:
+            self.log(f"⚠️ Không thể tải profile từ server: {e}")
+
+        return profile_config
+
+    # --- Browser Handler Methods ---
+
+    def handle_create_browser_profile(self):
+        """Create a new anti-detect browser profile."""
+        if not MUN_ANTI_BROWSER_AVAILABLE:
+            QMessageBox.warning(self, "Lỗi", "Module mun_anti_browser chưa sẵn sàng.")
+            return
+
+        name = self.browser_profile_name.text().strip()
+        if not name:
+            name = f"Profile_{len(self._browser_profiles) + 1}"
+
+        # Check duplicate name
+        for p in self._browser_profiles:
+            if p.get("name") == name:
+                QMessageBox.warning(self, "Trùng tên", f"Profile '{name}' đã tồn tại!")
+                return
+
+        os_choice = self.browser_os_combo.currentText()
+        res_choice = self.browser_res_combo.currentText()
+        cpu_choice = self.browser_cpu_combo.currentText()
+
+        # Get proxy config
+        proxy_type = self.browser_proxy_type.currentText()
+        proxy_string = self.browser_proxy_input.text().strip()
+        proxy_user = self.browser_proxy_user.text().strip()
+        proxy_pass = self.browser_proxy_pass.text().strip()
+
+        # Use ProfileManager to generate a random profile
+        pm = ProfileManager()
+
+        # Map OS dropdown to profile OS
+        os_map = {"Windows": "Windows", "macOS": "macOS", "Linux": "Linux"}
+        target_os = os_map.get(os_choice, None)
+
+        # Generate profile
+        profile_config = pm.create_random_profile(
+            socks5=proxy_string if proxy_type == "socks5" else "",
+            proxy=proxy_string if proxy_type == "http" else "",
+            proxy_username=proxy_user,
+            proxy_password=proxy_pass,
+        )
+
+        # Override OS if specified
+        if target_os:
+            profile_config["profile_os"] = target_os
+
+        # Override resolution if specified
+        if res_choice != "Random":
+            profile_config["profile_resolution"] = res_choice
+
+        # Override CPU if specified
+        if cpu_choice != "Random":
+            profile_config["profile_cpu"] = int(cpu_choice)
+
+        # Add metadata for persistence
+        profile_config["name"] = name
+        profile_config["proxy_string"] = proxy_string
+        profile_config["proxy_type"] = proxy_type if proxy_type != "Không dùng proxy" else ""
+        profile_config["proxy_username"] = proxy_user
+        profile_config["proxy_password"] = proxy_pass
+
+        # Save locally
+        self._browser_profiles.append(profile_config)
+        self._save_browser_profiles_json()
+        self.load_browser_profiles_table()
+
+        self.log(f"✅ Đã tạo browser profile: {name} (OS: {profile_config['profile_os']}, "
+                 f"Resolution: {profile_config['profile_resolution']})")
+        self.browser_profile_name.clear()
+
+        # Auto push to server (if logged in)
+        self._auto_push_to_server(profile_config)
+
+    def _get_selected_browser_profile(self):
+        """Get the currently selected profile from the table."""
+        rows = self.browser_profiles_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.warning(self, "Chọn profile", "Vui lòng chọn một profile trong bảng!")
+            return None
+        row_idx = rows[0].row()
+        if row_idx < 0 or row_idx >= len(self._browser_profiles):
+            return None
+        return self._browser_profiles[row_idx]
+
+    def handle_launch_browser(self):
+        """Launch an anti-detect browser with the selected profile."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            return
+
+        name = profile.get("name", "Unknown")
+
+        # Check if already running
+        if name in self.browser_workers:
+            QMessageBox.information(self, "Đang chạy",
+                                     f"Browser '{name}' đang chạy. Hãy dừng trước khi mở lại.")
+            return
+
+        # Fetch latest config from server (server wins)
+        profile = self._fetch_server_profile(profile)
+
+        proxy_string = profile.get("proxy_string", "")
+        proxy_type = profile.get("proxy_type", "socks5")
+        proxy_user = profile.get("proxy_username", "")
+        proxy_pass = profile.get("proxy_password", "")
+
+        worker = BrowserWorker(
+            profile_config=profile,
+            profile_name=name,
+            proxy_string=proxy_string,
+            proxy_type=proxy_type,
+            proxy_username=proxy_user,
+            proxy_password=proxy_pass,
+        )
+        worker.log_signal.connect(self.log)
+        worker.status_signal.connect(
+            lambda msg, running, n=name: self._on_browser_status_changed(n, msg, running)
+        )
+        worker.start()
+
+        self.browser_workers[name] = worker
+        self.browser_launch_btn.setEnabled(False)
+        self.browser_stop_btn.setEnabled(True)
+        self.browser_status_label.setText(f"🟢 {name} đang khởi chạy...")
+        self.browser_status_label.setStyleSheet("font-size: 13px; color: #10b981; padding: 5px;")
+        self.load_browser_profiles_table()
+
+    def handle_stop_browser(self):
+        """Stop the currently running browser."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            # If no profile selected, stop all
+            if self.browser_workers:
+                for name, worker in list(self.browser_workers.items()):
+                    worker.stop_browser()
+                    self.log(f"⏹️ Đang dừng browser [{name}]...")
+            return
+
+        name = profile.get("name", "")
+        if name in self.browser_workers:
+            self.browser_workers[name].stop_browser()
+            self.log(f"⏹️ Đang dừng browser [{name}]...")
+        else:
+            QMessageBox.information(self, "Thông báo",
+                                     f"Browser '{name}' không đang chạy.")
+
+    def _on_browser_status_changed(self, profile_name, message, is_running):
+        """Handle browser status change signal."""
+        if not is_running:
+            # Clean up worker reference
+            if profile_name in self.browser_workers:
+                del self.browser_workers[profile_name]
+
+            # Update UI
+            if not self.browser_workers:
+                self.browser_launch_btn.setEnabled(True)
+                self.browser_stop_btn.setEnabled(False)
+                self.browser_status_label.setText("⏸️ Chưa chạy")
+                self.browser_status_label.setStyleSheet("font-size: 13px; color: #94a3b8; padding: 5px;")
+            else:
+                running_names = ", ".join(self.browser_workers.keys())
+                self.browser_status_label.setText(f"🟢 Đang chạy: {running_names}")
+        else:
+            self.browser_status_label.setText(f"🟢 {profile_name}: {message}")
+            self.browser_status_label.setStyleSheet("font-size: 13px; color: #10b981; padding: 5px;")
+            self.browser_launch_btn.setEnabled(True)  # Allow opening more profiles
+
+        self.load_browser_profiles_table()
+
+    def handle_test_cloudflare(self):
+        """Launch a browser to test Cloudflare bypass with nowsecure.nl."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            # Create a temporary random profile for testing
+            pm = ProfileManager()
+            profile = pm.create_random_profile()
+            profile["name"] = "_test_cloudflare"
+
+        name = "_test_cf_" + str(random.randint(1000, 9999))
+        worker = BrowserWorker(
+            profile_config=profile,
+            profile_name=name,
+            start_url="https://nowsecure.nl/",
+        )
+        worker.log_signal.connect(self.log)
+        worker.status_signal.connect(
+            lambda msg, running, n=name: self._on_browser_status_changed(n, msg, running)
+        )
+        worker.start()
+        self.browser_workers[name] = worker
+        self.log("🧪 Đang mở browser test Cloudflare (nowsecure.nl)...")
+        self.browser_stop_btn.setEnabled(True)
+
+    def handle_test_fingerprint(self):
+        """Launch a browser to test fingerprint with bot.sannysoft.com."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            pm = ProfileManager()
+            profile = pm.create_random_profile()
+            profile["name"] = "_test_fingerprint"
+
+        name = "_test_fp_" + str(random.randint(1000, 9999))
+        worker = BrowserWorker(
+            profile_config=profile,
+            profile_name=name,
+            start_url="https://bot.sannysoft.com/",
+        )
+        worker.log_signal.connect(self.log)
+        worker.status_signal.connect(
+            lambda msg, running, n=name: self._on_browser_status_changed(n, msg, running)
+        )
+        worker.start()
+        self.browser_workers[name] = worker
+        self.log("🔍 Đang mở browser test Fingerprint (bot.sannysoft.com)...")
+        self.browser_stop_btn.setEnabled(True)
+
+    def handle_test_iphey(self):
+        """Launch a browser to test fingerprint with iphey.com."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            pm = ProfileManager()
+            profile = pm.create_random_profile()
+            profile["name"] = "_test_iphey"
+
+        name = "_test_iphey_" + str(random.randint(1000, 9999))
+        worker = BrowserWorker(
+            profile_config=profile,
+            profile_name=name,
+            start_url="https://iphey.com/",
+        )
+        worker.log_signal.connect(self.log)
+        worker.status_signal.connect(
+            lambda msg, running, n=name: self._on_browser_status_changed(n, msg, running)
+        )
+        worker.start()
+        self.browser_workers[name] = worker
+        self.log("🛡️ Đang mở browser test iphey.com (fingerprint check)...")
+        self.browser_stop_btn.setEnabled(True)
+
+    def handle_test_webrtc_leak(self):
+        """Launch a browser to test WebRTC leak with browserleaks.com."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            pm = ProfileManager()
+            profile = pm.create_random_profile()
+            profile["name"] = "_test_webrtc"
+
+        name = "_test_webrtc_" + str(random.randint(1000, 9999))
+        worker = BrowserWorker(
+            profile_config=profile,
+            profile_name=name,
+            start_url="https://browserleaks.com/webrtc",
+        )
+        worker.log_signal.connect(self.log)
+        worker.status_signal.connect(
+            lambda msg, running, n=name: self._on_browser_status_changed(n, msg, running)
+        )
+        worker.start()
+        self.browser_workers[name] = worker
+        self.log("🌐 Đang mở browser test WebRTC Leak (browserleaks.com)...")
+        self.browser_stop_btn.setEnabled(True)
+
+    def handle_delete_browser_profile(self):
+        """Delete the selected browser profile."""
+        profile = self._get_selected_browser_profile()
+        if not profile:
+            return
+
+        name = profile.get("name", "Unknown")
+
+        # Don't delete if running
+        if name in self.browser_workers:
+            QMessageBox.warning(self, "Đang chạy",
+                                 f"Browser '{name}' đang chạy. Dừng trước khi xóa!")
+            return
+
+        reply = QMessageBox.question(
+            self, "Xác nhận xóa",
+            f"Bạn có chắc muốn xóa profile '{name}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self._browser_profiles = [p for p in self._browser_profiles if p.get("name") != name]
+            self._save_browser_profiles_json()
+            self.load_browser_profiles_table()
+            self.log(f"🗑️ Đã xóa browser profile: {name}")
+
+    # --- ĐỊNH TUYẾN 🌐 TAB UI ---
+    def init_routing_tab_ui(self):
+
+        from PyQt5.QtWidgets import QFormLayout, QTableWidget, QTableWidgetItem, QHeaderView
+        
+        routing_layout = QHBoxLayout(self.routing_tab)
+        routing_layout.setContentsMargins(15, 15, 15, 15)
+        routing_layout.setSpacing(15)
+        
+        # Left Panel: Configuration
+        left_panel = QGroupBox("⚙️ Cấu Hình Mạng Định Tuyến")
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(10)
+        
+        # Interfaces
+        left_layout.addWidget(QLabel("<b>Card mạng WAN (Internet nguồn):</b>"))
+        self.routing_wan_combo = QComboBox()
+        left_layout.addWidget(self.routing_wan_combo)
+        
+        left_layout.addWidget(QLabel("<b>Card mạng LAN (Kết nối Aruba AP):</b>"))
+        self.routing_lan_combo = QComboBox()
+        left_layout.addWidget(self.routing_lan_combo)
+        
+        self.routing_refresh_btn = QPushButton("🔄 Cập nhật danh sách Card Mạng")
+        self.routing_refresh_btn.setObjectName("secondaryButton")
+        self.routing_refresh_btn.clicked.connect(self.handle_routing_refresh_interfaces)
+        left_layout.addWidget(self.routing_refresh_btn)
+        
+        left_layout.addSpacing(10)
+        left_layout.addWidget(QLabel("<b>Cài đặt dải DHCP:</b>"))
+        
+        form_layout = QFormLayout()
+        self.routing_dhcp_start_input = QLineEdit("192.168.88.10")
+        self.routing_dhcp_end_input = QLineEdit("192.168.88.250")
+        self.routing_dns_input = QLineEdit("8.8.8.8")
+        form_layout.addRow("DHCP Dải đầu:", self.routing_dhcp_start_input)
+        form_layout.addRow("DHCP Dải cuối:", self.routing_dhcp_end_input)
+        form_layout.addRow("DNS Server:", self.routing_dns_input)
+        left_layout.addLayout(form_layout)
+        
+        left_layout.addStretch()
+        
+        # Right Panel: Operations & Devices
+        right_panel = QGroupBox("💻 Trình Điều Khiển & Thiết Bị Kết Nối")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(12)
+        
+        # Operations buttons
+        btn_layout = QHBoxLayout()
+        self.routing_start_btn = QPushButton("⚡ KHỞI ĐỘNG ROUTER")
+        self.routing_start_btn.clicked.connect(self.handle_routing_start)
+        
+        self.routing_stop_btn = QPushButton("🛑 DỪNG ROUTER")
+        self.routing_stop_btn.setObjectName("dangerButton")
+        self.routing_stop_btn.clicked.connect(self.handle_routing_stop)
+        
+        btn_layout.addWidget(self.routing_start_btn)
+        btn_layout.addWidget(self.routing_stop_btn)
+        right_layout.addLayout(btn_layout)
+        
+        self.routing_dashboard_btn = QPushButton("🌐 MỞ DASHBOARD ĐIỀU KHIỂN CHÍNH")
+        self.routing_dashboard_btn.clicked.connect(self.handle_routing_dashboard_open)
+        right_layout.addWidget(self.routing_dashboard_btn)
+        
+        # Status indicators
+        status_layout = QHBoxLayout()
+        self.lbl_dhcp_status = QLabel("DHCP: 🛑 Tắt")
+        self.lbl_dhcp_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+        self.lbl_api_status = QLabel("FastAPI Dashboard: 🛑 Tắt")
+        self.lbl_api_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+        self.lbl_singbox_status = QLabel("Sing-Box: 🛑 Tắt")
+        self.lbl_singbox_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+        
+        status_layout.addWidget(self.lbl_dhcp_status)
+        status_layout.addWidget(self.lbl_api_status)
+        status_layout.addWidget(self.lbl_singbox_status)
+        right_layout.addLayout(status_layout)
+        
+        # Connected devices table
+        right_layout.addWidget(QLabel("<b>Danh sách thiết bị nhận mạng (DHCP leases):</b>"))
+        self.routing_devices_table = QTableWidget()
+        self.routing_devices_table.setColumnCount(4)
+        self.routing_devices_table.setHorizontalHeaderLabels(["Địa chỉ MAC", "Địa chỉ IP", "Tên thiết bị", "Thời gian"])
+        self.routing_devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.routing_devices_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.routing_devices_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        right_layout.addWidget(self.routing_devices_table)
+        
+        routing_layout.addWidget(left_panel, 4)
+        routing_layout.addWidget(right_panel, 6)
+        
+        # Initialize and auto-detect interfaces
+        self.handle_routing_refresh_interfaces()
+        
+        # Start status update timer
+        self.routing_timer = QTimer(self)
+        self.routing_timer.timeout.connect(self.update_routing_statuses)
+        self.routing_timer.start(3000)
+
+    def handle_routing_refresh_interfaces(self):
+        self.routing_wan_combo.clear()
+        self.routing_lan_combo.clear()
+        
+        # PowerShell command to get interfaces
+        cmd = "powershell -Command \"Get-NetIPInterface | Where-Object AddressFamily -eq IPv4 | Select-Object InterfaceAlias | ConvertTo-Json\""
+        import subprocess
+        try:
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8")
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout.strip())
+                if isinstance(data, dict):
+                    data = [data]
+                
+                interfaces = sorted(list(set([x["InterfaceAlias"] for x in data if "InterfaceAlias" in x])))
+                for name in interfaces:
+                    self.routing_wan_combo.addItem(name)
+                    self.routing_lan_combo.addItem(name)
+                
+                # Auto select WAN if default route is found
+                gw_cmd = "powershell -Command \"Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -ExpandProperty InterfaceAlias\""
+                gw_res = subprocess.run(gw_cmd, shell=True, capture_output=True, text=True, encoding="utf-8")
+                if gw_res.returncode == 0 and gw_res.stdout.strip():
+                    wan_name = gw_res.stdout.strip().split("\n")[0].strip()
+                    index = self.routing_wan_combo.findText(wan_name)
+                    if index >= 0:
+                        self.routing_wan_combo.setCurrentIndex(index)
+                    
+                    # Auto select LAN (usually Ethernet 3 or another adapter not WAN)
+                    for i, name in enumerate(interfaces):
+                        if name != wan_name and "Ethernet" in name:
+                            self.routing_lan_combo.setCurrentIndex(i)
+                            break
+        except Exception as e:
+            self.log(f"Lỗi quét Card Mạng: {e}")
+
+    def handle_routing_start(self):
+        wan_if = self.routing_wan_combo.currentText()
+        lan_if = self.routing_lan_combo.currentText()
+        dhcp_start = self.routing_dhcp_start_input.text().strip()
+        dhcp_end = self.routing_dhcp_end_input.text().strip()
+        dns_server = self.routing_dns_input.text().strip()
+        
+        if not wan_if or not lan_if:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn đầy đủ Card mạng WAN và LAN.")
+            return
+            
+        if wan_if == lan_if:
+            QMessageBox.warning(self, "Cảnh báo", "Card mạng WAN và LAN không được trùng nhau.")
+            return
+
+        self.log(f"Bắt đầu thiết lập định tuyến mạng: WAN={wan_if}, LAN={lan_if}...")
+        
+        # Get path to phonefarm-router directory
+        router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
+        config_path = os.path.join(router_dir, "config.json")
+        
+        # Update config.json
+        try:
+            config_data = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config_data = json.load(f)
+                    
+            config_data["lan_interface"] = lan_if
+            config_data["wan_interface"] = wan_if
+            config_data["dhcp_range_start"] = dhcp_start
+            config_data["dhcp_range_end"] = dhcp_end
+            config_data["dns_server"] = dns_server
+            
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+                
+            self.log("Đã cập nhật cấu hình config.json.")
+        except Exception as e:
+            self.log(f"Lỗi ghi cấu hình config.json: {e}")
+            QMessageBox.critical(self, "Lỗi", f"Không thể ghi cấu hình config.json: {e}")
+            return
+            
+        # Get LAN adapter index to assign IP address
+        # Check if LAN interface already has 192.168.88.1, if not, set static IP
+        ip_cmd = f"powershell -Command \"Get-NetIPAddress -InterfaceAlias '{lan_if}' -IPAddress '192.168.88.1' -ErrorAction SilentlyContinue\""
+        import subprocess
+        ip_res = subprocess.run(ip_cmd, shell=True, capture_output=True, text=True)
+        
+        if "192.168.88.1" not in ip_res.stdout:
+            self.log(f"Đang đặt IP tĩnh 192.168.88.1 cho Card LAN '{lan_if}' (Sẽ yêu cầu quyền UAC)...")
+            
+            # Create a temporary script to set static IP
+            ps_script = (
+                f"Remove-NetIPAddress -InterfaceAlias '{lan_if}' -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue; "
+                f"New-NetIPAddress -InterfaceAlias '{lan_if}' -IPAddress '192.168.88.1' -PrefixLength 24 -DefaultGateway $null; "
+                f"Set-DnsClientServerAddress -InterfaceAlias '{lan_if}' -ServerAddresses ('8.8.8.8','1.1.1.1')"
+            )
+            
+            cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_script}' -Verb RunAs -WindowStyle Hidden\""
+            subprocess.run(cmd_run, shell=True)
+            self.log("Đã gửi yêu cầu đặt IP tĩnh cho card LAN. Vui lòng bấm Yes nếu hiện UAC.")
+            
+        # Start DHCP Server in background as Admin
+        self.log("Đang khởi động DHCP Server (Sẽ yêu cầu quyền UAC)...")
+        dhcp_script_path = os.path.join(router_dir, "scratch", "run_dhcp.py")
+        dhcp_cmd = f"powershell -Command \"Start-Process 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\python.exe' -ArgumentList '{dhcp_script_path}' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+        subprocess.run(dhcp_cmd, shell=True)
+        
+        # Start FastAPI / Uvicorn Server in background as Admin
+        self.log("Đang khởi động API Dashboard Server (Sẽ yêu cầu quyền UAC)...")
+        api_cmd = f"powershell -Command \"Start-Process 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\python.exe' -ArgumentList '-m uvicorn app.api:app --host 0.0.0.0 --port 8000' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+        subprocess.run(api_cmd, shell=True)
+        
+        self.log("Đã kích hoạt tiến trình định tuyến. Vui lòng đồng ý các hộp thoại UAC (nếu có).")
+        QMessageBox.information(self, "Thông báo", "Đã gửi lệnh khởi động hệ thống định tuyến mạng. Vui lòng đồng ý quyền Administrator (UAC) trên màn hình và đợi vài giây để hệ thống kích hoạt.")
+
+    def handle_routing_stop(self):
+        self.log("Đang dừng toàn bộ hệ thống định tuyến (Tắt DHCP, FastAPI và Sing-Box)...")
+        
+        # Kill processes binding to port 67 UDP and port 8000 TCP, and sing-box
+        ps_kill = (
+            "$p = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue; "
+            "if ($p) { Stop-Process -Id $p.OwningProcess -Force -ErrorAction SilentlyContinue }; "
+            "$p2 = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue; "
+            "if ($p2) { Stop-Process -Id $p2.OwningProcess -Force -ErrorAction SilentlyContinue }; "
+            "Stop-Process -Name 'sing-box' -Force -ErrorAction SilentlyContinue"
+        )
+        
+        cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_kill}' -Verb RunAs -WindowStyle Hidden\""
+        import subprocess
+        subprocess.run(cmd_run, shell=True)
+        self.log("Đã gửi lệnh dừng hệ thống định tuyến. Vui lòng đồng ý UAC.")
+        QMessageBox.information(self, "Thông báo", "Đã gửi lệnh dừng hệ thống định tuyến. Vui lòng đồng ý UAC.")
+
+    def handle_routing_dashboard_open(self):
+        import webbrowser
+        webbrowser.open("http://127.0.0.1:8000/")
+
+    def update_routing_statuses(self):
+        import socket
+        import subprocess
+        import os
+        
+        # 1. Check DHCP Server status (check if port 67 UDP is bound)
+        dhcp_running = False
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.bind(('192.168.88.1', 67))
+            s.close()
+        except OSError:
+            s.close()
+            dhcp_running = True
+            
+        if dhcp_running:
+            self.lbl_dhcp_status.setText("DHCP: 🟢 Chạy")
+            self.lbl_dhcp_status.setStyleSheet("font-weight: bold; color: #22c55e;")
+        else:
+            self.lbl_dhcp_status.setText("DHCP: 🛑 Tắt")
+            self.lbl_dhcp_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+            
+        # 2. Check API Dashboard status (check if port 8000 TCP is open)
+        api_running = False
+        s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s2.settimeout(0.2)
+        try:
+            s2.connect(('127.0.0.1', 8000))
+            s2.close()
+            api_running = True
+        except Exception:
+            s2.close()
+            
+        if api_running:
+            self.lbl_api_status.setText("FastAPI Dashboard: 🟢 Chạy")
+            self.lbl_api_status.setStyleSheet("font-weight: bold; color: #22c55e;")
+        else:
+            self.lbl_api_status.setText("FastAPI Dashboard: 🛑 Tắt")
+            self.lbl_api_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+            
+        # 3. Check Sing-Box status (check if sing-box.exe process is running)
+        singbox_running = False
+        try:
+            res = subprocess.run("tasklist /FI \"IMAGENAME eq sing-box.exe\"", shell=True, capture_output=True, text=True)
+            singbox_running = "sing-box.exe" in res.stdout
+        except Exception:
+            pass
+            
+        if singbox_running:
+            self.lbl_singbox_status.setText("Sing-Box: 🟢 Chạy")
+            self.lbl_singbox_status.setStyleSheet("font-weight: bold; color: #22c55e;")
+        else:
+            self.lbl_singbox_status.setText("Sing-Box: 🛑 Tắt")
+            self.lbl_singbox_status.setStyleSheet("font-weight: bold; color: #ef4444;")
+            
+        # 4. Load connected devices from hosts.csv
+        router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
+        hosts_csv_path = os.path.join(router_dir, "hosts.csv")
+        
+        if os.path.exists(hosts_csv_path):
+            devices = []
+            try:
+                with open(hosts_csv_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(";")
+                        if len(parts) >= 2:
+                            mac = parts[0].strip().upper()
+                            ip = parts[1].strip()
+                            hostname = parts[2].strip() if len(parts) >= 3 else ""
+                            last_used_ts = parts[3].strip() if len(parts) >= 4 else ""
+                            
+                            time_str = ""
+                            if last_used_ts.isdigit():
+                                import datetime
+                                dt = datetime.datetime.fromtimestamp(int(last_used_ts))
+                                time_str = dt.strftime("%H:%M:%S %d/%m")
+                                
+                            if mac and ip and ip != "0.0.0.0" and ip.startswith("192.168.88."):
+                                devices.append((mac, ip, hostname or "Device", time_str))
+            except Exception:
+                pass
+                
+            # Update table widget
+            self.routing_devices_table.setRowCount(len(devices))
+            for row, dev in enumerate(devices):
+                for col in range(4):
+                    item = QTableWidgetItem(dev[col])
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.routing_devices_table.setItem(row, col, item)
 
 
 

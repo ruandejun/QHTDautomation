@@ -5,7 +5,10 @@ a = Analysis(
     ['QHTDautomationDesktop\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[('QHTDautomationDesktop/style.qss', '.')],
+    datas=[
+        ('QHTDautomationDesktop/style.qss', '.'),
+        ('QHTDautomationDesktop/mun_anti_browser/inject_scripts', 'mun_anti_browser/inject_scripts'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
