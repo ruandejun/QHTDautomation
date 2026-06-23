@@ -235,6 +235,20 @@ class CardDatabase:
 
 
 # ============================================================================
+# HELPER FOR ASYNC/SYNC COMPATIBILITY (pymobiledevice3 async version compatibility)
+# ============================================================================
+def run_async_or_sync(func, *args, **kwargs):
+    import asyncio
+    if asyncio.iscoroutinefunction(func):
+        return asyncio.run(func(*args, **kwargs))
+    else:
+        res = func(*args, **kwargs)
+        if asyncio.iscoroutine(res):
+            return asyncio.run(res)
+        return res
+
+
+# ============================================================================
 # WORKER THREADS
 # ============================================================================
 class DeviceScanWorker(QThread):
@@ -248,11 +262,12 @@ class DeviceScanWorker(QThread):
                 self.error.emit("pymobiledevice3 chưa cài đặt")
                 return
             from pymobiledevice3.usbmux import list_devices
-            devices = list_devices()
+            from pymobiledevice3.lockdown import create_using_usbmux
+            devices = run_async_or_sync(list_devices)
             results = []
             for dev in devices:
                 try:
-                    lockdown = create_using_usbmux(serial=dev.serial)
+                    lockdown = run_async_or_sync(create_using_usbmux, serial=dev.serial)
                     info = {
                         "serial": dev.serial,
                         "name": lockdown.display_name,
@@ -409,11 +424,11 @@ class QHTDBridge(QObject):
                 return json.dumps({"error": "pymobiledevice3 chưa cài đặt"})
             
             from pymobiledevice3.usbmux import list_devices
-            devices = list_devices()
+            devices = run_async_or_sync(list_devices)
             results = []
             for dev in devices:
                 try:
-                    lockdown = create_using_usbmux(serial=dev.serial)
+                    lockdown = run_async_or_sync(create_using_usbmux, serial=dev.serial)
                     results.append({
                         "serial": dev.serial,
                         "name": lockdown.display_name,
@@ -434,8 +449,9 @@ class QHTDBridge(QObject):
         try:
             if not PYMOBILEDEVICE3_AVAILABLE:
                 return json.dumps({"error": "pymobiledevice3 chưa cài đặt"})
-            lockdown = create_using_usbmux(serial=serial)
-            apps = InstallationProxyService(lockdown=lockdown).get_apps()
+            lockdown = run_async_or_sync(create_using_usbmux, serial=serial)
+            iproxy = InstallationProxyService(lockdown=lockdown)
+            apps = run_async_or_sync(iproxy.get_apps)
             app_list = []
             for bundle_id, info in apps.items():
                 app_list.append({
