@@ -180,9 +180,6 @@ class NodriverBrowserManager:
             --disable-infobars, --disable-dev-shm-usage
         """
         args = [
-            # Core anti-detection
-            "--disable-blink-features=AutomationControlled",
-
             # Disable various detections
             "--disable-component-update",
             "--disable-default-apps",
