@@ -965,6 +965,22 @@ class QHTDStoreDesktop(QMainWindow):
                 self.bridge.automation_worker.wait(3000)
         event.accept()
 
+    def take_test_screenshot(self):
+        """Take a screenshot of the main window and save it to the artifacts folder for verification"""
+        try:
+            artifact_dir = r"C:\Users\Admin\.gemini\antigravity-ide\brain\097d037d-cccf-4aa3-810d-46f4d5d6e18a"
+            os.makedirs(artifact_dir, exist_ok=True)
+            screenshot_path = os.path.join(artifact_dir, "ipadowngrade_test.png")
+            
+            pixmap = self.grab()
+            success = pixmap.save(screenshot_path, "PNG")
+            print(f"[QHTD TEST] Screenshot saved to {screenshot_path}: {success}", flush=True)
+            
+            # Since this is a test run, close the app after capturing
+            QTimer.singleShot(1000, QApplication.instance().quit)
+        except Exception as e:
+            print(f"[QHTD TEST ERROR] Failed to take screenshot: {e}", flush=True)
+
 
 # ============================================================================
 # TOKEN VERIFICATION & LOGIN
