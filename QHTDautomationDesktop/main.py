@@ -888,6 +888,7 @@ class QHTDStoreDesktop(QMainWindow):
         # Setup QWebChannel bridge
         self.bridge = QHTDBridge(self)
         self.bridge._cookie_jar = []  # shared cookie jar reference
+        self._load_cookies_from_disk()
         channel = QWebChannel(self)
         channel.registerObject("qhtdBridge", self.bridge)
         page.setWebChannel(channel)
@@ -905,7 +906,7 @@ class QHTDStoreDesktop(QMainWindow):
 
     # --- Cookie sharing helpers ---
     def _on_cookie_added(self, cookie):
-        """Khi browser thêm cookie → sync sang Python cookie jar"""
+        """Khi browser thêm cookie → sync sang Python cookie jar và lưu vào disk"""
         if not self.bridge:
             return
         cookie_dict = {
@@ -920,20 +921,27 @@ class QHTDStoreDesktop(QMainWindow):
         jar = self.bridge._cookie_jar
         for i, c in enumerate(jar):
             if c['name'] == cookie_dict['name'] and c['domain'] == cookie_dict['domain']:
+                if c['value'] == cookie_dict['value']:
+                    return
                 jar[i] = cookie_dict
+                self._save_cookies_to_disk()
                 return
         jar.append(cookie_dict)
+        self._save_cookies_to_disk()
 
     def _on_cookie_removed(self, cookie):
-        """Khi browser xóa cookie → remove khỏi Python cookie jar"""
+        """Khi browser xóa cookie → remove khỏi Python cookie jar và lưu vào disk"""
         if not self.bridge:
             return
         name = bytes(cookie.name()).decode('utf-8', errors='replace')
         domain = cookie.domain()
+        old_len = len(self.bridge._cookie_jar)
         self.bridge._cookie_jar = [
             c for c in self.bridge._cookie_jar
             if not (c['name'] == name and c['domain'] == domain)
         ]
+        if len(self.bridge._cookie_jar) != old_len:
+            self._save_cookies_to_disk()
 
     def on_page_loaded(self, ok):
         """Sau khi page load xong, inject bridge detection script"""
@@ -980,6 +988,45 @@ class QHTDStoreDesktop(QMainWindow):
             QTimer.singleShot(1000, QApplication.instance().quit)
         except Exception as e:
             print(f"[QHTD TEST ERROR] Failed to take screenshot: {e}", flush=True)
+
+    def _save_cookies_to_disk(self):
+        """Lưu cookie jar xuống file json để khôi phục sau khi khởi động app"""
+        try:
+            cookies_file = os.path.join(get_app_dir(), "session_cookies.json")
+            with open(cookies_file, "w", encoding="utf-8") as f:
+                json.dump(self.bridge._cookie_jar, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[QHTD COOKIE SAVE ERROR] {e}", flush=True)
+
+    def _load_cookies_from_disk(self):
+        """Đọc cookies từ file json và nạp vào cookie store của WebEngine"""
+        try:
+            cookies_file = os.path.join(get_app_dir(), "session_cookies.json")
+            if not os.path.exists(cookies_file):
+                return
+            with open(cookies_file, "r", encoding="utf-8") as f:
+                saved_cookies = json.load(f)
+            
+            if not isinstance(saved_cookies, list):
+                return
+            
+            self.bridge._cookie_jar = saved_cookies
+            
+            for c_dict in saved_cookies:
+                qcookie = QNetworkCookie(
+                    c_dict.get('name', '').encode('utf-8'),
+                    c_dict.get('value', '').encode('utf-8')
+                )
+                qcookie.setDomain(c_dict.get('domain', ''))
+                qcookie.setPath(c_dict.get('path', '/'))
+                qcookie.setSecure(c_dict.get('secure', False))
+                qcookie.setHttpOnly(c_dict.get('httponly', False))
+                
+                self._cookie_store.setCookie(qcookie, QUrl(C69_BASE_URL))
+                
+            print(f"[QHTD COOKIES] Loaded {len(saved_cookies)} cookies from disk successfully", flush=True)
+        except Exception as e:
+            print(f"[QHTD COOKIE LOAD ERROR] {e}", flush=True)
 
 
 # ============================================================================
