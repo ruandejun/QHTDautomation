@@ -45,7 +45,7 @@ except Exception:
     PYMOBILEDEVICE3_AVAILABLE = False
 
 try:
-    from device_bridge import WDAClient, DeviceBridge, WDAManager
+    from device_bridge import WDAClient, DeviceBridge, WDAManager, get_local_ip
 except Exception:
     class WDAManager:
         def __init__(self, **kwargs): pass
@@ -53,6 +53,8 @@ except Exception:
         pass
     class DeviceBridge:
         pass
+    def get_local_ip():
+        return "127.0.0.1"
 
 from ipatool import IPATool, extract_app_id, get_app_details_from_itunes
 
@@ -62,6 +64,13 @@ try:
     MUN_ANTI_BROWSER_AVAILABLE = True
 except ImportError:
     MUN_ANTI_BROWSER_AVAILABLE = False
+
+# Tor Manager
+try:
+    from tor_manager import download_and_extract_tor, is_tor_installed, tor_manager
+    TOR_MANAGER_AVAILABLE = True
+except ImportError:
+    TOR_MANAGER_AVAILABLE = False
 
 # Lấy thư mục chạy của script hoặc của file exe đóng gói
 def get_app_dir():
@@ -355,6 +364,17 @@ class AutomationRunner(QThread):
                 self.wda_client.type_text(text)
             except Exception:
                 pass
+        elif cmd == "launch_app" and len(parts) > 1 and self.wda_client:
+            bundle_id = parts[1]
+            try:
+                self.wda_client.launch_app(bundle_id)
+            except Exception:
+                pass
+        elif cmd == "home" and self.wda_client:
+            try:
+                self.wda_client.go_home()
+            except Exception:
+                pass
 
 
 class AppDownloadWorker(QThread):
@@ -379,6 +399,366 @@ class AppDownloadWorker(QThread):
             self.error.emit(str(e))
 
 
+class WDASetupWorker(QThread):
+    log_signal = pyqtSignal(str, str)  # message, style
+    finished_signal = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, wda_manager, serial, ipa_path, parent=None):
+        super().__init__(parent)
+        self.wda_manager = wda_manager
+        self.serial = serial
+        self.ipa_path = ipa_path
+
+    def run(self):
+        try:
+            def log_cb(msg):
+                style = "info"
+                if "🟢" in msg or "✅" in msg:
+                    style = "success"
+                elif "❌" in msg or "⚠️" in msg:
+                    style = "error"
+                elif "🚀" in msg or "👉" in msg or "⏳" in msg or "🔄" in msg:
+                    style = "action"
+                self.log_signal.emit(msg, style)
+
+            success = self.wda_manager.auto_setup(self.serial, self.ipa_path, log_cb=log_cb)
+            if success:
+                self.finished_signal.emit(True, "WebDriverAgent đã thiết lập thành công!")
+            else:
+                self.finished_signal.emit(False, "Thiết lập WebDriverAgent thất bại.")
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi: {str(e)}", "error")
+            self.finished_signal.emit(False, str(e))
+
+
+class WebServerWorker(QThread):
+    started = pyqtSignal(str, int)  # ip, port
+    
+    def __init__(self, file_path, port=8090, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.port = port
+        self.httpd = None
+        
+    def run(self):
+        from http.server import SimpleHTTPRequestHandler, HTTPServer
+        
+        # Custom handler to serve the target file
+        class SingleFileHandler(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                req_path = self.path.split('?')[0].split('#')[0]
+                
+                # Serve custom HTML download page
+                if req_path in ('', '/', '/index.html', '/install'):
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    
+                    ip = self.server.ip
+                    port = self.server.port
+                    file_name = os.path.basename(self.server.file_path)
+                    import urllib.parse
+                    encoded_filename = urllib.parse.quote(file_name)
+                    download_url = f"http://{ip}:{port}/{encoded_filename}"
+                    
+                    is_dopamine = "dopamine" in file_name.lower()
+                    icon = "🍀" if is_dopamine else "📲"
+                    title_text = "Cài đặt Dopamine Jailbreak" if is_dopamine else "Cài đặt Ứng dụng"
+                    desc_text = "Chọn phương thức cài đặt hoặc tải tệp tin Dopamine Jailbreak về thiết bị iPhone của bạn." if is_dopamine else "Chọn phương thức cài đặt hoặc tải tệp tin IPA về thiết bị iPhone của bạn."
+                    
+                    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{title_text} - QHTD Automation 🚀</title>
+    <style>
+        body {{
+            background: linear-gradient(135deg, #080b11, #0f172a);
+            color: #f8fafc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }}
+        .card {{
+            background: rgba(13, 18, 36, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(6, 182, 212, 0.2);
+            border-radius: 20px;
+            padding: 35px 25px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5);
+            box-sizing: border-box;
+        }}
+        .icon {{
+            font-size: 54px;
+            margin-bottom: 20px;
+            filter: drop-shadow(0 0 10px rgba(6, 182, 212, 0.5));
+        }}
+        h1 {{
+            font-size: 22px;
+            margin-bottom: 12px;
+            font-weight: bold;
+            background: linear-gradient(to right, #06b6d4, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        .filename {{
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            background: #080b17;
+            padding: 6px 12px;
+            border-radius: 6px;
+            color: #a5f3fc;
+            margin-bottom: 25px;
+            word-break: break-all;
+            border: 1px solid #0e1630;
+        }}
+        .desc {{
+            color: #94a3b8;
+            font-size: 13.5px;
+            line-height: 1.6;
+            margin-bottom: 25px;
+        }}
+        .btn {{
+            display: block;
+            width: 100%;
+            padding: 14px;
+            margin-bottom: 15px;
+            border-radius: 12px;
+            font-weight: bold;
+            text-decoration: none;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }}
+        .btn:active {{
+            transform: scale(0.98);
+        }}
+        .btn-primary {{
+            background: linear-gradient(135deg, #06b6d4, #3b82f6);
+            color: white;
+            box-shadow: 0 4px 14px rgba(6, 182, 212, 0.4);
+        }}
+        .btn-primary:hover {{
+            box-shadow: 0 6px 20px rgba(6, 182, 212, 0.6);
+        }}
+        .btn-secondary {{
+            background: #080b17;
+            color: #94a3b8;
+            border: 1px solid #0e1630;
+        }}
+        .btn-secondary:hover {{
+            border-color: #06b6d4;
+            color: #ffffff;
+        }}
+        .footer {{
+            margin-top: 30px;
+            font-size: 11px;
+            color: #4b5563;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">{icon}</div>
+        <h1>{title_text}</h1>
+        <div class="filename">{file_name}</div>
+        <p class="desc">{desc_text}</p>
+        
+        <a href="apple-magnifier://install?url={download_url}" class="btn btn-primary">Cài trực tiếp qua TrollStore 🚀</a>
+        <a href="/{encoded_filename}" class="btn btn-secondary">Tải tệp tin về máy (Safari) 📥</a>
+        
+        <div class="footer">
+            QHTD Store • Hỗ trợ thiết bị iOS
+        </div>
+    </div>
+</body>
+</html>"""
+                    self.wfile.write(html_content.encode('utf-8'))
+                else:
+                    super().do_GET()
+
+            def translate_path(self, path):
+                return self.server.file_path
+                
+            def log_message(self, format, *args):
+                pass
+                
+        ip = get_local_ip()
+        port = self.port
+        while port < 9000:
+            try:
+                self.httpd = HTTPServer((ip, port), SingleFileHandler)
+                self.httpd.file_path = self.file_path
+                self.httpd.ip = ip
+                self.httpd.port = port
+                break
+            except Exception:
+                port += 1
+                
+        if self.httpd:
+            self.started.emit(ip, port)
+            self.httpd.serve_forever()
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+
+class InstallDopamineWorker(QThread):
+    log_signal = pyqtSignal(str, str)  # message, style
+    finished_signal = pyqtSignal(bool, str)  # success, web_url or error_msg
+    server_url_signal = pyqtSignal(str)
+
+    def __init__(self, serial=None, parent=None):
+        super().__init__(parent)
+        self.serial = serial
+        self.server_thread = None
+        self.dopamine_temp_path = None
+
+    def run(self):
+        self.log_signal.emit("Bắt đầu tiến trình cài đặt Dopamine...", "info")
+        try:
+            import tempfile
+            from packaging.version import parse as parse_version
+            from pymobiledevice3.lockdown import create_using_usbmux
+            from pymobiledevice3.services.afc import AfcService
+
+            self.log_signal.emit("Đang kết nối tới thiết bị iOS qua cổng USB...", "info")
+
+            async def run_afc_copy():
+                lockdown = await create_using_usbmux(serial=self.serial)
+                product_version = lockdown.product_version
+                self.log_signal.emit(f"Đã kết nối: iOS {product_version}", "success")
+
+                # Check supported version
+                device_version = parse_version(product_version)
+                if device_version < parse_version("15.0") or device_version > parse_version("16.6.1"):
+                    self.log_signal.emit(f"⚠️ Cảnh báo: iOS {product_version} ngoài tầm hỗ trợ chính thức của Dopamine (15.0 - 16.6.1)!", "warn")
+
+                self.log_signal.emit("Đang tải Dopamine.tipa từ GitHub...", "action")
+                url = "https://github.com/opa334/Dopamine/releases/latest/download/Dopamine.tipa"
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                dopamine_contents = response.content
+                self.log_signal.emit(f"Tải Dopamine thành công! Kích thước: {len(dopamine_contents)/(1024*1024):.2f} MB", "success")
+
+                self.log_signal.emit("Đang sao chép Dopamine.tipa sang iPhone qua cổng USB (AFC)...", "action")
+                async with AfcService(lockdown) as afc:
+                    try:
+                        await afc.makedirs("Downloads")
+                    except Exception:
+                        pass
+                    await afc.set_file_contents("Downloads/Dopamine.tipa", dopamine_contents)
+                self.log_signal.emit("Sao chép qua USB hoàn tất vào Media/Downloads!", "success")
+
+                temp_dir = tempfile.gettempdir()
+                self.dopamine_temp_path = os.path.join(temp_dir, "Dopamine.tipa")
+                with open(self.dopamine_temp_path, "wb") as f:
+                    f.write(dopamine_contents)
+
+                self.log_signal.emit("Đang khởi động máy chủ chia sẻ nội bộ...", "action")
+                self.server_thread = WebServerWorker(self.dopamine_temp_path, port=8090)
+                self.server_thread.started.connect(self.on_server_started)
+                self.server_thread.start()
+
+            asyncio.run(run_afc_copy())
+
+            while self.server_thread and self.server_thread.isRunning():
+                if self.isInterruptionRequested():
+                    break
+                self.msleep(500)
+
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi: {str(e)}", "error")
+            self.finished_signal.emit(False, str(e))
+        finally:
+            if self.dopamine_temp_path and os.path.exists(self.dopamine_temp_path):
+                try:
+                    os.remove(self.dopamine_temp_path)
+                except Exception:
+                    pass
+
+    def on_server_started(self, ip, port):
+        web_url = f"http://{ip}:{port}/"
+        self.log_signal.emit(f"Máy chủ chia sẻ đang chạy tại: {web_url}", "success")
+        self.server_url_signal.emit(web_url)
+        self.finished_signal.emit(True, web_url)
+
+    def stop(self):
+        self.requestInterruption()
+        if self.server_thread:
+            self.server_thread.stop()
+            self.server_thread.wait()
+            self.server_thread = None
+
+
+class TorDownloadWorker(QThread):
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+
+    def run(self):
+        try:
+            if not TOR_MANAGER_AVAILABLE:
+                self.log_signal.emit("❌ Lỗi: Không tìm thấy module tor_manager.")
+                self.finished_signal.emit(False, "Không tìm thấy module tor_manager.")
+                return
+            def progress_cb(msg):
+                self.log_signal.emit(msg)
+            download_and_extract_tor(progress_callback=progress_cb)
+            self.finished_signal.emit(True, "Đã tải và giải nén Tor thành công!")
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi: {str(e)}")
+            self.finished_signal.emit(False, str(e))
+
+
+class TorMonitorWorker(QThread):
+    status_signal = pyqtSignal(str)
+
+    def __init__(self, tor_manager_instance, parent=None):
+        super().__init__(parent)
+        self.tor_manager = tor_manager_instance
+        self._stop_flag = False
+
+    def stop(self):
+        self._stop_flag = True
+
+    def run(self):
+        while not self._stop_flag:
+            status_list = []
+            socks_ports = list(self.tor_manager.processes.keys())
+            for port in socks_ports:
+                if self._stop_flag:
+                    break
+                if port not in self.tor_manager.processes:
+                    continue
+                p, ctrl_port, data_dir = self.tor_manager.processes[port]
+                is_running = p.poll() is None
+                ip = "Đang kết nối..."
+                if is_running:
+                    ip = self.tor_manager.check_public_ip(port)
+                status_list.append({
+                    "socks_port": port,
+                    "control_port": ctrl_port,
+                    "status": "Live" if is_running else "Off",
+                    "ip": ip
+                })
+            self.status_signal.emit(json.dumps(status_list, ensure_ascii=False))
+            # Sleep 10s total, checking stop_flag in 500ms intervals
+            for _ in range(20):
+                if self._stop_flag:
+                    break
+                self.msleep(500)
+
+
 # ============================================================================
 # QHTD BRIDGE — Python API ↔ JavaScript (QWebChannel)
 # ============================================================================
@@ -396,6 +776,18 @@ class QHTDBridge(QObject):
     downloadComplete = pyqtSignal(str)
     statusMessage = pyqtSignal(str)
 
+    # New Signals for WDA and Dopamine
+    wdaSetupLog = pyqtSignal(str, str)  # message, style
+    wdaSetupFinished = pyqtSignal(bool, str)  # success, message
+    dopamineLog = pyqtSignal(str, str)  # message, style
+    dopamineFinished = pyqtSignal(bool, str)  # success, message
+    dopamineServerUrl = pyqtSignal(str)  # server url
+
+    # Tor Signals
+    torStatus = pyqtSignal(str)          # JSON list of proxies
+    torDownloadLog = pyqtSignal(str)     # download progress logs
+    torDownloadFinished = pyqtSignal(bool, str) # success, error_msg
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
@@ -406,6 +798,10 @@ class QHTDBridge(QObject):
         self.ipatool = None
         self.router_active = False
         self.router_config = None
+        self.wda_setup_worker = None
+        self.dopamine_worker = None
+        self.tor_download_worker = None
+        self.tor_monitor_worker = None
 
     # --- Tool Info ---
     @pyqtSlot(result=str)
@@ -497,6 +893,17 @@ class QHTDBridge(QObject):
                 self.automationLog.emit("Đang có kịch bản đang chạy!", "warn")
                 return
             
+            serial = config.get("serial")
+            if not self.wda_client and serial:
+                self.automationLog.emit("🔄 Phát hiện WDA chưa kết nối, đang tự động kết nối...", "action")
+                self.wda_manager.start_relay(serial)
+                client = WDAClient(host="http://127.0.0.1", port=self.wda_manager.local_port)
+                if client.check_status():
+                    self.wda_client = client
+                    self.automationLog.emit("🟢 Đã tự động kết nối WebDriverAgent thành công!", "success")
+                else:
+                    self.automationLog.emit("⚠️ Không thể tự động kết nối WebDriverAgent. Script có thể bị lỗi khi tap/swipe.", "warn")
+
             self.automation_worker = AutomationRunner(config, self.wda_client)
             self.automation_worker.log_signal.connect(self.automationLog.emit)
             self.automation_worker.finished.connect(self.automationFinished.emit)
@@ -511,6 +918,174 @@ class QHTDBridge(QObject):
         if self.automation_worker and self.automation_worker.isRunning():
             self.automation_worker.stop()
             self.automationLog.emit("Đang dừng kịch bản...", "warn")
+
+    @pyqtSlot(str)
+    def openUrl(self, url):
+        """Mở URL trong trình duyệt mặc định của hệ thống máy tính"""
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception as e:
+            print(f"[QHTD] Error opening URL: {e}", flush=True)
+
+    @pyqtSlot(str, result=str)
+    def checkWDAStatus(self, serial):
+        """Kiểm tra trạng thái WebDriverAgent trên thiết bị"""
+        try:
+            if not PYMOBILEDEVICE3_AVAILABLE:
+                return json.dumps({"status": "error", "message": "pymobiledevice3 không khả dụng"})
+            
+            bundle_id = self.wda_manager.check_wda_installed(serial)
+            if not bundle_id:
+                return json.dumps({"status": "not_installed", "message": "Chưa cài đặt WebDriverAgent"})
+            
+            # Start relay
+            self.wda_manager.start_relay(serial)
+            
+            # Test status endpoint
+            client = WDAClient(host="http://127.0.0.1", port=self.wda_manager.local_port)
+            if client.check_status():
+                self.wda_client = client
+                return json.dumps({"status": "running", "message": "WebDriverAgent đang chạy và sẵn sàng!"})
+            else:
+                return json.dumps({"status": "stopped", "message": "WebDriverAgent chưa chạy"})
+        except Exception as e:
+            return json.dumps({"status": "error", "message": str(e)})
+
+    @pyqtSlot(str)
+    def startWDASetup(self, serial):
+        """Khởi chạy WDASetupWorker"""
+        try:
+            if self.wda_setup_worker and self.wda_setup_worker.isRunning():
+                self.wdaSetupLog.emit("Tiến trình thiết lập WDA đang chạy...", "warn")
+                return
+        except AttributeError:
+            self.wda_setup_worker = None
+
+        # Resolve WDA ipa path
+        ipa_path = os.path.abspath(os.path.join(get_app_dir(), "WebDriverAgentRunner.ipa"))
+        if not os.path.exists(ipa_path):
+            ipa_path = os.path.abspath(os.path.join(get_app_dir(), "..", "iOSAutomationDesktop", "WebDriverAgentRunner.ipa"))
+        if not os.path.exists(ipa_path):
+            ipa_path = os.path.join(get_app_dir(), "WebDriverAgentRunner.ipa")
+
+        self.wda_setup_worker = WDASetupWorker(self.wda_manager, serial, ipa_path)
+        self.wda_setup_worker.log_signal.connect(self.wdaSetupLog.emit)
+        self.wda_setup_worker.finished_signal.connect(self.on_wda_setup_finished)
+        self.wda_setup_worker.start()
+
+    def on_wda_setup_finished(self, success, message):
+        if success:
+            self.wda_client = WDAClient(host="http://127.0.0.1", port=self.wda_manager.local_port)
+        self.wdaSetupFinished.emit(success, message)
+
+    @pyqtSlot()
+    def stopWDASetup(self):
+        """Dừng WDASetupWorker"""
+        try:
+            if self.wda_setup_worker and self.wda_setup_worker.isRunning():
+                self.wda_setup_worker.terminate()
+                self.wda_setup_worker.wait()
+                self.wdaSetupLog.emit("Đã dừng tiến trình thiết lập WDA.", "warn")
+                self.wdaSetupFinished.emit(False, "Tiến trình bị hủy bởi người dùng.")
+        except AttributeError:
+            pass
+
+    @pyqtSlot(str)
+    def startDopamineInstall(self, serial):
+        """Khởi chạy InstallDopamineWorker"""
+        try:
+            if self.dopamine_worker and self.dopamine_worker.isRunning():
+                self.dopamineLog.emit("Tiến trình cài đặt Dopamine đang chạy...", "warn")
+                return
+        except AttributeError:
+            self.dopamine_worker = None
+
+        self.dopamine_worker = InstallDopamineWorker(serial)
+        self.dopamine_worker.log_signal.connect(self.dopamineLog.emit)
+        self.dopamine_worker.server_url_signal.connect(self.dopamineServerUrl.emit)
+        self.dopamine_worker.finished_signal.connect(self.dopamineFinished.emit)
+        self.dopamine_worker.start()
+
+    @pyqtSlot()
+    def stopDopamineInstall(self):
+        """Dừng InstallDopamineWorker"""
+        try:
+            if self.dopamine_worker and self.dopamine_worker.isRunning():
+                self.dopamine_worker.stop()
+                self.dopamine_worker.wait()
+                self.dopamineLog.emit("Đã dừng tiến trình cài đặt Dopamine.", "warn")
+                self.dopamineFinished.emit(False, "Tiến trình bị dừng bởi người dùng.")
+        except AttributeError:
+            pass
+
+    # --- Tor Proxy Management ---
+    @pyqtSlot(result=bool)
+    def isTorInstalled(self):
+        if not TOR_MANAGER_AVAILABLE:
+            return False
+        return is_tor_installed()
+
+    @pyqtSlot()
+    def startTorDownload(self):
+        if not TOR_MANAGER_AVAILABLE:
+            self.torDownloadFinished.emit(False, "Không tìm thấy module tor_manager.")
+            return
+        if self.tor_download_worker and self.tor_download_worker.isRunning():
+            self.torDownloadLog.emit("Tiến trình tải Tor đang chạy...")
+            return
+        self.tor_download_worker = TorDownloadWorker()
+        self.tor_download_worker.log_signal.connect(self.torDownloadLog.emit)
+        self.tor_download_worker.finished_signal.connect(self.torDownloadFinished.emit)
+        self.tor_download_worker.start()
+
+    @pyqtSlot(int, int, str, result=bool)
+    def startTorProxy(self, socks_port, control_port, country_code):
+        if not TOR_MANAGER_AVAILABLE:
+            return False
+        success = tor_manager.start_proxy(socks_port, control_port, country_code)
+        if success:
+            self.start_tor_monitor()
+        return success
+
+    @pyqtSlot(int)
+    def stopTorProxy(self, socks_port):
+        if TOR_MANAGER_AVAILABLE:
+            tor_manager.stop_proxy(socks_port)
+
+    @pyqtSlot()
+    def stopAllTorProxies(self):
+        if TOR_MANAGER_AVAILABLE:
+            tor_manager.stop_all()
+
+    @pyqtSlot(int, result=bool)
+    def rotateTorIp(self, control_port):
+        if not TOR_MANAGER_AVAILABLE:
+            return False
+        return tor_manager.rotate_ip(control_port)
+
+    @pyqtSlot(result=str)
+    def getActiveTorProxies(self):
+        if not TOR_MANAGER_AVAILABLE:
+            return "[]"
+        status_list = []
+        for port, (p, ctrl_port, data_dir) in tor_manager.processes.items():
+            is_running = p.poll() is None
+            status_list.append({
+                "socks_port": port,
+                "control_port": ctrl_port,
+                "status": "Live" if is_running else "Off",
+                "ip": "Nhấp kiểm tra hoặc chờ làm mới..."
+            })
+        return json.dumps(status_list, ensure_ascii=False)
+
+    def start_tor_monitor(self):
+        if not TOR_MANAGER_AVAILABLE:
+            return
+        if not self.tor_monitor_worker or not self.tor_monitor_worker.isRunning():
+            self.tor_monitor_worker = TorMonitorWorker(tor_manager)
+            self.tor_monitor_worker.status_signal.connect(self.torStatus.emit)
+            self.tor_monitor_worker.start()
 
     # --- App Download ---
     @pyqtSlot(str, str, str, result=str)
@@ -949,7 +1524,11 @@ class QHTDStoreDesktop(QMainWindow):
         page.loadFinished.connect(self.on_page_loaded)
 
         # Load web URL
-        self.web_view.setUrl(QUrl(C69_BASE_URL))
+        if "--test-tor" in sys.argv:
+            self.web_view.setUrl(QUrl(C69_BASE_URL + "/?tab=proxies"))
+            QTimer.singleShot(8000, self.take_test_screenshot)
+        else:
+            self.web_view.setUrl(QUrl(C69_BASE_URL))
 
     # --- Cookie sharing helpers ---
     def _on_cookie_added(self, cookie):
@@ -1029,10 +1608,24 @@ class QHTDStoreDesktop(QMainWindow):
 
     def closeEvent(self, event):
         """Cleanup khi đóng app"""
-        if self.bridge and self.bridge.automation_worker:
-            if self.bridge.automation_worker.isRunning():
+        if self.bridge:
+            if self.bridge.automation_worker and self.bridge.automation_worker.isRunning():
                 self.bridge.automation_worker.stop()
                 self.bridge.automation_worker.wait(3000)
+            if hasattr(self.bridge, 'wda_setup_worker') and self.bridge.wda_setup_worker and self.bridge.wda_setup_worker.isRunning():
+                self.bridge.wda_setup_worker.terminate()
+                self.bridge.wda_setup_worker.wait(3000)
+            if hasattr(self.bridge, 'dopamine_worker') and self.bridge.dopamine_worker and self.bridge.dopamine_worker.isRunning():
+                self.bridge.dopamine_worker.stop()
+                self.bridge.dopamine_worker.wait(3000)
+            if hasattr(self.bridge, 'tor_monitor_worker') and self.bridge.tor_monitor_worker and self.bridge.tor_monitor_worker.isRunning():
+                self.bridge.tor_monitor_worker.stop()
+                self.bridge.tor_monitor_worker.wait(3000)
+            if hasattr(self.bridge, 'tor_download_worker') and self.bridge.tor_download_worker and self.bridge.tor_download_worker.isRunning():
+                self.bridge.tor_download_worker.terminate()
+                self.bridge.tor_download_worker.wait(3000)
+            if hasattr(self.bridge, 'stopAllTorProxies'):
+                self.bridge.stopAllTorProxies()
         event.accept()
 
     def take_test_screenshot(self):
@@ -1040,7 +1633,7 @@ class QHTDStoreDesktop(QMainWindow):
         try:
             artifact_dir = r"C:\Users\Admin\.gemini\antigravity-ide\brain\097d037d-cccf-4aa3-810d-46f4d5d6e18a"
             os.makedirs(artifact_dir, exist_ok=True)
-            screenshot_path = os.path.join(artifact_dir, "ipadowngrade_test.png")
+            screenshot_path = os.path.join(artifact_dir, "tor_proxies_test.png")
             
             pixmap = self.grab()
             success = pixmap.save(screenshot_path, "PNG")
