@@ -15,6 +15,7 @@ import re
 import requests
 import socket
 import subprocess
+import asyncio
 
 # Đảm bảo import được ipatool cho dù ứng dụng được chạy từ thư mục nào
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -263,22 +264,26 @@ class DeviceScanWorker(QThread):
                 return
             from pymobiledevice3.usbmux import list_devices
             from pymobiledevice3.lockdown import create_using_usbmux
-            devices = run_async_or_sync(list_devices)
-            results = []
-            for dev in devices:
-                try:
-                    lockdown = run_async_or_sync(create_using_usbmux, serial=dev.serial)
-                    info = {
-                        "serial": dev.serial,
-                        "name": lockdown.display_name,
-                        "model": lockdown.product_type,
-                        "ios_version": lockdown.product_version,
-                        "udid": lockdown.udid,
-                        "wifi_address": lockdown.wifi_address or "",
-                    }
-                    results.append(info)
-                except Exception as e:
-                    results.append({"serial": dev.serial, "error": str(e)})
+
+            async def scan_async():
+                devices = await list_devices()
+                results = []
+                for dev in devices:
+                    try:
+                        lockdown = await create_using_usbmux(serial=dev.serial)
+                        results.append({
+                            "serial": dev.serial,
+                            "name": getattr(lockdown, "display_name", "iPhone"),
+                            "model": getattr(lockdown, "product_type", "Unknown"),
+                            "ios_version": getattr(lockdown, "product_version", "Unknown"),
+                            "udid": getattr(lockdown, "udid", dev.serial),
+                            "wifi_address": getattr(lockdown, "wifi_address", "") or "",
+                        })
+                    except Exception as e:
+                        results.append({"serial": dev.serial, "error": str(e)})
+                return results
+
+            results = run_async_or_sync(scan_async)
             self.finished.emit(json.dumps(results, ensure_ascii=False))
         except Exception as e:
             self.error.emit(str(e))
@@ -424,21 +429,27 @@ class QHTDBridge(QObject):
                 return json.dumps({"error": "pymobiledevice3 chưa cài đặt"})
             
             from pymobiledevice3.usbmux import list_devices
-            devices = run_async_or_sync(list_devices)
-            results = []
-            for dev in devices:
-                try:
-                    lockdown = run_async_or_sync(create_using_usbmux, serial=dev.serial)
-                    results.append({
-                        "serial": dev.serial,
-                        "name": lockdown.display_name,
-                        "model": lockdown.product_type,
-                        "ios_version": lockdown.product_version,
-                        "udid": lockdown.udid,
-                        "wifi_address": lockdown.wifi_address or "",
-                    })
-                except Exception as e:
-                    results.append({"serial": dev.serial, "error": str(e)})
+            from pymobiledevice3.lockdown import create_using_usbmux
+
+            async def scan_async():
+                devices = await list_devices()
+                results = []
+                for dev in devices:
+                    try:
+                        lockdown = await create_using_usbmux(serial=dev.serial)
+                        results.append({
+                            "serial": dev.serial,
+                            "name": getattr(lockdown, "display_name", "iPhone"),
+                            "model": getattr(lockdown, "product_type", "Unknown"),
+                            "ios_version": getattr(lockdown, "product_version", "Unknown"),
+                            "udid": getattr(lockdown, "udid", dev.serial),
+                            "wifi_address": getattr(lockdown, "wifi_address", "") or "",
+                        })
+                    except Exception as e:
+                        results.append({"serial": dev.serial, "error": str(e)})
+                return results
+
+            results = run_async_or_sync(scan_async)
             return json.dumps(results, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)})
@@ -449,9 +460,22 @@ class QHTDBridge(QObject):
         try:
             if not PYMOBILEDEVICE3_AVAILABLE:
                 return json.dumps({"error": "pymobiledevice3 chưa cài đặt"})
-            lockdown = run_async_or_sync(create_using_usbmux, serial=serial)
-            iproxy = InstallationProxyService(lockdown=lockdown)
-            apps = run_async_or_sync(iproxy.get_apps)
+            from pymobiledevice3.lockdown import create_using_usbmux
+            from pymobiledevice3.services.installation_proxy import InstallationProxyService
+
+            async def get_apps_async():
+                lockdown = await create_using_usbmux(serial=serial)
+                iproxy = InstallationProxyService(lockdown=lockdown)
+                # Check if get_apps is a coroutine function
+                if asyncio.iscoroutinefunction(iproxy.get_apps):
+                    return await iproxy.get_apps()
+                else:
+                    res = iproxy.get_apps()
+                    if asyncio.iscoroutine(res):
+                        return await res
+                    return res
+
+            apps = run_async_or_sync(get_apps_async)
             app_list = []
             for bundle_id, info in apps.items():
                 app_list.append({
