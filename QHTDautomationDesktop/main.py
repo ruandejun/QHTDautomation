@@ -847,6 +847,18 @@ class QHTDStoreDesktop(QMainWindow):
         # Create web view first (with parent)
         self.web_view = QWebEngineView(self)
         
+        # Tự động phát hiện Vite dev server local (port 5173)
+        self.target_url = C69_BASE_URL
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect(("127.0.0.1", 5173))
+            s.close()
+            self.target_url = "http://localhost:5173"
+            print(f"[QHTD] Phát hiện Vite dev server local đang chạy! Load URL: {self.target_url}")
+        except Exception:
+            print(f"[QHTD] Không tìm thấy Vite dev server local. Load URL sản phẩm: {self.target_url}")
+        
         # Get the default profile and customize it
         profile = QWebEngineProfile.defaultProfile()
         profile.setHttpUserAgent(
@@ -900,8 +912,8 @@ class QHTDStoreDesktop(QMainWindow):
         # The web frontend will detect window.qhtdBridge and show extra tabs
         page.loadFinished.connect(self.on_page_loaded)
 
-        # Load c69.us
-        self.web_view.setUrl(QUrl(C69_BASE_URL))
+        # Load web URL
+        self.web_view.setUrl(QUrl(self.target_url))
 
     # --- Cookie sharing helpers ---
     def _on_cookie_added(self, cookie):
