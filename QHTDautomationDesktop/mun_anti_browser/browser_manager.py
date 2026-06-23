@@ -193,10 +193,6 @@ class NodriverBrowserManager:
             "--disable-sync",
             "--disable-translate",
             "--disable-notifications",
-
-            # SSL/Certificate
-            "--ignore-certificate-errors",
-            "--ignore-ssl-errors",
         ]
 
         # Set window size from profile
