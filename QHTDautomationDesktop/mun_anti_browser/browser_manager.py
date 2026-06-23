@@ -123,7 +123,7 @@ class NodriverBrowserManager:
 
         # Start browser via nodriver
         config = nodriver.Config()
-        config.sandbox = False  # --no-sandbox
+        config.sandbox = True   # Enable sandbox (removes --no-sandbox)
         config.expert = True    # --disable-site-isolation-trials
         for arg in chrome_args:
             config.add_argument(arg)

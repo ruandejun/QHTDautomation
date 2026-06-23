@@ -1961,7 +1961,6 @@ if __name__ == "__main__":
     # ANGLE wraps DirectX11 as OpenGL ES, much faster than software fallback
     os.environ.setdefault('QT_OPENGL', 'angle')
     os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = (
-        '--no-sandbox '
         '--enable-gpu-rasterization '
         '--enable-zero-copy '
         '--enable-features=VaapiVideoDecoder '
