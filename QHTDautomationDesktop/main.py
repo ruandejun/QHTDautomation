@@ -15,6 +15,9 @@ import re
 import requests
 import socket
 import subprocess
+import http.server
+import socketserver
+import threading
 
 # Đảm bảo import được ipatool cho dù ứng dụng được chạy từ thư mục nào
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -778,6 +781,49 @@ class QHTDWebPage(QWebEnginePage):
 
 
 # ============================================================================
+# LOCAL WEB SERVER — Embeds c69.us React bundle locally
+# ============================================================================
+class LocalWebServer:
+    def __init__(self, port, directory):
+        self.port = port
+        self.directory = directory
+        self.httpd = None
+        self.thread = None
+
+    def start(self):
+        directory = self.directory
+        
+        class SPAHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=directory, **kwargs)
+
+            def do_GET(self):
+                path = self.translate_path(self.path)
+                if not os.path.exists(path):
+                    self.path = "/index.html"
+                super().do_GET()
+
+            def log_message(self, format, *args):
+                pass
+
+        socketserver.TCPServer.allow_reuse_address = True
+        try:
+            self.httpd = socketserver.TCPServer(("", self.port), SPAHandler)
+            self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+            self.thread.start()
+            print(f"[WebServer] Embedded server started at http://localhost:{self.port} serving {self.directory}")
+            return True
+        except Exception as e:
+            print(f"[WebServer] Failed to start local server: {e}")
+            return False
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+
+# ============================================================================
 # MAIN WINDOW — Hybrid Browser + Native Status Bar
 # ============================================================================
 class QHTDStoreDesktop(QMainWindow):
@@ -786,6 +832,7 @@ class QHTDStoreDesktop(QMainWindow):
         self.bridge = None
         self.web_view = None
         self._cookie_store = None
+        self.local_server = None
         self.init_ui()
 
     def init_ui(self):
@@ -847,17 +894,35 @@ class QHTDStoreDesktop(QMainWindow):
         # Create web view first (with parent)
         self.web_view = QWebEngineView(self)
         
-        # Tự động phát hiện Vite dev server local (port 5173)
+        # Check if local dist folder exists to serve it offline
+        dist_path = os.path.join(get_app_dir(), "dist")
         self.target_url = C69_BASE_URL
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.3)
-            s.connect(("127.0.0.1", 5173))
-            s.close()
-            self.target_url = "http://localhost:5173"
-            print(f"[QHTD] Phát hiện Vite dev server local đang chạy! Load URL: {self.target_url}")
-        except Exception:
-            print(f"[QHTD] Không tìm thấy Vite dev server local. Load URL sản phẩm: {self.target_url}")
+        if os.path.exists(dist_path) and os.path.isdir(dist_path):
+            def find_free_port():
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(('', 0))
+                port = s.getsockname()[1]
+                s.close()
+                return port
+            try:
+                port = find_free_port()
+                self.local_server = LocalWebServer(port, dist_path)
+                if self.local_server.start():
+                    self.target_url = f"http://localhost:{port}"
+                    print(f"[QHTD] Đang phục vụ gói frontend tích hợp cục bộ tại: {self.target_url}")
+            except Exception as e:
+                print(f"[QHTD] Lỗi khi khởi động máy chủ local: {e}")
+        else:
+            # Fallback: check if local dev server is running
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                s.connect(("127.0.0.1", 5173))
+                s.close()
+                self.target_url = "http://localhost:5173"
+                print(f"[QHTD] Phát hiện Vite dev server local đang chạy! Load URL: {self.target_url}")
+            except Exception:
+                print(f"[QHTD] Load URL sản phẩm trực tuyến: {self.target_url}")
         
         # Get the default profile and customize it
         profile = QWebEngineProfile.defaultProfile()
@@ -975,6 +1040,8 @@ class QHTDStoreDesktop(QMainWindow):
             if self.bridge.automation_worker.isRunning():
                 self.bridge.automation_worker.stop()
                 self.bridge.automation_worker.wait(3000)
+        if hasattr(self, 'local_server') and self.local_server:
+            self.local_server.stop()
         event.accept()
 
 
