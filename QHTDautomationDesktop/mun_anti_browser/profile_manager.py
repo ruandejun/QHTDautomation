@@ -82,6 +82,8 @@ class ProfileManager:
         # WebGL fingerprint
         webgl_data = fpdata.generate_webgl_fingerprint(phone_os)
         profile["profile_webgl"] = json.dumps(webgl_data)
+        profile["profile_vendor"] = webgl_data.get("37445", "")
+        profile["profile_renderer"] = webgl_data.get("37446", "")
 
         # ClientRects
         profile["profile_rects"] = fpdata.generate_rects_offset()

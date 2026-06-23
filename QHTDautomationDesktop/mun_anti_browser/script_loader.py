@@ -108,10 +108,16 @@ class ScriptLoader:
 
         # 4. Canvas
         if profile_config.get("profile_canvas"):
+            from . import fingerprint_data as fpdata
             canvas_script = self.load_script("canvas")
             canvas_data = profile_config["profile_canvas"]
             if isinstance(canvas_data, str):
-                canvas_data = json.loads(canvas_data)
+                try:
+                    canvas_data = json.loads(canvas_data)
+                except Exception:
+                    canvas_data = None
+            if not isinstance(canvas_data, dict) or not canvas_data:
+                canvas_data = fpdata.generate_canvas_fingerprint()
             canvas_script = canvas_script.replace(
                 "{{canvas_shift}}", json.dumps(canvas_data)
             )
@@ -119,10 +125,16 @@ class ScriptLoader:
 
         # 5. Audio
         if profile_config.get("profile_audio"):
+            from . import fingerprint_data as fpdata
             audio_script = self.load_script("audio")
             audio_data = profile_config["profile_audio"]
             if isinstance(audio_data, str):
-                audio_data = json.loads(audio_data)
+                try:
+                    audio_data = json.loads(audio_data)
+                except Exception:
+                    audio_data = None
+            if not isinstance(audio_data, dict) or not audio_data:
+                audio_data = fpdata.generate_audio_fingerprint()
             for key, value in audio_data.items():
                 audio_script = audio_script.replace(
                     "{{" + key + "}}", json.dumps(value) if isinstance(value, dict) else str(value)
@@ -130,11 +142,40 @@ class ScriptLoader:
             parts.append(audio_script)
 
         # 6. WebGL
-        if profile_config.get("profile_webgl"):
+        if profile_config.get("profile_webgl") or profile_config.get("profile_vendor") or profile_config.get("profile_renderer"):
+            from . import fingerprint_data as fpdata
             webgl_script = self.load_script("webgl")
-            webgl_data = profile_config["profile_webgl"]
-            if isinstance(webgl_data, str):
-                webgl_data = json.loads(webgl_data)
+            webgl_raw = profile_config.get("profile_webgl")
+            
+            # Parse or use default WebGL dict
+            webgl_data = {}
+            if webgl_raw:
+                if isinstance(webgl_raw, str) and webgl_raw.strip():
+                    try:
+                        webgl_data = json.loads(webgl_raw)
+                    except Exception:
+                        webgl_data = {}
+                elif isinstance(webgl_raw, dict):
+                    webgl_data = webgl_raw
+
+            # If empty or invalid, generate a random WebGL configuration base
+            if not isinstance(webgl_data, dict) or not webgl_data or len(webgl_data) < 5:
+                os_name = profile_config.get("profile_os", "")
+                phone_os = None
+                if os_name == "iPhone" or "iPhone" in os_name:
+                    phone_os = "iPhone"
+                elif os_name == "Android" or "Android" in os_name:
+                    phone_os = "Android"
+                webgl_data = fpdata.generate_webgl_fingerprint(phone_os)
+
+            # Override with custom user-configured vendor and renderer if present
+            custom_vendor = profile_config.get("profile_vendor")
+            custom_renderer = profile_config.get("profile_renderer")
+            if custom_vendor and str(custom_vendor).strip():
+                webgl_data["37445"] = str(custom_vendor).strip()
+            if custom_renderer and str(custom_renderer).strip():
+                webgl_data["37446"] = str(custom_renderer).strip()
+
             for key, value in webgl_data.items():
                 webgl_script = webgl_script.replace(
                     "{{" + key + "}}", str(value)
@@ -154,11 +195,17 @@ class ScriptLoader:
 
         # 8. Fonts
         if profile_config.get("profile_font"):
+            from . import fingerprint_data as fpdata
             fonts_script = self.load_script("fonts")
             font_data = profile_config["profile_font"]
-            if isinstance(font_data, list):
-                font_data = json.dumps(font_data)
-            fonts_script = fonts_script.replace("{{fonts}}", font_data)
+            if isinstance(font_data, str):
+                try:
+                    font_data = json.loads(font_data)
+                except Exception:
+                    font_data = None
+            if not isinstance(font_data, list) or not font_data:
+                font_data = fpdata.generate_font_list()
+            fonts_script = fonts_script.replace("{{fonts}}", json.dumps(font_data))
             parts.append(fonts_script)
 
         # 9. Network (always)
