@@ -1962,9 +1962,6 @@ if __name__ == "__main__":
     os.environ.setdefault('QT_OPENGL', 'angle')
     os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = (
         '--enable-gpu-rasterization '
-        '--enable-zero-copy '
-        '--enable-features=VaapiVideoDecoder '
-        '--disable-features=UseChromeOSDirectVideoDecoder '
         '--renderer-process-limit=4 '
         '--js-flags=--max-old-space-size=512'
     )

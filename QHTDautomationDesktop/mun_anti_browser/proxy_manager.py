@@ -142,7 +142,6 @@ class ProxyManager:
     def get_webrtc_args() -> List[str]:
         """Get Chrome args to disable WebRTC IP leak at C++ level."""
         return [
-            "--enforce-webrtc-ip-permission-check",
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             "--disable-webrtc-hw-decoding",
             "--disable-webrtc-hw-encoding",
