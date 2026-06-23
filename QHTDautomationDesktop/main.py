@@ -1125,11 +1125,18 @@ class QHTDBridge(QObject):
             pass
 
     # --- Browser Profile Management & Polling ---
+    def trigger_poll(self):
+        """Đánh thức luồng poll để gửi cập nhật trạng thái ngay lập tức"""
+        if hasattr(self, 'poll_event'):
+            self.poll_event.set()
+
     def start_poll_thread(self):
         """Khởi chạy luồng polling ngầm đồng bộ với server sử dụng threading.Thread"""
         if hasattr(self, 'poll_running') and self.poll_running:
             return
 
+        import threading
+        self.poll_event = threading.Event()
         self.poll_signals = AgentPollSignals(self)
         self.poll_signals.command_received.connect(self.handle_agent_command)
         self.poll_signals.log_signal.connect(lambda msg: print(f"[AGENT POLL] {msg}", flush=True))
@@ -1187,13 +1194,10 @@ class QHTDBridge(QObject):
                     # Ignore or log to debug
                     pass
                 
-                # Sleep 3 seconds (check poll_running every 500ms)
-                for _ in range(6):
-                    if not self.poll_running:
-                        break
-                    time.sleep(0.5)
+                # Sleep up to 3 seconds or until poll_event is set
+                self.poll_event.wait(3.0)
+                self.poll_event.clear()
 
-        import threading
         self.poll_thread = threading.Thread(target=poll_loop, daemon=True)
         self.poll_thread.start()
 
@@ -1245,9 +1249,11 @@ class QHTDBridge(QObject):
                 start_url=local_cfg.get("profile_start_url", "")
             )
             worker.log_signal.connect(lambda msg: print(f"[BROWSER {profile_id}] {msg}", flush=True))
+            worker.finished.connect(self.trigger_poll)
             
             self.browser_workers[pid_int] = worker
             worker.start()
+            self.trigger_poll()
 
             return json.dumps({"success": True})
         except Exception as e:
@@ -1264,6 +1270,7 @@ class QHTDBridge(QObject):
                 worker = self.browser_workers[pid_int]
                 if worker.isRunning():
                     worker.stop_browser()
+                self.trigger_poll()
                 return json.dumps({"success": True})
             return json.dumps({"success": True, "message": "Browser was not running"})
         except Exception as e:
