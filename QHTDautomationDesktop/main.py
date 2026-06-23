@@ -909,9 +909,9 @@ class QHTDStoreDesktop(QMainWindow):
                 self.local_server = LocalWebServer(port, dist_path)
                 if self.local_server.start():
                     self.target_url = f"http://localhost:{port}"
-                    print(f"[QHTD] Đang phục vụ gói frontend tích hợp cục bộ tại: {self.target_url}")
+                    print(f"[QHTD] Serving local frontend at: {self.target_url}")
             except Exception as e:
-                print(f"[QHTD] Lỗi khi khởi động máy chủ local: {e}")
+                print(f"[QHTD] Error starting local web server: {e}")
         else:
             # Fallback: check if local dev server is running
             try:
@@ -920,9 +920,9 @@ class QHTDStoreDesktop(QMainWindow):
                 s.connect(("127.0.0.1", 5173))
                 s.close()
                 self.target_url = "http://localhost:5173"
-                print(f"[QHTD] Phát hiện Vite dev server local đang chạy! Load URL: {self.target_url}")
+                print(f"[QHTD] Local Vite dev server detected! Loading: {self.target_url}")
             except Exception:
-                print(f"[QHTD] Load URL sản phẩm trực tuyến: {self.target_url}")
+                print(f"[QHTD] Loading online production URL: {self.target_url}")
         
         # Get the default profile and customize it
         profile = QWebEngineProfile.defaultProfile()
