@@ -21,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # === PyQt6 Imports ===
 from PyQt6.QtCore import (
-    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject
+    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject, QFile, QIODevice
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -844,6 +844,13 @@ class QHTDStoreDesktop(QMainWindow):
 
     def setup_web_engine(self):
         """Thiết lập QWebEngineView + QWebChannel bridge"""
+        # Read qwebchannel.js from Qt resources
+        self.qwebchannel_js = ""
+        file = QFile(":/qtwebchannel/qwebchannel.js")
+        if file.open(QIODevice.OpenModeFlag.ReadOnly):
+            self.qwebchannel_js = bytes(file.readAll()).decode("utf-8")
+            file.close()
+
         # Create web view first (with parent)
         self.web_view = QWebEngineView(self)
         
@@ -944,14 +951,29 @@ class QHTDStoreDesktop(QMainWindow):
             self._save_cookies_to_disk()
 
     def on_page_loaded(self, ok):
-        """Sau khi page load xong, inject bridge detection script"""
+        """Sau khi page load xong, inject qwebchannel.js và bridge detection script"""
         if ok:
             self.update_status("Đã kết nối c69.us")
-            # Inject a global variable so the web frontend knows it's running in desktop
+            
+            # 1. Inject qwebchannel.js source code
+            if hasattr(self, 'qwebchannel_js') and self.qwebchannel_js:
+                self.web_view.page().runJavaScript(self.qwebchannel_js)
+            
+            # 2. Inject initialization script to connect to the channel
             self.web_view.page().runJavaScript("""
-                window.__QHTD_DESKTOP__ = true;
-                window.__QHTD_VERSION__ = '%s';
-                console.log('[QHTD] Desktop bridge detected, version %s');
+                if (typeof QWebChannel !== 'undefined') {
+                    new QWebChannel(qt.webChannelTransport, function(channel) {
+                        window.qhtdBridge = channel.objects.qhtdBridge;
+                        window.__QHTD_DESKTOP__ = true;
+                        window.__QHTD_VERSION__ = '%s';
+                        console.log('[QHTD] QWebChannel bridge connected successfully, version %s');
+                        // Dispatch ready event to notify frontend
+                        var event = new CustomEvent('qhtdBridgeReady');
+                        window.dispatchEvent(event);
+                    });
+                } else {
+                    console.error('[QHTD] Failed to load QWebChannel script!');
+                }
             """ % (CLIENT_VERSION, CLIENT_VERSION))
         else:
             self.update_status("Lỗi kết nối — kiểm tra mạng")
