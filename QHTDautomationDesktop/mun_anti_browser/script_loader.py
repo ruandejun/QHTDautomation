@@ -172,7 +172,24 @@ class ScriptLoader:
             custom_vendor = profile_config.get("profile_vendor")
             custom_renderer = profile_config.get("profile_renderer")
             if custom_vendor and str(custom_vendor).strip():
-                webgl_data["37445"] = str(custom_vendor).strip()
+                vendor_str = str(custom_vendor).strip()
+                webgl_data["37445"] = vendor_str
+                
+                # If custom_renderer is empty/random, choose a random renderer matching the vendor's brand
+                if not custom_renderer or not str(custom_renderer).strip():
+                    brand = ""
+                    if "NVIDIA" in vendor_str:
+                        brand = "NVIDIA"
+                    elif "Intel" in vendor_str:
+                        brand = "Intel"
+                    elif "AMD" in vendor_str:
+                        brand = "AMD"
+                    
+                    if brand:
+                        matching_renderers = [r for r in fpdata.GPU_VENDORS if brand in r]
+                        if matching_renderers:
+                            webgl_data["37446"] = random.choice(matching_renderers)
+
             if custom_renderer and str(custom_renderer).strip():
                 webgl_data["37446"] = str(custom_renderer).strip()
 
