@@ -193,7 +193,6 @@ class NodriverBrowserManager:
             "--disable-sync",
             "--disable-translate",
             "--disable-notifications",
-            "--disable-gpu-sandbox",
 
             # SSL/Certificate
             "--ignore-certificate-errors",

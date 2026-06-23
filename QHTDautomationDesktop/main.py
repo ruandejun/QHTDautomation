@@ -759,6 +759,109 @@ class TorMonitorWorker(QThread):
                 self.msleep(500)
 
 
+def get_hwid():
+    """Lấy mã định danh phần cứng độc nhất của máy"""
+    import socket
+    import subprocess
+    import os
+    current_machine_id = "unknown-uuid"
+    if 'nt' in os.name:
+        try:
+            current_machine_id = str(subprocess.check_output('wmic csproduct get uuid'), 'utf-8').split('\n')[1].strip()
+        except Exception:
+            pass
+    else:
+        try:
+            cmd = "system_profiler SPHardwareDataType | awk '/Serial Number/ {print $4}'"
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True, check=True)
+            current_machine_id = result.stdout.decode("utf-8").strip()
+        except Exception:
+            pass
+    name_computer = socket.gethostname()
+    hwid = f"{name_computer}-{current_machine_id}"
+    return hwid.strip()
+
+
+class BrowserWorker(QThread):
+    """QThread wrapper to run async nodriver anti-detect browser from PyQt6 UI."""
+    log_signal = pyqtSignal(str)
+    status_signal = pyqtSignal(str, bool)  # (message, is_running)
+
+    def __init__(self, profile_config, profile_name="Default", start_url=""):
+        super().__init__()
+        self.profile_config = profile_config
+        self.profile_name = profile_name
+        self.start_url = start_url
+        self.manager = None
+        self._stop_flag = False
+
+    def run(self):
+        if not MUN_ANTI_BROWSER_AVAILABLE:
+            self.log_signal.emit("❌ Lỗi: Không tìm thấy module mun_anti_browser.")
+            self.status_signal.emit("Lỗi", False)
+            return
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_browser())
+        except Exception as e:
+            self.log_signal.emit(f"❌ Browser error: {e}")
+            self.status_signal.emit("Lỗi", False)
+        finally:
+            loop.close()
+
+    async def _run_browser(self):
+        self.manager = NodriverBrowserManager()
+        self.log_signal.emit(f"🚀 Đang khởi chạy Anti-Detect Browser [{self.profile_name}]...")
+        self.status_signal.emit("Đang chạy", True)
+        try:
+            proxy_str = (
+                self.profile_config.get("proxy_string") or 
+                self.profile_config.get("profile_socks5_details") or 
+                self.profile_config.get("profile_proxy_details", "")
+            )
+            proxy_type = self.profile_config.get("proxy_type") or "socks5"
+            if self.profile_config.get("profile_proxy_type") == 1:
+                proxy_type = "http"
+            elif self.profile_config.get("profile_proxy_type") == 0:
+                proxy_str = ""  # Direct connection
+
+            proxy_username = self.profile_config.get("proxy_username", "")
+            proxy_password = self.profile_config.get("proxy_password", "")
+
+            browser, tab = await self.manager.start(
+                profile_config=self.profile_config,
+                proxy_string=proxy_str,
+                proxy_type=proxy_type,
+                proxy_username=proxy_username,
+                proxy_password=proxy_password,
+                start_url=self.start_url,
+            )
+            self.log_signal.emit(f"✅ Browser [{self.profile_name}] đã sẵn sàng! Anti-detect ACTIVE.")
+            
+            while not self._stop_flag:
+                await asyncio.sleep(0.5)
+                if not self.manager.is_running:
+                    self.log_signal.emit(f"⚠️ Trình duyệt [{self.profile_name}] đã bị đóng bởi người dùng.")
+                    break
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi khởi chạy: {e}")
+        finally:
+            if self.manager and self.manager.is_running:
+                await self.manager.close()
+            self.status_signal.emit("Đã dừng", False)
+            self.log_signal.emit(f"🛑 Browser [{self.profile_name}] đã đóng.")
+
+    def stop_browser(self):
+        self._stop_flag = True
+
+
+class AgentPollSignals(QObject):
+    command_received = pyqtSignal(dict)
+    log_signal = pyqtSignal(str)
+
+
 # ============================================================================
 # QHTD BRIDGE — Python API ↔ JavaScript (QWebChannel)
 # ============================================================================
@@ -802,6 +905,8 @@ class QHTDBridge(QObject):
         self.dopamine_worker = None
         self.tor_download_worker = None
         self.tor_monitor_worker = None
+        self.browser_workers = {}
+        self.poll_thread = None
 
     # --- Tool Info ---
     @pyqtSlot(result=str)
@@ -1019,6 +1124,151 @@ class QHTDBridge(QObject):
         except AttributeError:
             pass
 
+    # --- Browser Profile Management & Polling ---
+    def start_poll_thread(self):
+        """Khởi chạy luồng polling ngầm đồng bộ với server sử dụng threading.Thread"""
+        if hasattr(self, 'poll_running') and self.poll_running:
+            return
+
+        self.poll_signals = AgentPollSignals(self)
+        self.poll_signals.command_received.connect(self.handle_agent_command)
+        self.poll_signals.log_signal.connect(lambda msg: print(f"[AGENT POLL] {msg}", flush=True))
+
+        self.poll_running = True
+        hwid = get_hwid()
+        print(f"[AGENT POLL] Starting poll thread with HWID: {hwid}", flush=True)
+
+        def poll_loop():
+            import time
+            while self.poll_running:
+                try:
+                    session = self.get_requests_session()
+                    
+                    # Get active profiles
+                    active_ids = []
+                    inactive_ids = []
+                    for pid, worker in list(self.browser_workers.items()):
+                        if worker.isRunning():
+                            active_ids.append(int(pid))
+                        else:
+                            inactive_ids.append(pid)
+                    for pid in inactive_ids:
+                        try:
+                            del self.browser_workers[pid]
+                        except Exception:
+                            pass
+                            
+                    payload = {
+                        "hwid": hwid,
+                        "running_profiles": active_ids
+                    }
+                    
+                    payload_str = json.dumps(payload, ensure_ascii=False)
+                    STORAGON_SECRET_KEY = '7yn^8pwp+yzd2l4ki6+v9kp(h)rzs$9gxu4ao^_p+9x_5+1*6o'
+                    import hashlib
+                    sig = hashlib.md5((STORAGON_SECRET_KEY + payload_str).encode('utf-8')).hexdigest()
+                    
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Signature-Authorization": sig
+                    }
+                    
+                    url = f"{C69_BASE_URL.rstrip('/')}/telegram/bapi/agent/poll/"
+                    resp = session.post(url, data=payload_str.encode('utf-8'), headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict) and data.get("success"):
+                            commands = data.get("commands", [])
+                            for cmd in commands:
+                                self.poll_signals.command_received.emit(cmd)
+                    elif resp.status_code == 403:
+                        self.poll_signals.log_signal.emit("❌ Agent poll error: HWID is inactive or banned.")
+                except Exception as e:
+                    # Ignore or log to debug
+                    pass
+                
+                # Sleep 3 seconds (check poll_running every 500ms)
+                for _ in range(6):
+                    if not self.poll_running:
+                        break
+                    time.sleep(0.5)
+
+        import threading
+        self.poll_thread = threading.Thread(target=poll_loop, daemon=True)
+        self.poll_thread.start()
+
+    def handle_agent_command(self, cmd):
+        """Xử lý lệnh điều khiển nhận từ server"""
+        cmd_type = cmd.get("command_type")
+        profile_id = cmd.get("profile_id")
+        profile_data = cmd.get("profile_data") or {}
+
+        if cmd_type == "open_profile":
+            print(f"[AGENT CMD] Received OPEN command for profile ID {profile_id}", flush=True)
+            self.runBrowserProfileWithData(str(profile_id), profile_data)
+        elif cmd_type == "close_profile":
+            print(f"[AGENT CMD] Received CLOSE command for profile ID {profile_id}", flush=True)
+            self.stopBrowserProfile(str(profile_id))
+
+    @pyqtSlot(str, result=str)
+    def runBrowserProfile(self, profile_id):
+        """Mở profile trình duyệt từ web UI"""
+        return self.runBrowserProfileWithData(profile_id, None)
+
+    def runBrowserProfileWithData(self, profile_id, profile_data=None):
+        """Helper thực sự mở profile trình duyệt"""
+        try:
+            pid_int = int(profile_id)
+            if pid_int in self.browser_workers and self.browser_workers[pid_int].isRunning():
+                return json.dumps({"success": True, "message": "Browser is already running"})
+
+            # Nếu chưa có profile_data thì tải trực tiếp từ server
+            if not profile_data:
+                session = self.get_requests_session()
+                url = f"{C69_BASE_URL.rstrip('/')}/dashboard/api/profiles/{pid_int}/"
+                resp = session.get(url, timeout=10)
+                if resp.status_code == 200:
+                    profile_info = resp.json()
+                else:
+                    return json.dumps({"success": False, "error": f"Failed to fetch profile details: HTTP {resp.status_code}"})
+            else:
+                profile_info = profile_data
+
+            # Chuyển đổi định dạng cấu hình server thành local
+            from mun_anti_browser.c69_api import server_to_local
+            local_cfg = server_to_local(profile_info)
+
+            # Khởi chạy BrowserWorker
+            worker = BrowserWorker(
+                profile_config=local_cfg,
+                profile_name=local_cfg.get("name", f"Profile {profile_id}"),
+                start_url=local_cfg.get("profile_start_url", "")
+            )
+            worker.log_signal.connect(lambda msg: print(f"[BROWSER {profile_id}] {msg}", flush=True))
+            
+            self.browser_workers[pid_int] = worker
+            worker.start()
+
+            return json.dumps({"success": True})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return json.dumps({"success": False, "error": str(e)})
+
+    @pyqtSlot(str, result=str)
+    def stopBrowserProfile(self, profile_id):
+        """Dừng profile trình duyệt từ web UI hoặc qua lệnh"""
+        try:
+            pid_int = int(profile_id)
+            if pid_int in self.browser_workers:
+                worker = self.browser_workers[pid_int]
+                if worker.isRunning():
+                    worker.stop_browser()
+                return json.dumps({"success": True})
+            return json.dumps({"success": True, "message": "Browser was not running"})
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)})
+
     # --- Tor Proxy Management ---
     @pyqtSlot(result=bool)
     def isTorInstalled(self):
@@ -1111,26 +1361,8 @@ class QHTDBridge(QObject):
             return json.dumps({"error": str(e)})
 
     # --- Browser Profiles (MunLogin) ---
-    @pyqtSlot(str, result=str)
-    def runBrowserProfile(self, profile_id):
-        """Mở browser profile qua MunLogin agent"""
-        try:
-            if not MUN_ANTI_BROWSER_AVAILABLE:
-                return json.dumps({"error": "mun_anti_browser chưa cài đặt"})
-            # Logic chạy profile — tùy thuộc vào C69ProfileAPI
-            return json.dumps({"success": True, "message": f"Đang mở profile {profile_id}"})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+    # Actual implementation is defined above (lines 1204-1261)
 
-    @pyqtSlot(str, result=str)
-    def stopBrowserProfile(self, profile_id):
-        """Dừng browser profile"""
-        try:
-            if not MUN_ANTI_BROWSER_AVAILABLE:
-                return json.dumps({"error": "mun_anti_browser chưa cài đặt"})
-            return json.dumps({"success": True, "message": f"Đã dừng profile {profile_id}"})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
 
     # --- Utility ---
     @pyqtSlot(str, result=str)
@@ -1511,6 +1743,7 @@ class QHTDStoreDesktop(QMainWindow):
         self.bridge = QHTDBridge(self)
         self.bridge._cookie_jar = []  # shared cookie jar reference
         self._load_cookies_from_disk()
+        QTimer.singleShot(3000, self.bridge.start_poll_thread)
         channel = QWebChannel(self)
         channel.registerObject("qhtdBridge", self.bridge)
         page.setWebChannel(channel)
@@ -1609,6 +1842,19 @@ class QHTDStoreDesktop(QMainWindow):
     def closeEvent(self, event):
         """Cleanup khi đóng app"""
         if self.bridge:
+            # Stop poll thread
+            if hasattr(self.bridge, 'poll_running'):
+                self.bridge.poll_running = False
+            if hasattr(self.bridge, 'poll_thread') and self.bridge.poll_thread and self.bridge.poll_thread.is_alive():
+                self.bridge.poll_thread.join(timeout=3.0)
+            
+            # Stop all active browser workers
+            if hasattr(self.bridge, 'browser_workers') and self.bridge.browser_workers:
+                for pid, worker in list(self.bridge.browser_workers.items()):
+                    if worker.isRunning():
+                        worker.stop_browser()
+                        worker.wait(3000)
+
             if self.bridge.automation_worker and self.bridge.automation_worker.isRunning():
                 self.bridge.automation_worker.stop()
                 self.bridge.automation_worker.wait(3000)
