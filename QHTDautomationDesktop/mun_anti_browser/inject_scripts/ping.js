@@ -2,21 +2,50 @@
 // Blocks navigator.sendBeacon to prevent tracking pings.
 
 (function fakePing() {
-  if (!navigator || !navigator.sendBeacon){
+  if (typeof Navigator === 'undefined' || !Navigator.prototype) {
     return;
   }
-  function doUpdateProp(obj, prop, newVal){
-    let props = Object.getOwnPropertyDescriptor(obj, prop) || {configurable:true};
-    if (!props["configurable"]) {
-      return;
+
+  // Capture helpers locally in closure to protect dynamic iframes
+  const _localMakeNative = window._makeNative;
+  const _localSafelyOverrideValue = window._safelyOverrideValue;
+
+  function patchMethod(obj, prop, newFunc, len) {
+    if (len !== undefined) {
+      try {
+        Object.defineProperty(newFunc, 'length', {
+          value: len,
+          configurable: true
+        });
+      } catch(e) {}
     }
-    props["value"] = newVal;
-    Object.defineProperty(obj, prop, props);
-    return props;
+    if (_localSafelyOverrideValue) {
+      _localSafelyOverrideValue(obj, prop, newFunc);
+    } else {
+      try {
+        Object.defineProperty(newFunc, 'name', {
+          value: prop,
+          configurable: true
+        });
+      } catch(e) {}
+      if (_localMakeNative) {
+        _localMakeNative(newFunc, prop);
+      }
+      try {
+        Object.defineProperty(obj, prop, {
+          value: newFunc,
+          writable: true,
+          configurable: true,
+          enumerable: true
+        });
+      } catch(e) {}
+    }
   }
 
-  doUpdateProp(navigator, "sendBeacon", function() {
+  var sendBeaconFunc = function() {
     return true;
-  });
-  doUpdateProp(navigator.sendBeacon, "toString", "function sendBeacon() { [native code] }");
+  };
+
+  patchMethod(Navigator.prototype, 'sendBeacon', sendBeaconFunc, 2);
 })();
+

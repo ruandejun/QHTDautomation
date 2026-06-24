@@ -10,12 +10,40 @@
 
   let setting_level = Math.floor(seededRandom() * 50 + 50) / 100;
 
-  function doUpdateProp(obj, prop, newVal){
-    let props = Object.getOwnPropertyDescriptor(obj, prop) || {configurable:true};
-    props["value"] = newVal;
-    props["configurable"] = true;
-    Object.defineProperty(obj, prop, props);
-    return props;
+  // Capture helpers locally in closure to protect dynamic iframes
+  const _localMakeNative = window._makeNative;
+  const _localSafelyOverrideValue = window._safelyOverrideValue;
+
+  function patchMethod(obj, prop, newFunc, len) {
+    if (len !== undefined) {
+      try {
+        Object.defineProperty(newFunc, 'length', {
+          value: len,
+          configurable: true
+        });
+      } catch(e) {}
+    }
+    if (_localSafelyOverrideValue) {
+      _localSafelyOverrideValue(obj, prop, newFunc);
+    } else {
+      try {
+        Object.defineProperty(newFunc, 'name', {
+          value: prop,
+          configurable: true
+        });
+      } catch(e) {}
+      if (_localMakeNative) {
+        _localMakeNative(newFunc, prop);
+      }
+      try {
+        Object.defineProperty(obj, prop, {
+          value: newFunc,
+          writable: true,
+          configurable: true,
+          enumerable: true
+        });
+      } catch(e) {}
+    }
   }
 
   let BatteryPromise = new Promise(function(resolve, reject){
@@ -32,8 +60,12 @@
     resolve(new BatteryManager());
   });
 
-  doUpdateProp(navigator, "getBattery", function() {
+  var getBatteryFunc = function() {
     return BatteryPromise;
-  });
-  doUpdateProp(navigator.getBattery, "toString", "function getBattery() { [native code] }");
+  };
+
+  if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+    patchMethod(Navigator.prototype, 'getBattery', getBatteryFunc, 0);
+  }
 })();
+
