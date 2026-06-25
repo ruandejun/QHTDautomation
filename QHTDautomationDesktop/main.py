@@ -72,6 +72,101 @@ try:
 except ImportError:
     TOR_MANAGER_AVAILABLE = False
 
+# === Win32 Network Helper (cải thiện hiệu năng định tuyến) ===
+import ctypes
+from ctypes import wintypes
+
+try:
+    iphlpapi = ctypes.WinDLL('iphlpapi.dll')
+except Exception:
+    iphlpapi = None
+
+class MIB_IPFORWARDROW(ctypes.Structure):
+    _fields_ = [
+        ("dwForwardDest", wintypes.DWORD),
+        ("dwForwardMask", wintypes.DWORD),
+        ("dwForwardPolicy", wintypes.DWORD),
+        ("dwForwardNextHop", wintypes.DWORD),
+        ("dwForwardIfIndex", wintypes.DWORD),
+        ("dwForwardType", wintypes.DWORD),
+        ("dwForwardProto", wintypes.DWORD),
+        ("dwForwardAge", wintypes.DWORD),
+        ("dwForwardNextHopAS", wintypes.DWORD),
+        ("dwForwardMetric1", wintypes.DWORD),
+        ("dwForwardMetric2", wintypes.DWORD),
+        ("dwForwardMetric3", wintypes.DWORD),
+        ("dwForwardMetric4", wintypes.DWORD),
+        ("dwForwardMetric5", wintypes.DWORD),
+    ]
+
+class NET_LUID(ctypes.Structure):
+    _fields_ = [("Value", ctypes.c_uint64)]
+
+IF_MAX_STRING_SIZE = 256
+
+if iphlpapi:
+    iphlpapi.ConvertInterfaceAliasToLuid.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(NET_LUID)]
+    iphlpapi.ConvertInterfaceAliasToLuid.restype = wintypes.ULONG
+
+    iphlpapi.ConvertInterfaceLuidToIndex.argtypes = [ctypes.POINTER(NET_LUID), ctypes.POINTER(wintypes.ULONG)]
+    iphlpapi.ConvertInterfaceLuidToIndex.restype = wintypes.ULONG
+
+    iphlpapi.ConvertInterfaceIndexToLuid.argtypes = [wintypes.ULONG, ctypes.POINTER(NET_LUID)]
+    iphlpapi.ConvertInterfaceIndexToLuid.restype = wintypes.ULONG
+
+    iphlpapi.ConvertInterfaceLuidToAlias.argtypes = [ctypes.POINTER(NET_LUID), ctypes.c_wchar_p, ctypes.c_size_t]
+    iphlpapi.ConvertInterfaceLuidToAlias.restype = wintypes.ULONG
+
+    iphlpapi.GetBestRoute.argtypes = [wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(MIB_IPFORWARDROW)]
+    iphlpapi.GetBestRoute.restype = wintypes.DWORD
+
+def win32_get_best_interface_index(dest_ip: str = "8.8.8.8") -> int:
+    if not iphlpapi:
+        return None
+    try:
+        import socket
+        import struct
+        dest_addr = struct.unpack("I", socket.inet_aton(dest_ip))[0]
+        row = MIB_IPFORWARDROW()
+        res = iphlpapi.GetBestRoute(dest_addr, 0, ctypes.byref(row))
+        if res == 0:
+            return row.dwForwardIfIndex
+    except Exception:
+        pass
+    return None
+
+def win32_alias_to_index(alias: str) -> int:
+    if not iphlpapi or not alias:
+        return None
+    try:
+        luid = NET_LUID()
+        res = iphlpapi.ConvertInterfaceAliasToLuid(alias, ctypes.byref(luid))
+        if res != 0:
+            return None
+        idx = wintypes.ULONG()
+        res = iphlpapi.ConvertInterfaceLuidToIndex(ctypes.byref(luid), ctypes.byref(idx))
+        if res != 0:
+            return None
+        return idx.value
+    except Exception:
+        return None
+
+def win32_index_to_alias(index: int) -> str:
+    if not iphlpapi or index is None:
+        return None
+    try:
+        luid = NET_LUID()
+        res = iphlpapi.ConvertInterfaceIndexToLuid(index, ctypes.byref(luid))
+        if res != 0:
+            return None
+        buf = ctypes.create_unicode_buffer(IF_MAX_STRING_SIZE + 1)
+        res = iphlpapi.ConvertInterfaceLuidToAlias(ctypes.byref(luid), buf, IF_MAX_STRING_SIZE + 1)
+        if res != 0:
+            return None
+        return buf.value
+    except Exception:
+        return None
+
 # Lấy thư mục chạy của script hoặc của file exe đóng gói
 def get_app_dir():
     if getattr(sys, 'frozen', False):
@@ -907,6 +1002,188 @@ class QHTDBridge(QObject):
         self.tor_monitor_worker = None
         self.browser_workers = {}
         self.poll_thread = None
+        
+        # Routing cache & poll thread
+        self._cached_interfaces = "[]"
+        self._cached_leases = "[]"
+        self.router_poll_running = False
+        self.router_poll_thread = None
+        self._updating_interfaces = False
+        self._last_interface_update_time = 0
+        self._interface_to_index = {}
+        self._index_to_interface = {}
+        
+        # Load interface indices offline in a background thread
+        import threading
+        t_load = threading.Thread(target=self._load_interface_indices, daemon=True)
+        t_load.start()
+        
+        self.start_router_poll_thread()
+
+    def start_router_poll_thread(self):
+        if self.router_poll_running:
+            return
+        import threading
+        self.router_poll_running = True
+        self.router_poll_thread = threading.Thread(target=self._router_poll_loop, daemon=True)
+        self.router_poll_thread.start()
+
+    def _router_poll_loop(self):
+        # Initial updates
+        self._update_network_interfaces()
+        self._update_dhcp_leases()
+        
+        last_leases_update = time.time()
+        last_ifaces_update = time.time()
+        
+        while self.router_poll_running:
+            now = time.time()
+            # Poll DHCP leases every 3 seconds
+            if now - last_leases_update >= 3.0:
+                self._update_dhcp_leases()
+                last_leases_update = now
+            # Poll Network Interfaces every 15 seconds
+            if now - last_ifaces_update >= 15.0:
+                self._update_network_interfaces()
+                last_ifaces_update = now
+            time.sleep(0.5)
+
+    def _load_interface_indices(self):
+        try:
+            import psutil
+            addrs = psutil.net_if_addrs()
+            for alias in addrs.keys():
+                idx = win32_alias_to_index(alias)
+                if idx is not None:
+                    self._interface_to_index[alias] = idx
+                    self._index_to_interface[idx] = alias
+        except Exception as e:
+            print(f"[QHTD] Error loading interface indices offline: {e}")
+
+    def _update_network_interfaces(self):
+        if getattr(self, "_updating_interfaces", False):
+            return
+        self._updating_interfaces = True
+        try:
+            import psutil
+            interfaces = []
+            addrs = psutil.net_if_addrs()
+            
+            for alias, addr_list in addrs.items():
+                ip = ""
+                for addr in addr_list:
+                    if addr.family == socket.AF_INET:
+                        ip = addr.address
+                        break
+                
+                idx = self._interface_to_index.get(alias)
+                if idx is None:
+                    idx = win32_alias_to_index(alias)
+                    if idx is not None:
+                        self._interface_to_index[alias] = idx
+                        self._index_to_interface[idx] = alias
+                
+                if idx is not None:
+                    interfaces.append({
+                        "name": str(idx),
+                        "friendly_name": alias,
+                        "ip": ip
+                    })
+                else:
+                    interfaces.append({
+                        "name": alias,
+                        "friendly_name": alias,
+                        "ip": ip
+                    })
+
+            if not interfaces:
+                hostname = socket.gethostname()
+                ips = socket.gethostbyname_ex(hostname)[2]
+                for idx, ip in enumerate(ips):
+                    interfaces.append({
+                        "name": f"eth{idx}",
+                        "friendly_name": f"Local Interface {idx}",
+                        "ip": ip
+                    })
+            self._cached_interfaces = json.dumps(interfaces, ensure_ascii=False)
+            self._last_interface_update_time = time.time()
+        except Exception as e:
+            self._cached_interfaces = json.dumps({"error": str(e)})
+        finally:
+            self._updating_interfaces = False
+
+    def _update_dhcp_leases(self):
+        import datetime
+        try:
+            r = requests.get("http://127.0.0.1:8000/status", timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                devices = data.get("devices", [])
+                leases = []
+                for d in devices:
+                    ts = d.get("timestamp", 0)
+                    leased_at = ""
+                    if ts > 0:
+                        try:
+                            leased_at = datetime.datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+                        except Exception:
+                            leased_at = datetime.datetime.now().strftime('%H:%M:%S')
+                    else:
+                        leased_at = datetime.datetime.now().strftime('%H:%M:%S')
+                        
+                    leases.append({
+                        "mac": d.get("mac", ""),
+                        "ip": d.get("ip", ""),
+                        "hostname": d.get("name", f"Device {d.get('ip')}"),
+                        "leased_at": leased_at,
+                        "status": d.get("status", "Offline")
+                    })
+                self._cached_leases = json.dumps(leases, ensure_ascii=False)
+                return
+        except Exception:
+            pass
+            
+        try:
+            router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
+            hosts_csv_path = os.path.join(router_dir, "hosts.csv")
+            leases = []
+            
+            if os.path.exists(hosts_csv_path):
+                with open(hosts_csv_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(";")
+                        if len(parts) >= 2:
+                            mac = parts[0].strip().upper()
+                            ip = parts[1].strip()
+                            name = parts[2].strip() if len(parts) >= 3 else f"Device {ip}"
+                            ts = 0
+                            if len(parts) >= 4:
+                                try:
+                                    ts = int(parts[3].strip())
+                                except ValueError:
+                                    pass
+                            
+                            leased_at = ""
+                            if ts > 0:
+                                leased_at = datetime.datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+                            else:
+                                leased_at = datetime.datetime.now().strftime('%H:%M:%S')
+                                
+                            is_online = (time.time() - ts < 600) if ts > 0 else False
+                            leases.append({
+                                "mac": mac,
+                                "ip": ip,
+                                "hostname": name,
+                                "leased_at": leased_at,
+                                "status": "Online" if is_online else "Offline"
+                            })
+                self._cached_leases = json.dumps(leases, ensure_ascii=False)
+                return
+        except Exception as e:
+            print(f"[QHTD] Error getting DHCP leases fallback: {e}")
+            
+        self._cached_leases = "[]"
+
 
     # --- Tool Info ---
     @pyqtSlot(result=str)
@@ -1442,73 +1719,228 @@ class QHTDBridge(QObject):
     # --- Network Routing (new) ---
     @pyqtSlot(result=str)
     def getNetworkInterfaces(self):
-        try:
-            cmd = ["powershell", "-NoProfile", "-Command", 
-                   "Get-NetIPInterface -AddressFamily IPv4 | "
-                   "Select-Object InterfaceIndex, InterfaceAlias | "
-                   "ConvertTo-Json"]
-            proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            interfaces = []
-            if proc.returncode == 0 and proc.stdout.strip():
-                try:
-                    raw_ifaces = json.loads(proc.stdout)
-                    if not isinstance(raw_ifaces, list):
-                        raw_ifaces = [raw_ifaces]
-                    for item in raw_ifaces:
-                        idx = item.get("InterfaceIndex")
-                        alias = item.get("InterfaceAlias")
-                        ip_cmd = ["powershell", "-NoProfile", "-Command",
-                                  f"Get-NetIPAddress -InterfaceIndex {idx} -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress"]
-                        ip_proc = subprocess.run(ip_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        ip = ip_proc.stdout.strip()
-                        interfaces.append({
-                            "name": str(idx),
-                            "friendly_name": alias,
-                            "ip": ip
-                        })
-                except Exception:
-                    pass
-            if not interfaces:
-                hostname = socket.gethostname()
-                ips = socket.gethostbyname_ex(hostname)[2]
-                for idx, ip in enumerate(ips):
-                    interfaces.append({
-                        "name": f"eth{idx}",
-                        "friendly_name": f"Local Interface {idx}",
-                        "ip": ip
-                    })
-            return json.dumps(interfaces, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        now = time.time()
+        if not getattr(self, "_updating_interfaces", False) and (now - getattr(self, "_last_interface_update_time", 0) > 5.0):
+            try:
+                import threading
+                t = threading.Thread(target=self._update_network_interfaces, daemon=True)
+                t.start()
+            except Exception as e:
+                print(f"[QHTD] Error launching network interface update thread: {e}")
+        return self._cached_interfaces
 
     @pyqtSlot(str, result=str)
     def startRouter(self, config_json):
         try:
+            # Ghi log payload thô để phục vụ chẩn đoán lỗi
+            try:
+                debug_log_path = os.path.join(get_app_dir(), "router_debug.txt")
+                with open(debug_log_path, "a", encoding="utf-8") as f_dbg:
+                    f_dbg.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - Raw config: {config_json}\n")
+            except Exception as log_ex:
+                print(f"[QHTD] Logging config failed: {log_ex}")
+
             config = json.loads(config_json)
             self.router_config = config
+            
+            lan_if = config.get("lan_interface") or config.get("interface") or config.get("lan") or config.get("lan_if")
+            wan_if = config.get("wan_interface") or config.get("wan") or config.get("wan_if")
+            dhcp_start = config.get("dhcp_range_start") or config.get("dhcp_start") or config.get("dhcpRangeStart") or config.get("dhcpStart")
+            dhcp_end = config.get("dhcp_range_end") or config.get("dhcp_end") or config.get("dhcpRangeEnd") or config.get("dhcpEnd")
+            dns_server = config.get("dns_server") or config.get("dns") or config.get("dnsServer") or "8.8.8.8"
+            
+            if not lan_if:
+                return json.dumps({"error": f"Vui lòng chọn card mạng LAN. (Nhận được: {config_json})"})
+                
+            router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
+            config_path = os.path.join(router_dir, "config.json")
+            
+            # 1. Read existing phonefarm-router config.json for fallback
+            config_data = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    try:
+                        config_data = json.load(f)
+                    except Exception:
+                        pass
+            
+            def get_alias_from_index_or_name(iface):
+                if not iface:
+                    return ""
+                if str(iface).isdigit():
+                    idx = int(iface)
+                    if idx in self._index_to_interface:
+                        return self._index_to_interface[idx]
+                    
+                    try:
+                        ifaces = json.loads(self._cached_interfaces)
+                        for item in ifaces:
+                            if item.get("name") == str(iface) and item.get("friendly_name"):
+                                friendly_name = item.get("friendly_name")
+                                self._index_to_interface[idx] = friendly_name
+                                self._interface_to_index[friendly_name] = idx
+                                return friendly_name
+                    except Exception:
+                        pass
+                    
+                    alias = win32_index_to_alias(idx)
+                    if alias:
+                        self._index_to_interface[idx] = alias
+                        self._interface_to_index[alias] = idx
+                        return alias
+                else:
+                    alias = str(iface)
+                    if alias in self._interface_to_index:
+                        return alias
+                    try:
+                        ifaces = json.loads(self._cached_interfaces)
+                        for item in ifaces:
+                            if item.get("friendly_name") == alias and item.get("name"):
+                                idx = int(item.get("name"))
+                                self._interface_to_index[alias] = idx
+                                self._index_to_interface[idx] = alias
+                                break
+                    except Exception:
+                        pass
+                    
+                    if alias not in self._interface_to_index:
+                        idx = win32_alias_to_index(alias)
+                        if idx is not None:
+                            self._interface_to_index[alias] = idx
+                            self._index_to_interface[idx] = alias
+                return str(iface)
+
+            lan_alias = get_alias_from_index_or_name(lan_if)
+
+            # Auto-detect WAN interface if not provided in the payload
+            if not wan_if:
+                # Attempt 1: Get the best route to the Internet (e.g. 8.8.8.8) using Win32 API
+                best_idx = win32_get_best_interface_index("8.8.8.8")
+                if best_idx is not None:
+                    detected_alias = get_alias_from_index_or_name(best_idx)
+                    if detected_alias and detected_alias != lan_alias:
+                        wan_if = str(best_idx)
+                
+                # Attempt 2: Fall back to existing config's wan_interface if valid
+                if not wan_if:
+                    old_wan = config_data.get("wan_interface")
+                    if old_wan and old_wan != lan_alias:
+                        wan_if = old_wan
+
+                # Attempt 3: Fall back to any active interface that is not the LAN interface
+                if not wan_if:
+                    try:
+                        import psutil
+                        addrs = psutil.net_if_addrs()
+                        for alias in addrs.keys():
+                            if alias != lan_alias:
+                                for addr in addrs[alias]:
+                                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                                        wan_if = alias
+                                        break
+                            if wan_if:
+                                break
+                    except Exception:
+                        pass
+
+                # Final fallback
+                if not wan_if:
+                    wan_if = "Wi-Fi" if lan_alias != "Wi-Fi" else "Ethernet"
+
+            wan_alias = get_alias_from_index_or_name(wan_if)
+            
+            config_data["lan_interface"] = lan_alias
+            config_data["wan_interface"] = wan_alias
+            if dhcp_start:
+                config_data["dhcp_range_start"] = dhcp_start
+            if dhcp_end:
+                config_data["dhcp_range_end"] = dhcp_end
+            if dns_server:
+                config_data["dns_server"] = dns_server
+                
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+                
+            # 2. Dynamic Router IP Calculation
+            router_ip = "192.168.88.1"
+            if dhcp_start:
+                parts = dhcp_start.split('.')
+                if len(parts) == 4:
+                    router_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+            
+            import psutil
+            addrs = psutil.net_if_addrs()
+            has_ip = False
+            if lan_alias in addrs:
+                for addr in addrs[lan_alias]:
+                    if addr.family == socket.AF_INET and addr.address == router_ip:
+                        has_ip = True
+                        break
+            
+            if not has_ip:
+                if str(lan_if).isdigit():
+                    ps_script = (
+                        f"Remove-NetIPAddress -InterfaceIndex {lan_if} -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue; "
+                        f"New-NetIPAddress -InterfaceIndex {lan_if} -IPAddress '{router_ip}' -PrefixLength 24 -DefaultGateway $null; "
+                        f"Set-DnsClientServerAddress -InterfaceIndex {lan_if} -ServerAddresses ('8.8.8.8','1.1.1.1')"
+                    )
+                else:
+                    ps_script = (
+                        f"Remove-NetIPAddress -InterfaceAlias '{lan_alias}' -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue; "
+                        f"New-NetIPAddress -InterfaceAlias '{lan_alias}' -IPAddress '{router_ip}' -PrefixLength 24 -DefaultGateway $null; "
+                        f"Set-DnsClientServerAddress -InterfaceAlias '{lan_alias}' -ServerAddresses ('8.8.8.8','1.1.1.1')"
+                    )
+                
+                cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_script}' -Verb RunAs -WindowStyle Hidden\""
+                subprocess.run(cmd_run, shell=True)
+                
+            # 3. Start DHCP server
+            dhcp_script_path = os.path.join(router_dir, "scratch", "run_dhcp.py")
+            dhcp_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '{dhcp_script_path}' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            subprocess.run(dhcp_cmd, shell=True)
+            
+            # 4. Start API server
+            api_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '-m uvicorn app.api:app --host 0.0.0.0 --port 8000' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            subprocess.run(api_cmd, shell=True)
+            
             self.router_active = True
-            print(f"[QHTD] Started routing on {config.get('interface')} (DHCP: {config.get('dhcp_start')} - {config.get('dhcp_end')})")
+            print(f"[QHTD] Started routing dynamically: LAN={lan_alias} (IP={router_ip}), WAN={wan_alias}")
             return json.dumps({"success": True})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
     @pyqtSlot(result=str)
     def stopRouter(self):
-        self.router_active = False
-        print("[QHTD] Stopped routing and DHCP server")
-        return json.dumps({"success": True})
+        try:
+            self.router_active = False
+            
+            ps_kill = (
+                "$p = Get-NetUDPEndpoint -LocalPort 67 -ErrorAction SilentlyContinue; "
+                "if ($p) { Stop-Process -Id $p.OwningProcess -Force -ErrorAction SilentlyContinue }; "
+                "$p2 = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue; "
+                "if ($p2) { Stop-Process -Id $p2.OwningProcess -Force -ErrorAction SilentlyContinue }; "
+                "Stop-Process -Name 'sing-box' -Force -ErrorAction SilentlyContinue"
+            )
+            
+            cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_kill}' -Verb RunAs -WindowStyle Hidden\""
+            subprocess.run(cmd_run, shell=True)
+            print("[QHTD] Stopped routing and DHCP server")
+            return json.dumps({"success": True})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
 
     @pyqtSlot(result=str)
     def getDHCPLeases(self):
-        import datetime
-        if not self.router_active:
-            return "[]"
-        now_str = datetime.datetime.now().strftime('%H:%M:%S')
-        leases = [
-            {"ip": "192.168.10.105", "mac": "00:1A:2B:3C:4D:5E", "hostname": "iPhone-11-Pro", "leased_at": now_str},
-            {"ip": "192.168.10.109", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "iPhone-XS-Max", "leased_at": now_str}
-        ]
-        return json.dumps(leases, ensure_ascii=False)
+        return self._cached_leases
+
+    @pyqtSlot(result=str)
+    def refreshDHCPLeases(self):
+        self._update_dhcp_leases()
+        return self._cached_leases
+
+    @pyqtSlot(result=bool)
+    def isRouterActive(self):
+        return self.router_active
 
     # --- Enhanced Device Actions (new) ---
     @pyqtSlot(str, result=str)
@@ -1855,6 +2287,12 @@ class QHTDStoreDesktop(QMainWindow):
             if hasattr(self.bridge, 'poll_thread') and self.bridge.poll_thread and self.bridge.poll_thread.is_alive():
                 self.bridge.poll_thread.join(timeout=3.0)
             
+            # Stop router poll thread
+            if hasattr(self.bridge, 'router_poll_running'):
+                self.bridge.router_poll_running = False
+            if hasattr(self.bridge, 'router_poll_thread') and self.bridge.router_poll_thread and self.bridge.router_poll_thread.is_alive():
+                self.bridge.router_poll_thread.join(timeout=3.0)
+            
             # Stop all active browser workers
             if hasattr(self.bridge, 'browser_workers') and self.bridge.browser_workers:
                 for pid, worker in list(self.bridge.browser_workers.items()):
@@ -1879,6 +2317,8 @@ class QHTDStoreDesktop(QMainWindow):
                 self.bridge.tor_download_worker.wait(3000)
             if hasattr(self.bridge, 'stopAllTorProxies'):
                 self.bridge.stopAllTorProxies()
+            if hasattr(self.bridge, 'stopRouter'):
+                self.bridge.stopRouter()
         event.accept()
 
     def take_test_screenshot(self):
