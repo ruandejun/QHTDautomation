@@ -1919,7 +1919,7 @@ class QHTDBridge(QObject):
                 "if ($p) { Stop-Process -Id $p.OwningProcess -Force -ErrorAction SilentlyContinue }; "
                 "$p2 = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue; "
                 "if ($p2) { Stop-Process -Id $p2.OwningProcess -Force -ErrorAction SilentlyContinue }; "
-                "Stop-Process -Name 'sing-box' -Force -ErrorAction SilentlyContinue"
+                "Stop-Process -Name sing-box -Force -ErrorAction SilentlyContinue"
             )
             
             cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_kill}' -Verb RunAs -WindowStyle Hidden\""
