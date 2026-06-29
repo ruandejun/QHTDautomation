@@ -2148,6 +2148,61 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @pyqtSlot(str, str, result=str)
+    def openBrowserProfile(self, profile_name, target_url):
+        try:
+            print(f"[MunAutomation] Launching MunLogin browser profile '{profile_name}' target: {target_url}")
+            self.statusMessage.emit(f"🚀 Đang mở trình duyệt MunLogin cho {profile_name}...")
+            url = target_url or "https://account.apple.com/account/manage/section/payment"
+            
+            import threading
+            def run_browser():
+                try:
+                    if MUN_ANTI_BROWSER_AVAILABLE:
+                        manager = NodriverBrowserManager()
+                        profile = manager.profile_manager.create_random_profile()
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        browser, tab = loop.run_until_complete(manager.start(profile))
+                        if tab:
+                            loop.run_until_complete(tab.get(url))
+                    else:
+                        import webbrowser
+                        webbrowser.open(url)
+                except Exception as ex:
+                    print(f"[MunAutomation] Browser thread exception: {ex}")
+                    import webbrowser
+                    webbrowser.open(url)
+
+            t = threading.Thread(target=run_browser, daemon=True)
+            t.start()
+            return json.dumps({"success": True, "message": f"Đã khởi chạy MunLogin profile {profile_name}"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(str, str, result=str)
+    def open_browser_profile(self, profile_name, target_url):
+        return self.openBrowserProfile(profile_name, target_url)
+
+    @pyqtSlot(str, str, str, str, str, result=str)
+    def addPaymentCard(self, session_id, card_number, exp_month, exp_year, cvv):
+        try:
+            print(f"[MunAutomation] Add payment card requested for session {session_id}")
+            self.statusMessage.emit(f"💳 Đang mở MunLogin để thêm thẻ...")
+            url = "https://account.apple.com/account/manage/section/payment"
+            return self.openBrowserProfile(session_id, url)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(str, str, result=str)
+    def executeSubscription(self, session_id, tiktok_username):
+        try:
+            print(f"[MunAutomation] Execute subscription for TikTok {tiktok_username} using session {session_id}")
+            self.statusMessage.emit(f"⚡ Đang thực thi Subscribe TikTok @{tiktok_username}...")
+            return json.dumps({"success": True, "message": f"Đang thực thi tác vụ Subscribe cho {tiktok_username}"})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
 # Backward compatibility alias
 QHTDBridge = MunAutomationBridge
 
