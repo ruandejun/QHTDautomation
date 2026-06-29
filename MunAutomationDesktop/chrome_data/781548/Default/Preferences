@@ -1,0 +1,10 @@
+{
+  "webrtc": {
+    "ip_handling_policy": "disable_non_proxied_udp",
+    "multiple_routes_enabled": false,
+    "nonproxied_udp_enabled": false
+  },
+  "webrtc_event_log_manager": {
+    "allow_remote_bound": false
+  }
+}

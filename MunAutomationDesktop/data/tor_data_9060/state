@@ -1,0 +1,80 @@
+# Tor state file last generated on 2026-06-23 18:15:30 local time
+# Other times below are in UTC
+# You *do not* need to edit this file.
+
+CircuitBuildTimeBin 675 1
+CircuitBuildTimeBin 685 3
+CircuitBuildTimeBin 695 5
+CircuitBuildTimeBin 705 2
+CircuitBuildTimeBin 715 2
+CircuitBuildTimeBin 725 1
+CircuitBuildTimeBin 735 2
+CircuitBuildTimeBin 745 3
+CircuitBuildTimeBin 755 2
+CircuitBuildTimeBin 765 3
+CircuitBuildTimeBin 775 5
+CircuitBuildTimeBin 785 2
+CircuitBuildTimeBin 795 2
+CircuitBuildTimeBin 805 3
+CircuitBuildTimeBin 815 1
+CircuitBuildTimeBin 825 1
+CircuitBuildTimeBin 845 2
+CircuitBuildTimeBin 855 1
+CircuitBuildTimeBin 865 2
+CircuitBuildTimeBin 875 3
+CircuitBuildTimeBin 895 1
+CircuitBuildTimeBin 905 1
+CircuitBuildTimeBin 915 1
+CircuitBuildTimeBin 925 3
+CircuitBuildTimeBin 935 1
+CircuitBuildTimeBin 945 1
+CircuitBuildTimeBin 955 1
+CircuitBuildTimeBin 965 1
+CircuitBuildTimeBin 975 1
+CircuitBuildTimeBin 985 2
+CircuitBuildTimeBin 1005 1
+CircuitBuildTimeBin 1025 1
+CircuitBuildTimeBin 1035 1
+CircuitBuildTimeBin 1055 1
+CircuitBuildTimeBin 1085 2
+CircuitBuildTimeBin 1105 1
+CircuitBuildTimeBin 1115 3
+CircuitBuildTimeBin 1125 1
+CircuitBuildTimeBin 1135 1
+CircuitBuildTimeBin 1145 3
+CircuitBuildTimeBin 1155 2
+CircuitBuildTimeBin 1165 2
+CircuitBuildTimeBin 1235 1
+CircuitBuildTimeBin 1285 1
+CircuitBuildTimeBin 1305 1
+CircuitBuildTimeBin 1385 1
+CircuitBuildTimeBin 1395 1
+CircuitBuildTimeBin 1415 1
+CircuitBuildTimeBin 1485 1
+CircuitBuildTimeBin 1495 1
+CircuitBuildTimeBin 1575 1
+Dormant 0
+Guard in=default rsa_id=CF9BEB3E3554C5C343024641A91CC9AE6B849882 nickname=vunreteqrado sampled_on=2026-06-19T23:21:38 sampled_idx=0 sampled_by=0.4.9.9 listed=1 confirmed_on=2026-06-11T20:57:20 confirmed_idx=0 pb_circ_attempts=26.000000 pb_circ_successes=26.000000 pb_successful_circuits_closed=26.000000
+Guard in=default rsa_id=86D924EDE1498B4E1DD08D2260F3E9FE454012E1 nickname=mnesys1 sampled_on=2026-06-17T02:06:33 sampled_idx=1 sampled_by=0.4.9.9 listed=1 confirmed_on=2026-06-23T08:22:37 confirmed_idx=1 pb_circ_attempts=27.000000 pb_circ_successes=27.000000 pb_successful_circuits_closed=27.000000 pb_timeouts=2.000000
+Guard in=default rsa_id=5C386C4F91FD616F0F60F4E6D674D9E3F192C931 nickname=sn0rlax sampled_on=2026-06-21T20:31:40 sampled_idx=2 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=4DD822C2CF4542CDF2EDA22480C4EB0331E7B6DB nickname=doraemon sampled_on=2026-06-21T02:13:35 sampled_idx=3 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=9308F49A225022FA39011033E1C31EFF5B7B5000 nickname=freeiranandtheworld sampled_on=2026-06-18T10:35:35 sampled_idx=4 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=85186D4C2F0E4257C83001D58D6FAB1AF93AA227 nickname=Quetzalcoatl sampled_on=2026-06-22T14:29:04 sampled_idx=5 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=2FABC6B95C30398ECAD68CBA88AD2AC3CE29917A nickname=prsv sampled_on=2026-06-19T01:44:26 sampled_idx=6 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=6E9977D03E2A987C52EF21B29B167FBE492DC20C nickname=NTH154R1 sampled_on=2026-06-11T19:38:55 sampled_idx=7 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=B8C6DC084969AB139DBCC0984ECF86EE2A0A01C8 nickname=prsv sampled_on=2026-06-11T14:11:29 sampled_idx=8 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=388F9E0A6BA0C81860ED780BE739A088726F925B nickname=ftoset sampled_on=2026-06-12T03:07:22 sampled_idx=9 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=6CC4985B8057425A29C1D449401B76C31E7F2BE5 nickname=PommespanzerGB1 sampled_on=2026-06-15T06:13:34 sampled_idx=10 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=6817D0818A0059EF36702C76651A5C4901FAE513 nickname=washington sampled_on=2026-06-16T03:26:09 sampled_idx=11 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=3076723D196C84E233E57CA04EE7768A8E58EDAA nickname=TorNode07dot1 sampled_on=2026-06-23T07:30:46 sampled_idx=12 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=4D70F05DD308A2EA5B671E440879BFADAC92860F nickname=arbitraryTessa1 sampled_on=2026-06-11T21:26:00 sampled_idx=13 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=106025FF92AED5D5AD2F82087CAABABB53C5A5A7 nickname=NTH132R1 sampled_on=2026-06-17T21:34:27 sampled_idx=14 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=4919055EBDC5E6C77BC254D7E6C1452E53785C4D nickname=NTH118R1 sampled_on=2026-06-18T21:28:16 sampled_idx=15 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=FC87BA11F0364DBF5E5B9846F4C82132792F758C nickname=REMA sampled_on=2026-06-12T11:54:58 sampled_idx=16 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=FD5A85785ED438CC485B8FB8615FF16C98ABB27C nickname=as215248node9 sampled_on=2026-06-22T11:45:08 sampled_idx=17 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=9B3D8A7562990859888F3F301A98CF3DA8A135C5 nickname=prsv sampled_on=2026-06-16T22:51:28 sampled_idx=18 sampled_by=0.4.9.9 listed=1
+Guard in=default rsa_id=F8467967A2AD1E2C0B879D8E0B5D9D8DC313EF17 nickname=prsv sampled_on=2026-06-15T03:22:08 sampled_idx=19 sampled_by=0.4.9.9 listed=1
+LastWritten 2026-06-23 11:15:30
+MinutesSinceUserActivity 15
+TorVersion Tor 0.4.9.9 (git-74b53bd1992da4ec)
+TotalBuildTimes 87
