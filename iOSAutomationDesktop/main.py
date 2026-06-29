@@ -165,7 +165,7 @@ class DownloadWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("iOS AutoSwipe Studio v1.0")
+        self.setWindowTitle("MunAutomation iOS Studio v1.0")
         self.resize(820, 580)
         self.setStyleSheet(QSS_STYLE)
         
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         left_column.setFixedWidth(330)
         
         # Tiêu đề ứng dụng
-        title_label = QLabel("📱 iOS AutoSwipe Studio")
+        title_label = QLabel("📱 MunAutomation iOS Studio")
         title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #ffffff;")
         subtitle_label = QLabel("Tự động xem video trên iPhone qua WebDriverAgent USB")
         subtitle_label.setStyleSheet("font-size: 11px; color: #64748b;")

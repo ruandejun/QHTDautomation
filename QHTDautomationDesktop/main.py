@@ -1,7 +1,7 @@
 """
-QHTD Automation Desktop — Hybrid Browser + Local Agent (PyQt6)
+MunAutomation Desktop — Hybrid Browser + Local Agent (PyQt6)
 Nhúng giao diện c69.us vào QWebEngineView, giao tiếp qua QWebChannel bridge.
-Web gọi window.qhtdBridge.xxx() → Python thực thi local.
+Web gọi window.munAutomationBridge.xxx() (hoặc window.qhtdBridge) → Python thực thi local.
 """
 import os
 import sys
@@ -22,14 +22,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # === PyQt6 Imports ===
 from PyQt6.QtCore import (
-    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject, QFile, QIODevice
+    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject, QFile, QIODevice, QEventLoop
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QFrame, QMessageBox,
-    QDialog, QLineEdit, QGridLayout
+    QDialog, QLineEdit, QGridLayout, QStackedWidget
 )
-from PyQt6.QtGui import QPixmap, QIcon, QFont
+from PyQt6.QtGui import QPixmap, QIcon, QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
 from PyQt6.QtWebChannel import QWebChannel
@@ -58,7 +58,7 @@ except Exception:
 
 from ipatool import IPATool, extract_app_id, get_app_details_from_itunes
 
-# Anti-Detect Browser
+# MunLogin Anti-Detect Browser Manager
 try:
     from mun_anti_browser import NodriverBrowserManager, ProfileManager, ScriptLoader, C69ProfileAPI
     MUN_ANTI_BROWSER_AVAILABLE = True
@@ -952,18 +952,43 @@ class BrowserWorker(QThread):
         self._stop_flag = True
 
 
+class RequestWorker(QThread):
+    finished_signal = pyqtSignal(str)
+
+    def __init__(self, method, url, data=None, headers=None, timeout=15):
+        super().__init__()
+        self.method = method
+        self.url = url
+        self.data = data
+        self.headers = headers or {}
+        self.timeout = timeout
+        self.result = json.dumps({"error": "No response"})
+
+    def run(self):
+        try:
+            if self.method == 'GET':
+                r = requests.get(self.url, headers=self.headers, timeout=self.timeout)
+                self.result = r.text
+            elif self.method == 'POST':
+                r = requests.post(self.url, data=self.data, headers=self.headers, timeout=self.timeout)
+                self.result = r.text
+        except Exception as e:
+            self.result = json.dumps({"error": str(e)})
+        self.finished_signal.emit(self.result)
+
+
 class AgentPollSignals(QObject):
     command_received = pyqtSignal(dict)
     log_signal = pyqtSignal(str)
 
 
 # ============================================================================
-# QHTD BRIDGE — Python API ↔ JavaScript (QWebChannel)
+# MUNAUTOMATION BRIDGE — Python API ↔ JavaScript (QWebChannel)
 # ============================================================================
-class QHTDBridge(QObject):
+class MunAutomationBridge(QObject):
     """
     Cầu nối giữa JavaScript (c69.us web dashboard) và Python (local agent).
-    Web gọi: window.qhtdBridge.methodName(args)
+    Web gọi: window.munAutomationBridge.methodName(args) hoặc window.qhtdBridge.methodName(args)
     Python trả về qua return hoặc signal.
     """
     # Signals: Python → JavaScript
@@ -1115,7 +1140,9 @@ class QHTDBridge(QObject):
     def _update_dhcp_leases(self):
         import datetime
         try:
-            r = requests.get("http://127.0.0.1:8000/status", timeout=2)
+            if not self._is_api_port_open():
+                raise ConnectionError("API port 8000 is closed")
+            r = requests.get("http://127.0.0.1:8000/status", timeout=15)
             if r.status_code == 200:
                 data = r.json()
                 devices = data.get("devices", [])
@@ -1145,10 +1172,36 @@ class QHTDBridge(QObject):
             
         try:
             router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
-            hosts_csv_path = os.path.join(router_dir, "hosts.csv")
             leases = []
             
-            if os.path.exists(hosts_csv_path):
+            registry_path = os.path.join(router_dir, "data", "mac_registry.json")
+            hosts_csv_path = os.path.join(router_dir, "hosts.csv")
+            
+            if os.path.exists(registry_path):
+                with open(registry_path, "r", encoding="utf-8") as f:
+                    try:
+                        data = json.load(f)
+                    except Exception:
+                        data = {}
+                for mac, info in data.items():
+                    ts = info.get("last_seen", 0)
+                    leased_at = ""
+                    if ts > 0:
+                        leased_at = datetime.datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+                    else:
+                        leased_at = datetime.datetime.now().strftime('%H:%M:%S')
+                    
+                    is_online = (time.time() - ts < 600) if ts > 0 else False
+                    leases.append({
+                        "mac": mac.upper(),
+                        "ip": info.get("ip", ""),
+                        "hostname": info.get("name") or f"Device {info.get('ip')}",
+                        "leased_at": leased_at,
+                        "status": "Online" if is_online else "Offline"
+                    })
+                self._cached_leases = json.dumps(leases, ensure_ascii=False)
+                return
+            elif os.path.exists(hosts_csv_path):
                 with open(hosts_csv_path, "r", encoding="utf-8") as f:
                     for line in f:
                         parts = line.strip().split(";")
@@ -1753,7 +1806,7 @@ class QHTDBridge(QObject):
                 return json.dumps({"error": f"Vui lòng chọn card mạng LAN. (Nhận được: {config_json})"})
                 
             router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
-            config_path = os.path.join(router_dir, "config.json")
+            config_path = os.path.join(router_dir, "data", "config.json")
             
             # 1. Read existing phonefarm-router config.json for fallback
             config_data = {}
@@ -1894,13 +1947,14 @@ class QHTDBridge(QObject):
                 cmd_run = f"powershell -Command \"Start-Process powershell -ArgumentList '-Command {ps_script}' -Verb RunAs -WindowStyle Hidden\""
                 subprocess.run(cmd_run, shell=True)
                 
-            # 3. Start DHCP server
-            dhcp_script_path = os.path.join(router_dir, "scratch", "run_dhcp.py")
-            dhcp_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '{dhcp_script_path}' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
-            subprocess.run(dhcp_cmd, shell=True)
+            # 3. Start DHCP server (disabled in v2.0 - integrated in app.main)
+            # dhcp_script_path = os.path.join(router_dir, "scratch", "run_dhcp.py")
+            # dhcp_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '{dhcp_script_path}' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            # subprocess.run(dhcp_cmd, shell=True)
             
-            # 4. Start API server
-            api_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '-m uvicorn app.api:app --host 0.0.0.0 --port 8000' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            # 4. Start API server (GenRouter v2.0 Unified)
+            # Không sử dụng RedirectStandardOutput/Error cùng với -Verb RunAs vì sẽ gây lỗi Parameter set cannot be resolved
+            api_cmd = f"powershell -Command \"Start-Process '{sys.executable}' -ArgumentList '-m uvicorn app.main:app --host 0.0.0.0 --port 8000' -Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
             subprocess.run(api_cmd, shell=True)
             
             self.router_active = True
@@ -1937,6 +1991,51 @@ class QHTDBridge(QObject):
     def refreshDHCPLeases(self):
         self._update_dhcp_leases()
         return self._cached_leases
+
+    def _is_api_port_open(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.1)
+            s.connect(("127.0.0.1", 8000))
+            s.close()
+            return True
+        except Exception:
+            return False
+
+    def _run_request_async(self, method, url, data=None, headers=None):
+        loop = QEventLoop()
+        worker = RequestWorker(method, url, data, headers, timeout=15)
+        
+        result = None
+        def on_finished(res):
+            nonlocal result
+            result = res
+            loop.quit()
+            
+        worker.finished_signal.connect(on_finished)
+        worker.start()
+        loop.exec()
+        worker.wait()
+        return result
+
+    @pyqtSlot(str, result=str)
+    def apiProxyGet(self, endpoint):
+        if not self._is_api_port_open():
+            return json.dumps({"error": "API server offline (port 8000 is closed)"})
+        try:
+            return self._run_request_async('GET', f"http://127.0.0.1:8000{endpoint}")
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(str, str, result=str)
+    def apiProxyPost(self, endpoint, body_json):
+        if not self._is_api_port_open():
+            return json.dumps({"error": "API server offline (port 8000 is closed)"})
+        try:
+            headers = {'Content-Type': 'application/json'}
+            return self._run_request_async('POST', f"http://127.0.0.1:8000{endpoint}", data=body_json.encode('utf-8'), headers=headers)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
 
     @pyqtSlot(result=bool)
     def isRouterActive(self):
@@ -2049,6 +2148,9 @@ class QHTDBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+# Backward compatibility alias
+QHTDBridge = MunAutomationBridge
+
 
 # ============================================================================
 # CUSTOM WEB PAGE — Handle console logs, navigation
@@ -2066,7 +2168,7 @@ class QHTDWebPage(QWebEnginePage):
 # ============================================================================
 # MAIN WINDOW — Hybrid Browser + Native Status Bar
 # ============================================================================
-class QHTDStoreDesktop(QMainWindow):
+class MunAutomationStoreDesktop(QMainWindow):
     def __init__(self):
         super().__init__()
         self.bridge = None
@@ -2075,7 +2177,7 @@ class QHTDStoreDesktop(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle(f"QHTD Automation — C69.US v{CLIENT_VERSION}")
+        self.setWindowTitle(f"MunAutomation — C69.US v{CLIENT_VERSION}")
         self.resize(1450, 850)
         self.setMinimumSize(1100, 700)
         
@@ -2091,9 +2193,40 @@ class QHTDStoreDesktop(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # === STACKED WIDGET (for loading screen and web view) ===
+        self.stacked_widget = QStackedWidget()
+        main_layout.addWidget(self.stacked_widget, 1)
+
+        # Loading screen
+        self.loading_widget = QWidget()
+        self.loading_widget.setStyleSheet("background-color: #080b11;")
+        loading_layout = QVBoxLayout(self.loading_widget)
+        
+        loading_label = QLabel("Đang tải dữ liệu, vui lòng đợi...")
+        loading_label.setStyleSheet("color: #06b6d4; font-size: 20px; font-weight: bold; margin-bottom: 20px;")
+        loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        loading_desc = QLabel("MunAutomation đang khởi tạo...")
+        loading_desc.setStyleSheet("color: #94a3b8; font-size: 14px;")
+        loading_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        loading_layout.addStretch()
+        loading_layout.addWidget(loading_label)
+        loading_layout.addWidget(loading_desc)
+        loading_layout.addStretch()
+
+        self.stacked_widget.addWidget(self.loading_widget)
+
         # === WEB ENGINE VIEW (main content) ===
         self.setup_web_engine()
-        main_layout.addWidget(self.web_view, 1)
+        self.stacked_widget.addWidget(self.web_view)
+
+        # Hiển thị loading overlay mặc định và kết nối signals
+        self.stacked_widget.setCurrentWidget(self.loading_widget)
+        self.web_view.loadStarted.connect(lambda: self.stacked_widget.setCurrentWidget(self.loading_widget))
+        self.web_view.loadFinished.connect(lambda: self.stacked_widget.setCurrentWidget(self.web_view))
+        # Phòng hờ trường hợp không có tín hiệu loadFinished
+        QTimer.singleShot(15000, lambda: self.stacked_widget.setCurrentWidget(self.web_view))
 
         # === NATIVE STATUS BAR (bottom) ===
         status_bar = QFrame()
@@ -2122,7 +2255,7 @@ class QHTDStoreDesktop(QMainWindow):
 
         status_layout.addStretch()
 
-        version_label = QLabel(f"QHTD Automation v{CLIENT_VERSION} • PyQt6 + Chromium")
+        version_label = QLabel(f"MunAutomation v{CLIENT_VERSION} • PyQt6 + Chromium")
         version_label.setStyleSheet("color: #475569; font-size: 10px;")
         status_layout.addWidget(version_label)
 
@@ -2139,11 +2272,13 @@ class QHTDStoreDesktop(QMainWindow):
 
         # Create web view first (with parent)
         self.web_view = QWebEngineView(self)
+        self.web_view.page().setBackgroundColor(QColor("#080b11"))
         
         # Get the default profile and customize it
         profile = QWebEngineProfile.defaultProfile()
+        # Removed synchronous profile.clearHttpCache() on startup to avoid blocking GUI thread
         profile.setHttpUserAgent(
-            f"QHTD-Desktop/{CLIENT_VERSION} "
+            f"MunAutomation-Desktop/{CLIENT_VERSION} "
             f"(PyQt6; {sys.platform}) "
             f"Chrome/118.0.0.0"
         )
@@ -2174,16 +2309,19 @@ class QHTDStoreDesktop(QMainWindow):
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanAccessClipboard, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
+        # Bỏ chặn Mixed Content để cho phép fetch từ https (c69.us) tới http (127.0.0.1)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
         # Performance: enable accelerated 2D/WebGL canvas
         settings.setAttribute(QWebEngineSettings.WebAttribute.Accelerated2dCanvasEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
 
         # Setup QWebChannel bridge
-        self.bridge = QHTDBridge(self)
+        self.bridge = MunAutomationBridge(self)
         self.bridge._cookie_jar = []  # shared cookie jar reference
         self._load_cookies_from_disk()
         QTimer.singleShot(3000, self.bridge.start_poll_thread)
         channel = QWebChannel(self)
+        channel.registerObject("munAutomationBridge", self.bridge)
         channel.registerObject("qhtdBridge", self.bridge)
         page.setWebChannel(channel)
 
@@ -2192,7 +2330,7 @@ class QHTDStoreDesktop(QMainWindow):
         self.bridge.automationLog.connect(self.on_automation_log)
 
         # Inject qwebchannel.js before loading
-        # The web frontend will detect window.qhtdBridge and show extra tabs
+        # The web frontend will detect window.munAutomationBridge / window.qhtdBridge and show extra tabs
         page.loadFinished.connect(self.on_page_loaded)
 
         # Load web URL
@@ -2201,6 +2339,13 @@ class QHTDStoreDesktop(QMainWindow):
             QTimer.singleShot(8000, self.take_test_screenshot)
         else:
             self.web_view.setUrl(QUrl(C69_BASE_URL))
+
+        # Add reload shortcuts to easily refresh frontend code
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        self.reload_shortcut = QShortcut(QKeySequence("F5"), self)
+        self.reload_shortcut.activated.connect(self.web_view.reload)
+        self.hard_reload_shortcut = QShortcut(QKeySequence("Ctrl+F5"), self)
+        self.hard_reload_shortcut.activated.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.WebAction.ReloadAndBypassCache))
 
     # --- Cookie sharing helpers ---
     def _on_cookie_added(self, cookie):
@@ -2254,16 +2399,20 @@ class QHTDStoreDesktop(QMainWindow):
             self.web_view.page().runJavaScript("""
                 if (typeof QWebChannel !== 'undefined') {
                     new QWebChannel(qt.webChannelTransport, function(channel) {
-                        window.qhtdBridge = channel.objects.qhtdBridge;
+                        window.munAutomationBridge = channel.objects.munAutomationBridge;
+                        window.qhtdBridge = channel.objects.munAutomationBridge || channel.objects.qhtdBridge;
+                        window.__MUNAUTOMATION_DESKTOP__ = true;
                         window.__QHTD_DESKTOP__ = true;
-                        window.__QHTD_VERSION__ = '%s';
-                        console.log('[QHTD] QWebChannel bridge connected successfully, version %s');
+                        window.__MUNAUTOMATION_VERSION__ = '%s';
+                        console.log('[MunAutomation] QWebChannel bridge connected successfully, version %s');
                         // Dispatch ready event to notify frontend
-                        var event = new CustomEvent('qhtdBridgeReady');
+                        var event = new CustomEvent('munAutomationBridgeReady');
                         window.dispatchEvent(event);
+                        var event2 = new CustomEvent('qhtdBridgeReady');
+                        window.dispatchEvent(event2);
                     });
                 } else {
-                    console.error('[QHTD] Failed to load QWebChannel script!');
+                    console.error('[MunAutomation] Failed to load QWebChannel script!');
                 }
             """ % (CLIENT_VERSION, CLIENT_VERSION))
         else:
@@ -2421,7 +2570,7 @@ if __name__ == "__main__":
         # Font mặc định
         font = QFont("Segoe UI", 10)
         app.setFont(font)
-        print("[QHTD] Step 3: Font set OK", flush=True)
+        print("[MunAutomation] Step 3: Font set OK", flush=True)
 
         # Dark window background để tránh flash trắng khi load
         app.setStyleSheet("""
@@ -2433,17 +2582,17 @@ if __name__ == "__main__":
                 color: #f8fafc;
             }
         """)
-        print("[QHTD] Step 4: Stylesheet set OK", flush=True)
+        print("[MunAutomation] Step 4: Stylesheet set OK", flush=True)
 
-        print("[QHTD] Step 5: Creating QHTDStoreDesktop...", flush=True)
-        window = QHTDStoreDesktop()
-        print("[QHTD] Step 6: Window created OK", flush=True)
+        print("[MunAutomation] Step 5: Creating MunAutomationStoreDesktop...", flush=True)
+        window = MunAutomationStoreDesktop()
+        print("[MunAutomation] Step 6: Window created OK", flush=True)
 
         window.show()
-        print("[QHTD] Step 7: Window shown OK — entering event loop", flush=True)
+        print("[MunAutomation] Step 7: Window shown OK — entering event loop", flush=True)
 
         ret = app.exec()
-        print(f"[QHTD] Step 8: Event loop ended with code {ret}", flush=True)
+        print(f"[MunAutomation] Step 8: Event loop ended with code {ret}", flush=True)
         sys.exit(ret)
     except Exception as e:
         print(f"[QHTD FATAL ERROR] {e}", flush=True)
