@@ -2655,9 +2655,10 @@ class MunAutomationBridge(QObject):
         return success_count
 
     @pyqtSlot(str, str, str, result=str)
-    def addPaymentCardsAuto(self, session_id, apple_id, cards_json):
+    @pyqtSlot(str, str, str, str, result=str)
+    def addPaymentCardsAuto(self, session_id, apple_id, cards_json, proxy=""):
         try:
-            print(f"[MunAutomation] Auto Add multiple payment cards requested for Apple ID: {apple_id}")
+            print(f"[MunAutomation] Auto Add multiple payment cards requested for Apple ID: {apple_id} (Proxy: {proxy})")
             self.statusMessage.emit(f"🚀 Bắt đầu quá trình thêm thẻ tự động cho {apple_id}...")
             cards = json.loads(cards_json)
             
@@ -2757,10 +2758,55 @@ class MunAutomationBridge(QObject):
 
                     # 5. Start browser
                     self.statusMessage.emit(f"🚀 Đang mở trình duyệt MunLogin profile '{target_apple_id}'...")
+                    
+                    # Parse custom proxy if provided, otherwise fallback to profile config proxy
+                    p_type = "socks5"
+                    p_host_port = ""
+                    p_user = ""
+                    p_pass = ""
+                    
+                    def parse_proxy_string(proxy_str):
+                        if not proxy_str:
+                            return "socks5", "", "", ""
+                        p_t = "socks5"
+                        if proxy_str.startswith("http://"):
+                            p_t = "http"
+                            proxy_str = proxy_str[7:]
+                        elif proxy_str.startswith("socks5://"):
+                            p_t = "socks5"
+                            proxy_str = proxy_str[9:]
+                        pts = proxy_str.split(":")
+                        if len(pts) == 2:
+                            return p_t, f"{pts[0]}:{pts[1]}", "", ""
+                        elif len(pts) == 4:
+                            return p_t, f"{pts[0]}:{pts[1]}", pts[2], pts[3]
+                        return p_t, proxy_str, "", ""
+
+                    if proxy:
+                        p_type, p_host_port, p_user, p_pass = parse_proxy_string(proxy)
+                    else:
+                        raw_proxy = (
+                            profile_config.get("proxy_string") or 
+                            profile_config.get("profile_socks5_details") or 
+                            profile_config.get("profile_proxy_details", "")
+                        )
+                        if raw_proxy:
+                            p_type, p_host_port, p_user, p_pass = parse_proxy_string(raw_proxy)
+                            if profile_config.get("profile_proxy_type") == 1:
+                                p_type = "http"
+                            elif profile_config.get("profile_proxy_type") == 0:
+                                p_host_port = ""
+
                     manager = NodriverBrowserManager()
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    browser, tab = loop.run_until_complete(manager.start(profile_config))
+                    browser, tab = loop.run_until_complete(manager.start(
+                        profile_config=profile_config,
+                        proxy_string=p_host_port,
+                        proxy_type=p_type,
+                        proxy_username=p_user,
+                        proxy_password=p_pass
+                    ))
                     if not tab:
                         self.statusMessage.emit("❌ Không thể khởi chạy trình duyệt.")
                         return
