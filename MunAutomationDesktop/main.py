@@ -2221,10 +2221,10 @@ class MunAutomationBridge(QObject):
             return False
         
         # Helper to evaluate JS in the login iframe
-        async def eval_in_iframe(expression):
+        async def eval_in_iframe(expression, current_context_id):
             result = await tab.send(cdp_runtime.evaluate(
                 expression=expression,
-                context_id=context_id,
+                context_id=current_context_id,
                 return_by_value=True
             ))
             return result[0].value if hasattr(result[0], 'value') else str(result[0])
@@ -2234,7 +2234,8 @@ class MunAutomationBridge(QObject):
         for attempt in range(15):
             try:
                 has_input = await eval_in_iframe(
-                    "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))"
+                    "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))",
+                    context_id
                 )
                 if has_input:
                     email_found = True
@@ -2242,7 +2243,7 @@ class MunAutomationBridge(QObject):
             except Exception:
                 pass
             if attempt % 5 == 0:
-                print(f"[MunAutomation] Waiting for email field in iframe... attempt {attempt}")
+                print(f"[MunAutomation] Waiting for email field... attempt {attempt}")
             await asyncio.sleep(1)
         
         if not email_found:
@@ -2263,7 +2264,7 @@ class MunAutomationBridge(QObject):
                     inp.dispatchEvent(new Event('change', {{bubbles: true}}));
                     return 'OK:' + inp.value;
                 }})()
-            """)
+            """, context_id)
             print(f"[MunAutomation] Email fill result: {fill_result}")
             if 'NO_INPUT' in str(fill_result):
                 return False
@@ -2273,28 +2274,7 @@ class MunAutomationBridge(QObject):
         
         await asyncio.sleep(1)
         
-        # 5. Fill password field (Apple shows both fields at once on this page)
-        try:
-            pw_result = await eval_in_iframe(f"""
-                (() => {{
-                    const inp = document.querySelector('input#password_text_field') ||
-                               document.querySelector('input[type="password"]');
-                    if (!inp) return 'NO_PASSWORD';
-                    inp.focus();
-                    inp.value = '{password}';
-                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    return 'OK:filled';
-                }})()
-            """)
-            print(f"[MunAutomation] Password fill result: {pw_result}")
-        except Exception as e:
-            print(f"[MunAutomation] Password fill error: {e}")
-            # Password field might appear after clicking sign-in, continue anyway
-        
-        await asyncio.sleep(1)
-        
-        # 6. Click sign-in button
+        # 5. Click the Continue/Sign-In button to trigger password transition
         try:
             btn_result = await eval_in_iframe("""
                 (() => {
@@ -2307,66 +2287,74 @@ class MunAutomationBridge(QObject):
                     }
                     return 'NO_BUTTON';
                 })()
-            """)
-            print(f"[MunAutomation] Sign-in button result: {btn_result}")
+            """, context_id)
+            print(f"[MunAutomation] Continue button click: {btn_result}")
         except Exception as e:
             print(f"[MunAutomation] Button click error: {e}")
         
-        await asyncio.sleep(3)
-        
-        # 7. Check if password field appears separately (some Apple pages show it after email)
-        try:
-            needs_password = await eval_in_iframe("""
-                (() => {
-                    const pwField = document.querySelector('input#password_text_field') ||
-                                   document.querySelector('input[type="password"]');
-                    if (pwField && pwField.offsetParent !== null && !pwField.value) {
-                        return true;
-                    }
-                    return false;
-                })()
-            """)
-            
-            if needs_password:
-                print("[MunAutomation] Password field appeared after email. Filling...")
+        # 6. Wait for transition and fill password
+        print("[MunAutomation] Waiting for password field to be ready...")
+        pw_filled = False
+        for attempt in range(15):
+            await asyncio.sleep(0.5)
+            # Create a new isolated world for each step of checking to make sure DOM updates are captured
+            try:
+                current_ctx = await tab.send(cdp_page.create_isolated_world(
+                    frame_id=login_frame.id_,
+                    world_name=f"mun_login_pw_wait_{attempt}"
+                ))
                 
-                # May need a new isolated world after page state change
-                try:
-                    context_id = await tab.send(cdp_page.create_isolated_world(
-                        frame_id=login_frame.id_,
-                        world_name="mun_login_inject_pw"
-                    ))
-                except Exception:
-                    pass
-                
-                pw_result2 = await eval_in_iframe(f"""
-                    (() => {{
-                        const inp = document.querySelector('input#password_text_field') ||
-                                   document.querySelector('input[type="password"]');
-                        if (!inp) return 'NO_PASSWORD';
-                        inp.focus();
-                        inp.value = '{password}';
-                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return 'OK:filled';
-                    }})()
-                """)
-                print(f"[MunAutomation] Password (2nd attempt) result: {pw_result2}")
-                
-                await asyncio.sleep(1)
-                
-                # Click sign-in again
-                await eval_in_iframe("""
+                # Check if password field is present and visible
+                is_visible = await eval_in_iframe("""
                     (() => {
-                        const btn = document.querySelector('button#sign-in') ||
-                                   document.querySelector('button[type="submit"]');
-                        if (btn) btn.click();
+                        const pw = document.querySelector('input#password_text_field') ||
+                                   document.querySelector('input[type="password"]');
+                        return pw && pw.offsetParent !== null;
                     })()
-                """)
-                print("[MunAutomation] Clicked sign-in button (2nd time)")
-        except Exception as e:
-            print(f"[MunAutomation] Post-email password check error: {e}")
+                """, current_ctx)
+                
+                if is_visible:
+                    # Fill password now
+                    pw_fill_res = await eval_in_iframe(f"""
+                        (() => {{
+                            const inp = document.querySelector('input#password_text_field') ||
+                                       document.querySelector('input[type="password"]');
+                            if (!inp) return 'NO_PW';
+                            inp.focus();
+                            inp.value = '{password}';
+                            inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            return 'OK';
+                        }})()
+                    """, current_ctx)
+                    
+                    print(f"[MunAutomation] Password fill attempt {attempt}: {pw_fill_res}")
+                    if pw_fill_res == 'OK':
+                        pw_filled = True
+                        
+                        # Click sign-in again
+                        await asyncio.sleep(1)
+                        btn_signin = await eval_in_iframe("""
+                            (() => {
+                                const btn = document.querySelector('button#sign-in') ||
+                                           document.querySelector('button.si-button') ||
+                                           document.querySelector('button[type="submit"]');
+                                if (btn) {
+                                    btn.click();
+                                    return 'CLICKED_FINAL';
+                                }
+                                return 'NO_BTN';
+                            })()
+                        """, current_ctx)
+                        print(f"[MunAutomation] Final Sign-In click: {btn_signin}")
+                        break
+            except Exception as e:
+                pass
         
+        if not pw_filled:
+            print("[MunAutomation] Failed to fill password field")
+            return False
+            
         print("[MunAutomation] Login automation completed")
         return True
 
@@ -2821,8 +2809,6 @@ class MunAutomationBridge(QObject):
         self.statusMessage.emit(f"🎉 Hoàn tất thêm thẻ: {success_count}/{total_count} thành công!")
         return success_count
 
-    @pyqtSlot(str, str, str, result=str)
-    @pyqtSlot(str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, str, result=str)
     def addPaymentCardsAuto(self, session_id, apple_id, cards_json, proxy="", password=""):
         try:
