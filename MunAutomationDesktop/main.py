@@ -2956,64 +2956,13 @@ class MunAutomationBridge(QObject):
                         except Exception:
                             return tab.url or ""
                     
-                    # 6. Wait for page to load and handle Apple's sign-in landing page
+                    # 6. Wait for page to load (iframe loads automatically)
                     self.statusMessage.emit("⏳ Đang chờ trang Apple tải...")
                     print("[MunAutomation] Waiting for Apple page to load...")
-                    loop.run_until_complete(asyncio.sleep(5))
+                    loop.run_until_complete(asyncio.sleep(8))
                     
-                    # Check if we landed on Apple's sign-in landing page (not the actual login form)
                     initial_url = loop.run_until_complete(get_current_url())
-                    print(f"[MunAutomation] Initial URL after navigation: {initial_url[:150]}")
-                    
-                    # Apple's landing page shows "Sign In" buttons but no login form
-                    # We need to click "Sign In" or navigate directly to the auth page
-                    if "account.apple.com/sign-in" in initial_url or "account.apple.com" in initial_url:
-                        print("[MunAutomation] On Apple landing page. Clicking 'Sign In' button...")
-                        self.statusMessage.emit("🔑 Đang mở trang đăng nhập...")
-                        
-                        # Try clicking Sign In link/button
-                        sign_in_clicked = False
-                        sign_in_selectors = [
-                            "a.si-container-link",
-                            "a[href*='sign-in']",
-                            "a[data-pageid='sign-in']",
-                            ".sign-in-link",
-                        ]
-                        for sel in sign_in_selectors:
-                            try:
-                                btn = loop.run_until_complete(tab.select(sel, timeout=2))
-                                if btn:
-                                    loop.run_until_complete(btn.click())
-                                    sign_in_clicked = True
-                                    print(f"[MunAutomation] Clicked sign-in link: {sel}")
-                                    break
-                            except Exception:
-                                pass
-                        
-                        if not sign_in_clicked:
-                            # Try JS click on any element containing "Sign In" text
-                            try:
-                                loop.run_until_complete(tab.evaluate("""
-                                    const links = document.querySelectorAll('a');
-                                    for (const link of links) {
-                                        if (link.textContent.trim() === 'Sign In' || link.textContent.trim() === 'Sign in') {
-                                            link.click();
-                                            break;
-                                        }
-                                    }
-                                """))
-                                sign_in_clicked = True
-                                print("[MunAutomation] Clicked Sign In via JS text match")
-                            except Exception as e_js:
-                                print(f"[MunAutomation] JS click failed: {e_js}")
-                        
-                        if not sign_in_clicked:
-                            # Last resort: navigate directly to the auth iframe URL
-                            auth_url = "https://idmsa.apple.com/appleauth/auth/authorize/signin?client_id=APPLE_ACCOUNT&redirect_uri=https://account.apple.com"
-                            print(f"[MunAutomation] Direct navigation to auth page...")
-                            loop.run_until_complete(tab.get(auth_url))
-                        
-                        loop.run_until_complete(asyncio.sleep(5))
+                    print(f"[MunAutomation] Initial URL: {initial_url[:150]}")
                     
                     # 7. Automatic sign-in & 2FA loop (Wait up to 5 minutes)
                     self.statusMessage.emit("⏳ Đang chờ đăng nhập và xác thực 2FA trên trình duyệt...")
