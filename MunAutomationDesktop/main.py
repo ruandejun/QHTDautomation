@@ -3108,11 +3108,11 @@ class MunAutomationStoreDesktop(QMainWindow):
             'httponly': cookie.isHttpOnly(),
             'expiration': expiration,
         }
-        # Avoid duplicates
+        # Avoid duplicates of same name to prevent domain conflicts (e.g. c69.us vs .c69.us)
         jar = self.bridge._cookie_jar
         for i, c in enumerate(jar):
-            if c['name'] == cookie_dict['name'] and c['domain'] == cookie_dict['domain']:
-                if c['value'] == cookie_dict['value']:
+            if c['name'] == cookie_dict['name']:
+                if c['value'] == cookie_dict['value'] and c['domain'] == cookie_dict['domain']:
                     return
                 jar[i] = cookie_dict
                 self._save_cookies_to_disk_debounced()
@@ -3254,6 +3254,20 @@ class MunAutomationStoreDesktop(QMainWindow):
             
             if not isinstance(saved_cookies, list):
                 return
+            
+            # Deduplicate cookies by name (keeping the latest or the one with expiration)
+            deduped = {}
+            for c in saved_cookies:
+                name = c.get('name')
+                if name not in deduped:
+                    deduped[name] = c
+                else:
+                    old_c = deduped[name]
+                    if c.get('expiration') and not old_c.get('expiration'):
+                        deduped[name] = c
+                    elif len(c.get('value', '')) > len(old_c.get('value', '')):
+                        deduped[name] = c
+            saved_cookies = list(deduped.values())
             
             self.bridge._cookie_jar = saved_cookies
             
