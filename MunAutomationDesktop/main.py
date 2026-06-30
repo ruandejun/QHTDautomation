@@ -2823,39 +2823,43 @@ class MunAutomationBridge(QObject):
 
     @pyqtSlot(str, str, str, result=str)
     @pyqtSlot(str, str, str, str, result=str)
-    def addPaymentCardsAuto(self, session_id, apple_id, cards_json, proxy=""):
+    @pyqtSlot(str, str, str, str, str, result=str)
+    def addPaymentCardsAuto(self, session_id, apple_id, cards_json, proxy="", password=""):
         try:
-            print(f"[MunAutomation] Auto Add multiple payment cards requested for Apple ID: {apple_id} (Proxy: {proxy})")
+            print(f"[MunAutomation] Auto Add multiple payment cards requested for Apple ID: {apple_id} (Proxy: {proxy}, has_pass_direct={bool(password)})")
             self.statusMessage.emit(f"🚀 Bắt đầu quá trình thêm thẻ tự động cho {apple_id}...")
             cards = json.loads(cards_json)
             
             import threading
             def run_flow():
                 try:
-                    # 1. Fetch credentials from server (in-memory session or DB fallback)
-                    p_apple_id = ""
-                    p_password = ""
+                    # 1. Use password from frontend directly, fallback to server API
+                    p_apple_id = apple_id
+                    p_password = password  # Direct from frontend
                     p_server_proxy = ""
-                    try:
-                        session = self.get_requests_session()
-                        payload = {"session_id": session_id, "apple_id": apple_id}
-                        r = session.post(f"{C69_BASE_URL.rstrip('/')}/dashboard/api/apple-sub/get-password/", json=payload, timeout=10)
-                        print(f"[MunAutomation] get-password response: status={r.status_code}")
-                        if r.status_code == 200:
-                            cred_data = r.json()
-                            if cred_data.get('success'):
-                                p_apple_id = cred_data.get('apple_id', '')
-                                p_password = cred_data.get('password', '')
-                                p_server_proxy = cred_data.get('proxy', '')
-                                print(f"[MunAutomation] Credentials retrieved: apple_id={p_apple_id}, pass_len={len(p_password)}, proxy={p_server_proxy}")
+                    
+                    if not p_password:
+                        # Fallback: try to fetch from server API
+                        try:
+                            session = self.get_requests_session()
+                            payload = {"session_id": session_id, "apple_id": apple_id}
+                            r = session.post(f"{C69_BASE_URL.rstrip('/')}/dashboard/api/apple-sub/get-password/", json=payload, timeout=10)
+                            print(f"[MunAutomation] get-password response: status={r.status_code}")
+                            if r.status_code == 200:
+                                cred_data = r.json()
+                                if cred_data.get('success'):
+                                    p_apple_id = cred_data.get('apple_id', '') or apple_id
+                                    p_password = cred_data.get('password', '')
+                                    p_server_proxy = cred_data.get('proxy', '')
+                                    print(f"[MunAutomation] Credentials from server: apple_id={p_apple_id}, pass_len={len(p_password)}, proxy={p_server_proxy}")
+                                else:
+                                    print(f"[MunAutomation] get-password failed: {cred_data.get('message', 'Unknown')}")
                             else:
-                                print(f"[MunAutomation] get-password failed: {cred_data.get('message', 'Unknown')}")
-                                self.statusMessage.emit(f"⚠️ Server: {cred_data.get('message', 'Không tìm thấy thông tin đăng nhập.')}")
-                        else:
-                            print(f"[MunAutomation] get-password HTTP error: {r.status_code} {r.text[:200]}")
-                    except Exception as e_cred:
-                        print(f"[MunAutomation] Failed to fetch credentials: {e_cred}")
-                        self.statusMessage.emit(f"⚠️ Không thể lấy thông tin đăng nhập từ server.")
+                                print(f"[MunAutomation] get-password HTTP error: {r.status_code}")
+                        except Exception as e_cred:
+                            print(f"[MunAutomation] Failed to fetch credentials from server: {e_cred}")
+                    else:
+                        print(f"[MunAutomation] Using password from frontend directly (len={len(p_password)})")
                         
                     target_apple_id = p_apple_id or apple_id
                     
