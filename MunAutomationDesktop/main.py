@@ -2180,182 +2180,145 @@ class MunAutomationBridge(QObject):
         import nodriver.cdp.page as cdp_page
         import nodriver.cdp.runtime as cdp_runtime
         
-        # 1. Find the login iframe via CDP frame tree
-        login_frame = None
-        for attempt in range(30):  # 30 seconds timeout
+        def find_login_frame(ft):
+            if 'idmsa.apple.com' in (ft.frame.url or ''):
+                return ft.frame
+            if ft.child_frames:
+                for child in ft.child_frames:
+                    result = find_login_frame(child)
+                    if result:
+                        return result
+            return None
+            
+        # Robust evaluation helper that handles context destruction by recreating it on demand
+        async def evaluate_in_iframe_robust(expression):
             try:
                 frame_tree = await tab.send(cdp_page.get_frame_tree())
-                
-                def find_login_frame(ft):
-                    if 'idmsa.apple.com' in (ft.frame.url or ''):
-                        return ft.frame
-                    if ft.child_frames:
-                        for child in ft.child_frames:
-                            result = find_login_frame(child)
-                            if result:
-                                return result
-                    return None
-                
                 login_frame = find_login_frame(frame_tree)
-                if login_frame:
-                    print(f"[MunAutomation] Found login iframe: {login_frame.url[:100]}")
-                    break
+                if not login_frame:
+                    return None, "IFRAME_NOT_FOUND"
+                
+                # Always create a new isolated world context to guarantee executing on the current active document state
+                context_id = await tab.send(cdp_page.create_isolated_world(
+                    frame_id=login_frame.id_,
+                    world_name="mun_login_inject_robust"
+                ))
+                
+                result = await tab.send(cdp_runtime.evaluate(
+                    expression=expression,
+                    context_id=context_id,
+                    return_by_value=True
+                ))
+                val = result[0].value if hasattr(result[0], 'value') else str(result[0])
+                return val, None
             except Exception as e:
-                if attempt % 5 == 0:
-                    print(f"[MunAutomation] Searching for login iframe... attempt {attempt}: {e}")
-            await asyncio.sleep(1)
+                return None, str(e)
         
-        if not login_frame:
-            print("[MunAutomation] Login iframe (idmsa.apple.com) not found!")
-            return False
-        
-        # 2. Create isolated world in the login iframe for JS execution
-        try:
-            context_id = await tab.send(cdp_page.create_isolated_world(
-                frame_id=login_frame.id_,
-                world_name="mun_login_inject"
-            ))
-            print(f"[MunAutomation] Created isolated world context_id={context_id}")
-        except Exception as e:
-            print(f"[MunAutomation] Failed to create isolated world: {e}")
-            return False
-        
-        # Helper to evaluate JS in the login iframe
-        async def eval_in_iframe(expression, current_context_id):
-            result = await tab.send(cdp_runtime.evaluate(
-                expression=expression,
-                context_id=current_context_id,
-                return_by_value=True
-            ))
-            return result[0].value if hasattr(result[0], 'value') else str(result[0])
-        
-        # 3. Wait for email input to be visible
+        # 1. Wait for email input to be visible in iframe
         email_found = False
-        for attempt in range(15):
-            try:
-                has_input = await eval_in_iframe(
-                    "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))",
-                    context_id
-                )
-                if has_input:
-                    email_found = True
-                    break
-            except Exception:
-                pass
+        for attempt in range(30):  # 30 seconds timeout
+            val, err = await evaluate_in_iframe_robust(
+                "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))"
+            )
+            if val is True:
+                email_found = True
+                print(f"[MunAutomation] Email field detected in iframe at attempt {attempt}")
+                break
             if attempt % 5 == 0:
-                print(f"[MunAutomation] Waiting for email field... attempt {attempt}")
+                print(f"[MunAutomation] Waiting for email field... attempt {attempt} (err={err})")
             await asyncio.sleep(1)
         
         if not email_found:
-            print("[MunAutomation] Email field not found in login iframe")
+            print("[MunAutomation] Email field not found in login iframe after 30s")
             return False
         
-        # 4. Fill email field
-        try:
-            fill_result = await eval_in_iframe(f"""
-                (() => {{
-                    const inp = document.querySelector('input#account_name_text_field') ||
-                               document.querySelector('input[type="email"]') ||
-                               document.querySelector('input[type="text"]');
-                    if (!inp) return 'NO_INPUT';
-                    inp.focus();
-                    inp.value = '{apple_id}';
-                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    return 'OK:' + inp.value;
-                }})()
-            """, context_id)
-            print(f"[MunAutomation] Email fill result: {fill_result}")
-            if 'NO_INPUT' in str(fill_result):
-                return False
-        except Exception as e:
-            print(f"[MunAutomation] Email fill error: {e}")
+        # 2. Fill email field
+        fill_res, err = await evaluate_in_iframe_robust(f"""
+            (() => {{
+                const inp = document.querySelector('input#account_name_text_field') ||
+                           document.querySelector('input[type="email"]') ||
+                           document.querySelector('input[type="text"]');
+                if (!inp) return 'NO_INPUT';
+                inp.focus();
+                inp.value = '{apple_id}';
+                inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return 'OK';
+            }})()
+        """)
+        print(f"[MunAutomation] Email fill result: {fill_res} (err={err})")
+        if fill_res != 'OK':
             return False
-        
+            
         await asyncio.sleep(1)
         
-        # 5. Click the Continue/Sign-In button to trigger password transition
-        try:
-            btn_result = await eval_in_iframe("""
-                (() => {
-                    const btn = document.querySelector('button#sign-in') ||
-                               document.querySelector('button.si-button') ||
-                               document.querySelector('button[type="submit"]');
-                    if (btn) {
-                        btn.click();
-                        return 'CLICKED:' + btn.id + '/' + btn.className.substring(0, 40);
-                    }
-                    return 'NO_BUTTON';
-                })()
-            """, context_id)
-            print(f"[MunAutomation] Continue button click: {btn_result}")
-        except Exception as e:
-            print(f"[MunAutomation] Button click error: {e}")
+        # 3. Click the Continue/Sign-In button to trigger password transition
+        click_res, err = await evaluate_in_iframe_robust("""
+            (() => {
+                const btn = document.querySelector('button#sign-in') ||
+                           document.querySelector('button.si-button') ||
+                           document.querySelector('button[type="submit"]');
+                if (btn) {
+                    btn.click();
+                    return 'CLICKED';
+                }
+                return 'NO_BUTTON';
+            })()
+        """)
+        print(f"[MunAutomation] Continue button click: {click_res} (err={err})")
         
-        # 6. Wait for transition and fill password
+        # 4. Wait for transition and fill password
         print("[MunAutomation] Waiting for password field to be ready...")
         pw_filled = False
-        for attempt in range(15):
+        for attempt in range(20):
             await asyncio.sleep(0.5)
-            # Create a new isolated world for each step of checking to make sure DOM updates are captured
-            try:
-                current_ctx = await tab.send(cdp_page.create_isolated_world(
-                    frame_id=login_frame.id_,
-                    world_name=f"mun_login_pw_wait_{attempt}"
-                ))
-                
-                # Check if password field is present and visible
-                is_visible = await eval_in_iframe("""
-                    (() => {
-                        const pw = document.querySelector('input#password_text_field') ||
+            is_visible, err = await evaluate_in_iframe_robust("""
+                (() => {
+                    const pw = document.querySelector('input#password_text_field') ||
+                               document.querySelector('input[type="password"]');
+                    return pw && pw.offsetParent !== null;
+                })()
+            """)
+            
+            if is_visible is True:
+                # Fill password
+                fill_pw, err = await evaluate_in_iframe_robust(f"""
+                    (() => {{
+                        const inp = document.querySelector('input#password_text_field') ||
                                    document.querySelector('input[type="password"]');
-                        return pw && pw.offsetParent !== null;
-                    })()
-                """, current_ctx)
-                
-                if is_visible:
-                    # Fill password now
-                    pw_fill_res = await eval_in_iframe(f"""
-                        (() => {{
-                            const inp = document.querySelector('input#password_text_field') ||
-                                       document.querySelector('input[type="password"]');
-                            if (!inp) return 'NO_PW';
-                            inp.focus();
-                            inp.value = '{password}';
-                            inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                            inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                            return 'OK';
-                        }})()
-                    """, current_ctx)
+                        if (!inp) return 'NO_PW';
+                        inp.focus();
+                        inp.value = '{password}';
+                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        return 'OK';
+                    }})()
+                """)
+                print(f"[MunAutomation] Password fill result: {fill_pw} (err={err})")
+                if fill_pw == 'OK':
+                    pw_filled = True
                     
-                    print(f"[MunAutomation] Password fill attempt {attempt}: {pw_fill_res}")
-                    if pw_fill_res == 'OK':
-                        pw_filled = True
-                        
-                        # Click sign-in again
-                        await asyncio.sleep(1)
-                        btn_signin = await eval_in_iframe("""
-                            (() => {
-                                const btn = document.querySelector('button#sign-in') ||
-                                           document.querySelector('button.si-button') ||
-                                           document.querySelector('button[type="submit"]');
-                                if (btn) {
-                                    btn.click();
-                                    return 'CLICKED_FINAL';
-                                }
-                                return 'NO_BTN';
-                            })()
-                        """, current_ctx)
-                        print(f"[MunAutomation] Final Sign-In click: {btn_signin}")
-                        break
-            except Exception as e:
-                pass
+                    # Click sign-in final
+                    await asyncio.sleep(1)
+                    signin_res, err = await evaluate_in_iframe_robust("""
+                        (() => {
+                            const btn = document.querySelector('button#sign-in') ||
+                                       document.querySelector('button[type="submit"]');
+                            if (btn) {
+                                btn.click();
+                                return 'CLICKED_FINAL';
+                            }
+                            return 'NO_BTN';
+                        })()
+                    """)
+                    print(f"[MunAutomation] Final Sign-In click: {signin_res} (err={err})")
+                    break
         
         if not pw_filled:
             print("[MunAutomation] Failed to fill password field")
             return False
             
-        print("[MunAutomation] Login automation completed")
+        print("[MunAutomation] Login automation completed successfully")
         return True
 
     async def _evaluate_in_all_contexts(self, tab, js_code):
