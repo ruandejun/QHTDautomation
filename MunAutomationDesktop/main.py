@@ -2282,87 +2282,133 @@ class MunAutomationBridge(QObject):
             if r:
                 return r
         return None
+    async def _find_button_by_text(self, tab, texts):
+        """Tìm button hoặc clickable element có chứa một trong các chuỗi văn bản chỉ định"""
+        all_buttons = []
+        try:
+            all_buttons.extend(await tab.select_all("button"))
+            all_buttons.extend(await tab.select_all("input[type='button']"))
+            all_buttons.extend(await tab.select_all("input[type='submit']"))
+            all_buttons.extend(await tab.select_all("a"))
+            all_buttons.extend(await tab.select_all("span"))
+        except Exception:
+            pass
+            
+        try:
+            iframes = await tab.select_all("iframe")
+            for iframe in iframes:
+                try:
+                    all_buttons.extend(await tab.query_selector_all("button", iframe))
+                    all_buttons.extend(await tab.query_selector_all("input[type='button']", iframe))
+                    all_buttons.extend(await tab.query_selector_all("input[type='submit']", iframe))
+                    all_buttons.extend(await tab.query_selector_all("a", iframe))
+                    all_buttons.extend(await tab.query_selector_all("span", iframe))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+            
+        for btn in all_buttons:
+            try:
+                text = ""
+                if btn.tag == 'input':
+                    text = btn.attrs.get('value', '').lower()
+                else:
+                    text = btn.text.lower()
+                    
+                for t in texts:
+                    if t.lower() in text:
+                        return btn
+            except Exception:
+                pass
+        return None
+
     async def _automate_payment_filling(self, tab, card_data):
-        """Evaluate filling script in all frames to bypass cross-origin restrictions"""
+        """Automate card form filling using Nodriver elements directly (bypassing JS evaluate sandbox)"""
         print("[MunAutomation] Automating card form filling...")
         
-        js_code = f"""
-        (function() {{
-            const inputs = document.querySelectorAll('input, select');
-            let filled = false;
-            for (const input of inputs) {{
-                const name = (input.name || '').toLowerCase();
-                const id = (input.id || '').toLowerCase();
-                const label = (input.getAttribute('aria-label') || '').toLowerCase();
-                const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
-                
-                if (id.includes('cardnumber') || name.includes('cardnumber') || label.includes('card number') || placeholder.includes('card number')) {{
-                    input.value = '{card_data.get("card_number", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filled = true;
-                }}
-                else if (id.includes('exp') || name.includes('exp') || label.includes('expiration') || placeholder.includes('mm/yy')) {{
-                    input.value = '{card_data.get("expiry_month", "")}/{card_data.get("expiry_year", "")[-2:]}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filled = true;
-                }}
-                else if (id.includes('month') || name.includes('month') || label.includes('month')) {{
-                    input.value = '{card_data.get("expiry_month", "")}';
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filled = true;
-                }}
-                else if (id.includes('year') || name.includes('year') || label.includes('year')) {{
-                    let yr = '{card_data.get("expiry_year", "")}';
-                    input.value = yr.length === 2 ? '20' + yr : yr;
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filled = true;
-                }}
-                else if (id.includes('securitycode') || name.includes('securitycode') || id.includes('cvv') || name.includes('cvv') || label.includes('security code') || label.includes('cvv') || placeholder.includes('security code')) {{
-                    input.value = '{card_data.get("cvv", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filled = true;
-                }}
-                else if (id.includes('firstname') || name.includes('firstname') || label.includes('first name')) {{
-                    input.value = '{card_data.get("first_name", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-                else if (id.includes('lastname') || name.includes('lastname') || label.includes('last name')) {{
-                    input.value = '{card_data.get("last_name", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-                else if (id.includes('street') || id.includes('address') || name.includes('address') || label.includes('street') || label.includes('address')) {{
-                    input.value = '{card_data.get("address_line1", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-                else if (id.includes('city') || name.includes('city') || label.includes('city')) {{
-                    input.value = '{card_data.get("city", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-                else if (id.includes('zip') || id.includes('postal') || name.includes('zip') || label.includes('zip') || label.includes('postal')) {{
-                    input.value = '{card_data.get("zip_code", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-                else if (id.includes('phone') || name.includes('phone') || label.includes('phone')) {{
-                    input.value = '{card_data.get("phone", "")}';
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                }}
-            }}
-            return filled;
-        }})();
-        """
-        
-        for _ in range(12): # Try up to 12 times (12 seconds)
-            filled_any = False
+        # We try for up to 12 seconds for inputs to be available on screen
+        for _ in range(12):
+            # 1. Get all inputs from main page
+            all_inputs = []
             try:
-                res = await self._evaluate_in_all_contexts(tab, js_code)
-                if res:
-                    filled_any = True
-            except Exception as e:
-                print(f"[MunAutomation] Error in evaluation loop: {e}")
+                all_inputs.extend(await tab.select_all("input"))
+                all_inputs.extend(await tab.select_all("select"))
+            except Exception:
+                pass
                 
+            # 2. Get all inputs from all iframes
+            try:
+                iframes = await tab.select_all("iframe")
+                for iframe in iframes:
+                    try:
+                        all_inputs.extend(await tab.query_selector_all("input", iframe))
+                        all_inputs.extend(await tab.query_selector_all("select", iframe))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+                
+            if not all_inputs:
+                await asyncio.sleep(1)
+                continue
+                
+            filled_any = False
+            # Fill each input based on attribute matching
+            for input_el in all_inputs:
+                try:
+                    name = input_el.attrs.get('name', '').lower()
+                    id_ = input_el.attrs.get('id', '').lower()
+                    label = input_el.attrs.get('aria-label', '').lower()
+                    placeholder = input_el.attrs.get('placeholder', '').lower()
+                    
+                    # Check for card number
+                    if 'cardnumber' in id_ or 'cardnumber' in name or 'card number' in label or 'card number' in placeholder:
+                        await input_el.send_keys(card_data.get("card_number", ""))
+                        filled_any = True
+                        print("[MunAutomation] Filled card number")
+                        
+                    # Check for expiry date
+                    elif 'exp' in id_ or 'exp' in name or 'expiration' in label or 'expiration' in placeholder:
+                        if 'mm/yy' in placeholder or 'month/year' in label:
+                            combined = f"{card_data.get('expiry_month', '')}{card_data.get('expiry_year', '')[-2:]}"
+                            await input_el.send_keys(combined)
+                            filled_any = True
+                            print("[MunAutomation] Filled combined expiry date")
+                        elif 'month' in id_ or 'month' in name or 'month' in label or 'mm' in placeholder:
+                            await input_el.send_keys(card_data.get('expiry_month', ''))
+                            filled_any = True
+                            print("[MunAutomation] Filled expiry month")
+                        elif 'year' in id_ or 'year' in name or 'year' in label or 'yy' in placeholder:
+                            val = card_data.get('expiry_year', '')
+                            if len(val) == 4 and 'yy' in placeholder and not 'yyyy' in placeholder:
+                                val = val[-2:]
+                            await input_el.send_keys(val)
+                            filled_any = True
+                            print("[MunAutomation] Filled expiry year")
+                            
+                    # Check for CVV
+                    elif 'cvv' in id_ or 'cvv' in name or 'cvc' in id_ or 'cvc' in name or 'security code' in label or 'security code' in placeholder or 'verification' in id_ or 'verification' in name:
+                        await input_el.send_keys(card_data.get('cvv', ''))
+                        filled_any = True
+                        print("[MunAutomation] Filled security code (CVV)")
+                        
+                    # Check for name/address
+                    elif 'firstname' in id_ or 'firstname' in name or 'first name' in label or 'first name' in placeholder:
+                        await input_el.send_keys(card_data.get('first_name', 'Nguyen'))
+                    elif 'lastname' in id_ or 'lastname' in name or 'last name' in label or 'last name' in placeholder:
+                        await input_el.send_keys(card_data.get('last_name', 'Van A'))
+                    elif 'street' in id_ or 'street' in name or 'address' in label or 'address' in placeholder:
+                        await input_el.send_keys(card_data.get('address_line1', '123 Le Loi'))
+                    elif 'city' in id_ or 'city' in name or 'city' in label or 'city' in placeholder:
+                        await input_el.send_keys(card_data.get('city', 'Ho Chi Minh'))
+                    elif 'zip' in id_ or 'zip' in name or 'postal' in label or 'postal' in placeholder:
+                        await input_el.send_keys(card_data.get('zip_code', '70000'))
+                    elif 'phone' in id_ or 'phone' in name or 'phone' in label or 'phone' in placeholder:
+                        await input_el.send_keys(card_data.get('phone', '0987654321'))
+                except Exception as e_field:
+                    print(f"[MunAutomation] Error filling individual field: {e_field}")
+            
             if filled_any:
                 print("[MunAutomation] Card fields found and auto-filled!")
                 break
@@ -2554,21 +2600,9 @@ class MunAutomationBridge(QObject):
             clicked_add = False
             for _ in range(5):
                 try:
-                    js_click_add = """
-                    (function() {
-                        const btns = Array.from(document.querySelectorAll('button, a, span'));
-                        for (const b of btns) {
-                            const txt = (b.textContent || b.innerText || '').toLowerCase();
-                            if (txt.includes('add payment') || txt.includes('add a payment') || txt.includes('thêm phương thức') || txt.includes('thêm thẻ')) {
-                                b.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    })();
-                    """
-                    res = await self._evaluate_in_all_contexts(tab, js_click_add)
-                    if res:
+                    btn = await self._find_button_by_text(tab, ['add payment', 'add a payment', 'thêm phương thức', 'thêm thẻ'])
+                    if btn:
+                        await btn.click()
                         clicked_add = True
                         print("[MunAutomation] Clicked 'Add Payment Method' button")
                         break
@@ -2589,21 +2623,9 @@ class MunAutomationBridge(QObject):
             clicked_save = False
             for _ in range(3):
                 try:
-                    js_click_save = """
-                    (function() {
-                        const btns = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]'));
-                        for (const b of btns) {
-                            const txt = (b.textContent || b.innerText || b.value || '').toLowerCase();
-                            if (txt === 'save' || txt === 'lưu' || txt.includes('save') || txt.includes('lưu')) {
-                                b.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    })();
-                    """
-                    res = await self._evaluate_in_all_contexts(tab, js_click_save)
-                    if res:
+                    btn = await self._find_button_by_text(tab, ['save', 'lưu'])
+                    if btn:
+                        await btn.click()
                         clicked_save = True
                         break
                 except Exception:
@@ -2618,25 +2640,44 @@ class MunAutomationBridge(QObject):
             error_message = ""
             for _ in range(5):
                 try:
-                    js_check_error = """
-                    (function() {
-                        const errorEls = document.querySelectorAll('.error-message, .alert, [role="alert"], .error, .msg-error');
-                        for (const el of errorEls) {
-                            if (el.offsetHeight > 0 && el.innerText.trim()) {
-                                return el.innerText.trim();
-                            }
-                        }
-                        const invalidEls = document.querySelectorAll('.invalid, [aria-invalid="true"]');
-                        if (invalidEls.length > 0) {
-                            return "Thông tin nhập không hợp lệ (Trường đỏ)";
-                        }
-                        return "";
-                    })();
-                    """
-                    res = await self._evaluate_in_all_contexts(tab, js_check_error)
-                    if res:
+                    error_els = []
+                    try:
+                        error_els.extend(await tab.select_all(".error-message, .alert, [role='alert'], .error, .msg-error"))
+                    except Exception:
+                        pass
+                    try:
+                        iframes = await tab.select_all("iframe")
+                        for iframe in iframes:
+                            error_els.extend(await tab.query_selector_all(".error-message, .alert, [role='alert'], .error, .msg-error", iframe))
+                    except Exception:
+                        pass
+                        
+                    for el in error_els:
+                        txt = el.text.strip()
+                        if txt:
+                            has_error = True
+                            error_message = txt
+                            break
+                            
+                    if has_error:
+                        break
+                        
+                    # Also check for invalid fields (red fields)
+                    invalid_els = []
+                    try:
+                        invalid_els.extend(await tab.select_all(".invalid, [aria-invalid='true']"))
+                    except Exception:
+                        pass
+                    try:
+                        iframes = await tab.select_all("iframe")
+                        for iframe in iframes:
+                            invalid_els.extend(await tab.query_selector_all(".invalid, [aria-invalid='true']", iframe))
+                    except Exception:
+                        pass
+                        
+                    if len(invalid_els) > 0:
                         has_error = True
-                        error_message = res
+                        error_message = "Thông tin nhập không hợp lệ (Trường đỏ)"
                         break
                 except Exception:
                     pass
@@ -2649,20 +2690,9 @@ class MunAutomationBridge(QObject):
                 
                 # Click Cancel to close form and reset for next card
                 try:
-                    js_click_cancel = """
-                    (function() {
-                        const btns = Array.from(document.querySelectorAll('button, a'));
-                        for (const b of btns) {
-                            const txt = (b.textContent || b.innerText || '').toLowerCase();
-                            if (txt === 'cancel' || txt === 'hủy' || txt.includes('cancel') || txt.includes('hủy')) {
-                                b.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    })();
-                    """
-                    await self._evaluate_in_all_contexts(tab, js_click_cancel)
+                    btn = await self._find_button_by_text(tab, ['cancel', 'hủy'])
+                    if btn:
+                        await btn.click()
                 except Exception:
                     pass
                 await asyncio.sleep(2)
