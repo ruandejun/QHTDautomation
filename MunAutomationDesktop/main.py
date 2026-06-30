@@ -2837,39 +2837,38 @@ class MunAutomationBridge(QObject):
                     url = "https://account.apple.com/account/manage/section/payment"
                     loop.run_until_complete(tab.get(url))
                     
-                    # 6. Automatic sign-in (email/password)
-                    is_login = False
-                    for _ in range(5):
-                        try:
-                            current_url = tab.url
-                            if "idmsa.apple.com" in current_url or "signin" in current_url:
-                                is_login = True
-                                break
-                        except Exception:
-                            pass
-                        time.sleep(1)
-                        
-                    if is_login and target_apple_id and p_password:
-                        self.statusMessage.emit("🔑 Đang tự động nhập Email và Password đăng nhập...")
-                        try:
-                            loop.run_until_complete(self._automate_apple_login(tab, target_apple_id, p_password))
-                        except Exception as e_login:
-                            print(f"[MunAutomation] Sign-in automation error: {e_login}")
-                            
-                    # 7. Wait for 2FA & successful redirect back to account management
-                    self.statusMessage.emit("⏳ Đang chờ người dùng xác thực 2FA trên trình duyệt...")
-                    print("[MunAutomation] Waiting for 2FA section redirect...")
+                    # 6. Automatic sign-in & 2FA loop (Wait up to 5 minutes)
+                    self.statusMessage.emit("⏳ Đang chờ đăng nhập và xác thực 2FA trên trình duyệt...")
+                    print("[MunAutomation] Waiting for login / 2FA redirect...")
                     
                     logged_in = False
-                    for _ in range(300): # Wait up to 5 minutes for 2FA
+                    last_login_attempt = 0
+                    
+                    for _ in range(300): # Wait up to 5 minutes
                         try:
                             current_url = tab.url
+                            
+                            # Check if successfully logged in and redirected back to account manage section
                             if "account.apple.com/account/manage" in current_url or "account.apple.com/manage" in current_url:
                                 if "signin" not in current_url and "idmsa.apple.com" not in current_url:
                                     logged_in = True
                                     break
-                        except Exception:
-                            pass
+                                    
+                            # If we are back on the login/signin page, and we haven't tried logging in recently (e.g. within last 15 seconds)
+                            if ("idmsa.apple.com" in current_url or "signin" in current_url) and (time.time() - last_login_attempt > 15):
+                                if target_apple_id and p_password:
+                                    print("[MunAutomation] Login screen detected during wait. Triggering auto sign-in...")
+                                    self.statusMessage.emit("🔑 Phát hiện màn hình đăng nhập. Đang tự động điền tài khoản...")
+                                    last_login_attempt = time.time()
+                                    try:
+                                        # Run login in the event loop
+                                        success = loop.run_until_complete(self._automate_apple_login(tab, target_apple_id, p_password))
+                                        if success:
+                                            self.statusMessage.emit("⏳ Đã điền xong thông tin. Đang chờ 2FA...")
+                                    except Exception as e_login:
+                                        print(f"[MunAutomation] Retried Sign-in automation error: {e_login}")
+                        except Exception as e_check:
+                            print(f"[MunAutomation] Wait loop error: {e_check}")
                         time.sleep(1)
                         
                     if not logged_in:
