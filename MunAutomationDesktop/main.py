@@ -2148,16 +2148,41 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    async def _find_element_in_all_frames(self, tab, selector):
+        """Tìm element bằng selector trong tab chính và tất cả các iframes connectable"""
+        # 1. Check main tab
+        try:
+            el = await tab.select(selector, timeout=1)
+            if el:
+                return el, tab
+        except Exception:
+            pass
+            
+        # 2. Check all child frames
+        try:
+            frames = await tab.get_frames()
+            for frame in frames:
+                try:
+                    el = await frame.select(selector, timeout=1)
+                    if el:
+                        return el, frame
+                except Exception:
+                    pass
+        except Exception:
+            pass
+            
+        return None, None
+
     async def _automate_apple_login(self, tab, apple_id, password):
-        """Automate Apple ID username and password input using nodriver"""
+        """Automate Apple ID username and password input using nodriver traversing iframes"""
         print(f"[MunAutomation] Automating Apple ID login for: {apple_id}")
         
-        # 1. Wait for email field
+        # 1. Wait for email field in all contexts
         email_el = None
+        target_frame = None
         for _ in range(25): # 25 seconds timeout
             try:
-                # Nodriver select() will automatically query within iframes
-                email_el = await tab.select("input[type='text']")
+                email_el, target_frame = await self._find_element_in_all_frames(tab, "input[type='text']")
                 if email_el:
                     placeholder = email_el.attrs.get('placeholder', '').lower()
                     id_attr = email_el.attrs.get('id', '').lower()
@@ -2175,11 +2200,11 @@ class MunAutomationBridge(QObject):
         await email_el.send_keys(apple_id)
         await asyncio.sleep(0.5)
         
-        # Click continue button
+        # Click continue button inside same frame
         btn = None
         for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
             try:
-                btn = await tab.select(selector)
+                btn = await target_frame.select(selector, timeout=1)
                 if btn:
                     break
             except Exception:
@@ -2192,11 +2217,12 @@ class MunAutomationBridge(QObject):
             print("[MunAutomation] Continue button not found, pressing Enter")
             await email_el.send_keys("\n")
             
-        # 2. Wait for password field
+        # 2. Wait for password field in all contexts
         pw_el = None
+        target_frame2 = None
         for _ in range(20): # 20 seconds timeout
             try:
-                pw_el = await tab.select("input[type='password']")
+                pw_el, target_frame2 = await self._find_element_in_all_frames(tab, "input[type='password']")
                 if pw_el:
                     break
             except Exception:
@@ -2211,11 +2237,11 @@ class MunAutomationBridge(QObject):
         await pw_el.send_keys(password)
         await asyncio.sleep(0.5)
         
-        # Click submit button
+        # Click submit button inside same frame
         btn2 = None
         for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
             try:
-                btn2 = await tab.select(selector)
+                btn2 = await target_frame2.select(selector, timeout=1)
                 if btn2:
                     break
             except Exception:
@@ -2235,30 +2261,27 @@ class MunAutomationBridge(QObject):
         results = []
         try:
             res_main = await tab.evaluate(js_code)
-            if res_main:
+            if res_main is not None:
                 results.append(res_main)
         except Exception as e:
             print(f"[MunAutomation] Eval error in main frame: {e}")
             
         try:
-            iframes = await tab.select_all("iframe")
-            for iframe in iframes:
+            frames = await tab.get_frames()
+            for frame in frames:
                 try:
-                    iframe_page = await iframe.content_frame()
-                    if iframe_page:
-                        res_frame = await iframe_page.evaluate(js_code)
-                        if res_frame:
-                            results.append(res_frame)
+                    res_frame = await frame.evaluate(js_code)
+                    if res_frame is not None:
+                        results.append(res_frame)
                 except Exception:
                     pass
-        except Exception as e_iframes:
-            print(f"[MunAutomation] Error selecting iframes: {e_iframes}")
+        except Exception as e_frames:
+            print(f"[MunAutomation] Error evaluating inside child frames: {e_frames}")
             
         for r in results:
             if r:
                 return r
         return None
-
     async def _automate_payment_filling(self, tab, card_data):
         """Evaluate filling script in all frames to bypass cross-origin restrictions"""
         print("[MunAutomation] Automating card form filling...")
