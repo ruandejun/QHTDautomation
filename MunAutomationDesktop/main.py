@@ -3035,6 +3035,15 @@ class MunAutomationStoreDesktop(QMainWindow):
         self.hard_reload_shortcut.activated.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.WebAction.ReloadAndBypassCache))
 
     # --- Cookie sharing helpers ---
+    def _save_cookies_to_disk_debounced(self):
+        """Lưu cookie jar xuống disk bằng QTimer để tránh freeze GUI thread"""
+        if not hasattr(self, "_cookie_save_timer"):
+            self._cookie_save_timer = QTimer(self)
+            self._cookie_save_timer.setSingleShot(True)
+            self._cookie_save_timer.setInterval(500) # 500ms delay
+            self._cookie_save_timer.timeout.connect(self._save_cookies_to_disk)
+        self._cookie_save_timer.start()
+
     def _on_cookie_added(self, cookie):
         """Khi browser thêm cookie → sync sang Python cookie jar và lưu vào disk"""
         if not self.bridge:
@@ -3054,10 +3063,10 @@ class MunAutomationStoreDesktop(QMainWindow):
                 if c['value'] == cookie_dict['value']:
                     return
                 jar[i] = cookie_dict
-                self._save_cookies_to_disk()
+                self._save_cookies_to_disk_debounced()
                 return
         jar.append(cookie_dict)
-        self._save_cookies_to_disk()
+        self._save_cookies_to_disk_debounced()
 
     def _on_cookie_removed(self, cookie):
         """Khi browser xóa cookie → remove khỏi Python cookie jar và lưu vào disk"""
@@ -3071,7 +3080,7 @@ class MunAutomationStoreDesktop(QMainWindow):
             if not (c['name'] == name and c['domain'] == domain)
         ]
         if len(self.bridge._cookie_jar) != old_len:
-            self._save_cookies_to_disk()
+            self._save_cookies_to_disk_debounced()
 
     def on_page_loaded(self, ok):
         """Sau khi page load xong, inject qwebchannel.js và bridge detection script"""
