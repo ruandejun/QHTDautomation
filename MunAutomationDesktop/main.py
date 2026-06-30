@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # === PyQt6 Imports ===
 from PyQt6.QtCore import (
-    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject, QFile, QIODevice, QEventLoop
+    QThread, pyqtSignal, pyqtSlot, Qt, QTimer, QUrl, QObject, QFile, QIODevice, QEventLoop, QDateTime
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -3094,6 +3094,11 @@ class MunAutomationStoreDesktop(QMainWindow):
         """Khi browser thêm cookie → sync sang Python cookie jar và lưu vào disk"""
         if not self.bridge:
             return
+        
+        expiration = ""
+        if not cookie.isSessionCookie():
+            expiration = cookie.expirationDate().toString(Qt.DateFormat.ISODate)
+            
         cookie_dict = {
             'name': bytes(cookie.name()).decode('utf-8', errors='replace'),
             'value': bytes(cookie.value()).decode('utf-8', errors='replace'),
@@ -3101,6 +3106,7 @@ class MunAutomationStoreDesktop(QMainWindow):
             'path': cookie.path(),
             'secure': cookie.isSecure(),
             'httponly': cookie.isHttpOnly(),
+            'expiration': expiration,
         }
         # Avoid duplicates
         jar = self.bridge._cookie_jar
@@ -3256,12 +3262,25 @@ class MunAutomationStoreDesktop(QMainWindow):
                     c_dict.get('name', '').encode('utf-8'),
                     c_dict.get('value', '').encode('utf-8')
                 )
-                qcookie.setDomain(c_dict.get('domain', ''))
+                cookie_domain = c_dict.get('domain', '')
+                qcookie.setDomain(cookie_domain)
                 qcookie.setPath(c_dict.get('path', '/'))
                 qcookie.setSecure(c_dict.get('secure', False))
                 qcookie.setHttpOnly(c_dict.get('httponly', False))
                 
-                self._cookie_store.setCookie(qcookie, QUrl(C69_BASE_URL))
+                exp_str = c_dict.get('expiration', '')
+                if exp_str:
+                    qdt = QDateTime.fromString(exp_str, Qt.DateFormat.ISODate)
+                    if qdt.isValid():
+                        qcookie.setExpirationDate(qdt)
+                
+                domain_clean = cookie_domain.lstrip('.')
+                if domain_clean:
+                    target_url = QUrl(f"https://{domain_clean}")
+                else:
+                    target_url = QUrl(C69_BASE_URL)
+                    
+                self._cookie_store.setCookie(qcookie, target_url)
                 
             print(f"[QHTD COOKIES] Loaded {len(saved_cookies)} cookies from disk successfully", flush=True)
         except Exception as e:
