@@ -2148,6 +2148,182 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    async def _automate_apple_login(self, tab, apple_id, password):
+        """Automate Apple ID username and password input using nodriver"""
+        print(f"[MunAutomation] Automating Apple ID login for: {apple_id}")
+        
+        # 1. Wait for email field
+        email_el = None
+        for _ in range(25): # 25 seconds timeout
+            try:
+                # Nodriver select() will automatically query within iframes
+                email_el = await tab.select("input[type='text']")
+                if email_el:
+                    placeholder = email_el.attrs.get('placeholder', '').lower()
+                    id_attr = email_el.attrs.get('id', '').lower()
+                    if 'apple id' in placeholder or 'email' in placeholder or 'account_name' in id_attr or 'account_name' in placeholder:
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+            
+        if not email_el:
+            print("[MunAutomation] Apple ID input field not found.")
+            return False
+            
+        # Type email
+        await email_el.send_keys(apple_id)
+        await asyncio.sleep(0.5)
+        
+        # Click continue button
+        btn = None
+        for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
+            try:
+                btn = await tab.select(selector)
+                if btn:
+                    break
+            except Exception:
+                pass
+                
+        if btn:
+            await btn.click()
+            print("[MunAutomation] Clicked continue button")
+        else:
+            print("[MunAutomation] Continue button not found, pressing Enter")
+            await email_el.send_keys("\n")
+            
+        # 2. Wait for password field
+        pw_el = None
+        for _ in range(20): # 20 seconds timeout
+            try:
+                pw_el = await tab.select("input[type='password']")
+                if pw_el:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+            
+        if not pw_el:
+            print("[MunAutomation] Password input field not found.")
+            return False
+            
+        # Type password
+        await pw_el.send_keys(password)
+        await asyncio.sleep(0.5)
+        
+        # Click submit button
+        btn2 = None
+        for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
+            try:
+                btn2 = await tab.select(selector)
+                if btn2:
+                    break
+            except Exception:
+                pass
+                
+        if btn2:
+            await btn2.click()
+            print("[MunAutomation] Submitted Apple ID password")
+        else:
+            print("[MunAutomation] Submit button not found, pressing Enter")
+            await pw_el.send_keys("\n")
+            
+        return True
+
+    async def _automate_payment_filling(self, tab, card_data):
+        """Evaluate filling script in all frames to bypass cross-origin restrictions"""
+        print("[MunAutomation] Automating card form filling...")
+        
+        js_code = f"""
+        (function() {{
+            const inputs = document.querySelectorAll('input, select');
+            let filled = false;
+            for (const input of inputs) {{
+                const name = (input.name || '').toLowerCase();
+                const id = (input.id || '').toLowerCase();
+                const label = (input.getAttribute('aria-label') || '').toLowerCase();
+                const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
+                
+                if (id.includes('cardnumber') || name.includes('cardnumber') || label.includes('card number') || placeholder.includes('card number')) {{
+                    input.value = '{card_data.get("card_number", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    filled = true;
+                }}
+                else if (id.includes('exp') || name.includes('exp') || label.includes('expiration') || placeholder.includes('mm/yy')) {{
+                    input.value = '{card_data.get("expiry_month", "")}/{card_data.get("expiry_year", "")[-2:]}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    filled = true;
+                }}
+                else if (id.includes('month') || name.includes('month') || label.includes('month')) {{
+                    input.value = '{card_data.get("expiry_month", "")}';
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    filled = true;
+                }}
+                else if (id.includes('year') || name.includes('year') || label.includes('year')) {{
+                    let yr = '{card_data.get("expiry_year", "")}';
+                    input.value = yr.length === 2 ? '20' + yr : yr;
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    filled = true;
+                }}
+                else if (id.includes('securitycode') || name.includes('securitycode') || id.includes('cvv') || name.includes('cvv') || label.includes('security code') || label.includes('cvv') || placeholder.includes('security code')) {{
+                    input.value = '{card_data.get("cvv", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    filled = true;
+                }}
+                else if (id.includes('firstname') || name.includes('firstname') || label.includes('first name')) {{
+                    input.value = '{card_data.get("first_name", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+                else if (id.includes('lastname') || name.includes('lastname') || label.includes('last name')) {{
+                    input.value = '{card_data.get("last_name", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+                else if (id.includes('street') || id.includes('address') || name.includes('address') || label.includes('street') || label.includes('address')) {{
+                    input.value = '{card_data.get("address_line1", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+                else if (id.includes('city') || name.includes('city') || label.includes('city')) {{
+                    input.value = '{card_data.get("city", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+                else if (id.includes('zip') || id.includes('postal') || name.includes('zip') || label.includes('zip') || label.includes('postal')) {{
+                    input.value = '{card_data.get("zip_code", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+                else if (id.includes('phone') || name.includes('phone') || label.includes('phone')) {{
+                    input.value = '{card_data.get("phone", "")}';
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+            }}
+            return filled;
+        }})();
+        """
+        
+        for _ in range(12): # Try up to 12 times (12 seconds)
+            filled_any = False
+            try:
+                res = await tab.evaluate(js_code)
+                if res:
+                    filled_any = True
+                    
+                for frame in tab.frames:
+                    try:
+                        res_frame = await frame.evaluate(js_code)
+                        if res_frame:
+                            filled_any = True
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[MunAutomation] Error in evaluation loop: {e}")
+                
+            if filled_any:
+                print("[MunAutomation] Card fields found and auto-filled!")
+                break
+            await asyncio.sleep(1)
+
     @pyqtSlot(str, str, result=str)
     def openBrowserProfile(self, profile_name, target_url):
         try:
@@ -2158,6 +2334,21 @@ class MunAutomationBridge(QObject):
             import threading
             def run_browser():
                 try:
+                    # Fetch credentials from backend in the thread
+                    apple_id = ""
+                    password = ""
+                    try:
+                        session = self.get_requests_session()
+                        payload = {"session_id": profile_name} if len(profile_name) > 30 else {"apple_id": profile_name}
+                        r = session.post(f"{C69_BASE_URL.rstrip('/')}/dashboard/api/apple-sub/get-password/", json=payload, timeout=10)
+                        if r.status_code == 200:
+                            cred_data = r.json()
+                            if cred_data.get('success'):
+                                apple_id = cred_data.get('apple_id')
+                                password = cred_data.get('password')
+                    except Exception as e_cred:
+                        print(f"[MunAutomation] Failed to fetch credentials for auto login: {e_cred}")
+
                     if MUN_ANTI_BROWSER_AVAILABLE:
                         manager = NodriverBrowserManager()
                         profile = manager.profile_manager.create_random_profile()
@@ -2166,6 +2357,26 @@ class MunAutomationBridge(QObject):
                         browser, tab = loop.run_until_complete(manager.start(profile))
                         if tab:
                             loop.run_until_complete(tab.get(url))
+                            
+                            # If credentials exist and we are on an Apple domain, run login automation
+                            if apple_id and password and "apple.com" in url:
+                                try:
+                                    # Wait up to 5 seconds to check if we are redirected to login page
+                                    is_login = False
+                                    for _ in range(5):
+                                        try:
+                                            current_url = tab.url
+                                            if "idmsa.apple.com" in current_url or "signin" in current_url:
+                                                is_login = True
+                                                break
+                                        except Exception:
+                                            pass
+                                        time.sleep(1)
+                                        
+                                    if is_login:
+                                        loop.run_until_complete(self._automate_apple_login(tab, apple_id, password))
+                                except Exception as e_login:
+                                    print(f"[MunAutomation] Login automation error: {e_login}")
                     else:
                         import webbrowser
                         webbrowser.open(url)
@@ -2186,11 +2397,85 @@ class MunAutomationBridge(QObject):
 
     @pyqtSlot(str, str, str, str, str, result=str)
     def addPaymentCard(self, session_id, card_number, exp_month, exp_year, cvv):
+        card_data = {
+            "card_number": card_number,
+            "expiry_month": exp_month,
+            "expiry_year": exp_year,
+            "cvv": cvv
+        }
+        return self.addPaymentCardAuto(session_id, json.dumps(card_data))
+
+    @pyqtSlot(str, str, result=str)
+    def addPaymentCardAuto(self, session_id, card_config_json):
         try:
-            print(f"[MunAutomation] Add payment card requested for session {session_id}")
-            self.statusMessage.emit(f"💳 Đang mở MunLogin để thêm thẻ...")
+            print(f"[MunAutomation] Auto Add payment card requested for session {session_id}")
+            self.statusMessage.emit(f"💳 Đang mở MunLogin để tự động thêm thẻ...")
             url = "https://account.apple.com/account/manage/section/payment"
-            return self.openBrowserProfile(session_id, url)
+            card_data = json.loads(card_config_json)
+            
+            import threading
+            def run_card_browser():
+                try:
+                    # Fetch credentials from backend
+                    apple_id = ""
+                    password = ""
+                    try:
+                        session = self.get_requests_session()
+                        payload = {"session_id": session_id} if len(session_id) > 30 else {"apple_id": session_id}
+                        r = session.post(f"{C69_BASE_URL.rstrip('/')}/dashboard/api/apple-sub/get-password/", json=payload, timeout=10)
+                        if r.status_code == 200:
+                            cred_data = r.json()
+                            if cred_data.get('success'):
+                                apple_id = cred_data.get('apple_id')
+                                password = cred_data.get('password')
+                    except Exception as e_cred:
+                        print(f"[MunAutomation] Failed to fetch credentials: {e_cred}")
+
+                    if MUN_ANTI_BROWSER_AVAILABLE:
+                        manager = NodriverBrowserManager()
+                        profile = manager.profile_manager.create_random_profile()
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        browser, tab = loop.run_until_complete(manager.start(profile))
+                        if tab:
+                            # 1. Open URL
+                            loop.run_until_complete(tab.get(url))
+                            
+                            # 2. Run Login Automation if credentials found and we are redirecting to login page
+                            is_login = False
+                            for _ in range(5):
+                                try:
+                                    current_url = tab.url
+                                    if "idmsa.apple.com" in current_url or "signin" in current_url:
+                                        is_login = True
+                                        break
+                                except Exception:
+                                    pass
+                                time.sleep(1)
+                                
+                            if is_login and apple_id and password:
+                                try:
+                                    loop.run_until_complete(self._automate_apple_login(tab, apple_id, password))
+                                except Exception as e_login:
+                                    print(f"[MunAutomation] Login automation error: {e_login}")
+                                    
+                            # Wait for payment page to load fully after login
+                            time.sleep(3)
+                            
+                            # 3. Fill Card Form Automation
+                            try:
+                                loop.run_until_complete(self._automate_payment_filling(tab, card_data))
+                            except Exception as e_fill:
+                                print(f"[MunAutomation] Payment filling error: {e_fill}")
+                    else:
+                        import webbrowser
+                        webbrowser.open(url)
+                except Exception as ex:
+                    print(f"[MunAutomation] Card browser exception: {ex}")
+                    
+            t = threading.Thread(target=run_card_browser, daemon=True)
+            t.start()
+            return json.dumps({"success": True, "message": "Đang khởi chạy MunLogin tự động thêm thẻ..."})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
