@@ -2479,6 +2479,356 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    def update_card_status_on_server(self, card_id, status):
+        try:
+            session = self.get_requests_session()
+            url = f"{C69_BASE_URL.rstrip('/')}/dashboard/api/cards/{card_id}/"
+            resp = session.patch(url, json={"status": status}, timeout=10)
+            print(f"[MunAutomation] Updated card {card_id} status on server to: {status}. Status: {resp.status_code}")
+        except Exception as e:
+            print(f"[MunAutomation] Failed to update card status on server: {e}")
+
+    async def _automate_add_payment_cards(self, tab, cards):
+        """Automate adding a list of cards to Apple account one by one"""
+        success_count = 0
+        total_count = len(cards)
+        
+        for idx, card in enumerate(cards):
+            card_num = card.get("card_number", "")
+            print(f"[MunAutomation] Attempting to add card {idx+1}/{total_count}: ****{card_num[-4:]}")
+            self.statusMessage.emit(f"💳 Đang thêm thẻ {idx+1}/{total_count} (****{card_num[-4:]})...")
+            
+            # 1. Ensure we are on the payment section page
+            try:
+                if "section/payment" not in tab.url:
+                    await tab.get("https://account.apple.com/account/manage/section/payment")
+                    await asyncio.sleep(3)
+            except Exception:
+                pass
+                
+            # 2. Click "Add Payment Method"
+            clicked_add = False
+            for _ in range(5):
+                try:
+                    js_click_add = """
+                    (function() {
+                        const btns = Array.from(document.querySelectorAll('button, a, span'));
+                        for (const b of btns) {
+                            const txt = (b.textContent || b.innerText || '').toLowerCase();
+                            if (txt.includes('add payment') || txt.includes('add a payment') || txt.includes('thêm phương thức') || txt.includes('thêm thẻ')) {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    })();
+                    """
+                    res = await tab.evaluate(js_click_add)
+                    if res:
+                        clicked_add = True
+                        print("[MunAutomation] Clicked 'Add Payment Method' button")
+                        break
+                    
+                    for frame in tab.frames:
+                        res_frame = await frame.evaluate(js_click_add)
+                        if res_frame:
+                            clicked_add = True
+                            print("[MunAutomation] Clicked 'Add Payment Method' button inside frame")
+                            break
+                    if clicked_add:
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                
+            # Wait for the card form to appear
+            await asyncio.sleep(3)
+            
+            # 3. Fill the form
+            try:
+                await self._automate_payment_filling(tab, card)
+            except Exception as e_fill:
+                print(f"[MunAutomation] Fill error: {e_fill}")
+                
+            # 4. Click Save
+            clicked_save = False
+            for _ in range(3):
+                try:
+                    js_click_save = """
+                    (function() {
+                        const btns = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]'));
+                        for (const b of btns) {
+                            const txt = (b.textContent || b.innerText || b.value || '').toLowerCase();
+                            if (txt === 'save' || txt === 'lưu' || txt.includes('save') || txt.includes('lưu')) {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    })();
+                    """
+                    res = await tab.evaluate(js_click_save)
+                    if res:
+                        clicked_save = True
+                        break
+                    for frame in tab.frames:
+                        res_frame = await frame.evaluate(js_click_save)
+                        if res_frame:
+                            clicked_save = True
+                            break
+                    if clicked_save:
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                
+            print("[MunAutomation] Clicked save, waiting for validation results...")
+            await asyncio.sleep(6) # Wait for Apple to validate and process
+            
+            # 5. Check if success or error
+            has_error = False
+            error_message = ""
+            for _ in range(5):
+                try:
+                    js_check_error = """
+                    (function() {
+                        const errorEls = document.querySelectorAll('.error-message, .alert, [role="alert"], .error, .msg-error');
+                        for (const el of errorEls) {
+                            if (el.offsetHeight > 0 && el.innerText.trim()) {
+                                return el.innerText.trim();
+                            }
+                        }
+                        const invalidEls = document.querySelectorAll('.invalid, [aria-invalid="true"]');
+                        if (invalidEls.length > 0) {
+                            return "Thông tin nhập không hợp lệ (Trường đỏ)";
+                        }
+                        return "";
+                    })();
+                    """
+                    res = await tab.evaluate(js_check_error)
+                    if res:
+                        has_error = True
+                        error_message = res
+                        break
+                    for frame in tab.frames:
+                        res_frame = await frame.evaluate(js_check_error)
+                        if res_frame:
+                            has_error = True
+                            error_message = res_frame
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                
+            if has_error:
+                print(f"[MunAutomation] Card declined/error: {error_message}")
+                self.statusMessage.emit(f"❌ Thẻ ****{card_num[-4:]} bị lỗi: {error_message}")
+                self.update_card_status_on_server(card.get("id"), "Thẻ chết")
+                
+                # Click Cancel to close form and reset for next card
+                try:
+                    js_click_cancel = """
+                    (function() {
+                        const btns = Array.from(document.querySelectorAll('button, a'));
+                        for (const b of btns) {
+                            const txt = (b.textContent || b.innerText || '').toLowerCase();
+                            if (txt === 'cancel' || txt === 'hủy' || txt.includes('cancel') || txt.includes('hủy')) {
+                                b.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    })();
+                    """
+                    await tab.evaluate(js_click_cancel)
+                    for frame in tab.frames:
+                        await frame.evaluate(js_click_cancel)
+                except Exception:
+                    pass
+                await asyncio.sleep(2)
+            else:
+                print(f"[MunAutomation] Card ****{card_num[-4:]} added successfully!")
+                self.statusMessage.emit(f"✅ Thẻ ****{card_num[-4:]} thành công!")
+                success_count += 1
+                self.update_card_status_on_server(card.get("id"), "Đã sử dụng")
+                await asyncio.sleep(3)
+                
+        # Final result notification
+        self.statusMessage.emit(f"🎉 Hoàn tất thêm thẻ: {success_count}/{total_count} thành công!")
+        return success_count
+
+    @pyqtSlot(str, str, str, result=str)
+    def addPaymentCardsAuto(self, session_id, apple_id, cards_json):
+        try:
+            print(f"[MunAutomation] Auto Add multiple payment cards requested for Apple ID: {apple_id}")
+            self.statusMessage.emit(f"🚀 Bắt đầu quá trình thêm thẻ tự động cho {apple_id}...")
+            cards = json.loads(cards_json)
+            
+            import threading
+            def run_flow():
+                try:
+                    # 1. Fetch credentials
+                    p_apple_id = ""
+                    p_password = ""
+                    try:
+                        session = self.get_requests_session()
+                        payload = {"session_id": session_id} if len(session_id) > 30 else {"apple_id": apple_id}
+                        r = session.post(f"{C69_BASE_URL.rstrip('/')}/dashboard/api/apple-sub/get-password/", json=payload, timeout=10)
+                        if r.status_code == 200:
+                            cred_data = r.json()
+                            if cred_data.get('success'):
+                                p_apple_id = cred_data.get('apple_id')
+                                p_password = cred_data.get('password')
+                    except Exception as e_cred:
+                        print(f"[MunAutomation] Failed to fetch credentials: {e_cred}")
+                        self.statusMessage.emit(f"⚠️ Không thể lấy thông tin đăng nhập từ server.")
+                        
+                    target_apple_id = p_apple_id or apple_id
+                    
+                    if not MUN_ANTI_BROWSER_AVAILABLE:
+                        self.statusMessage.emit("❌ MunLogin không khả dụng trên hệ thống này.")
+                        return
+
+                    # 2. Check if profile already exists on server/locally
+                    print(f"[MunAutomation] Checking profile for {target_apple_id}...")
+                    self.statusMessage.emit(f"🔍 Đang kiểm tra profile MunLogin cho {target_apple_id}...")
+                    
+                    profile_id = None
+                    try:
+                        session = self.get_requests_session()
+                        url = f"{C69_BASE_URL.rstrip('/')}/dashboard/api/profiles/"
+                        r = session.get(url, timeout=10)
+                        if r.status_code == 200:
+                            profiles = r.json()
+                            results = profiles
+                            if isinstance(profiles, dict) and "results" in profiles:
+                                results = profiles["results"]
+                            for p in results:
+                                if p.get("profile_name") == target_apple_id:
+                                    profile_id = p.get("id")
+                                    print(f"[MunAutomation] Found existing profile: {profile_id}")
+                                    break
+                    except Exception as e_check:
+                        print(f"[MunAutomation] Error searching existing profile: {e_check}")
+                        
+                    # 3. Create profile if not found
+                    if not profile_id:
+                        print(f"[MunAutomation] Profile not found. Creating new profile for {target_apple_id}...")
+                        self.statusMessage.emit(f"🆕 Không tìm thấy profile. Đang tạo profile mới...")
+                        try:
+                            manager = NodriverBrowserManager()
+                            profile_config = manager.profile_manager.create_random_profile()
+                            profile_config["name"] = target_apple_id
+                            profile_config["profile_start_url"] = "https://account.apple.com/account/manage/section/payment"
+                            
+                            from mun_anti_browser.c69_api import local_to_server
+                            server_payload = local_to_server(profile_config)
+                            
+                            url = f"{C69_BASE_URL.rstrip('/')}/dashboard/api/profiles/"
+                            r = session.post(url, json=server_payload, timeout=10)
+                            if r.status_code == 201:
+                                res_data = r.json()
+                                profile_id = res_data.get("id")
+                                print(f"[MunAutomation] Created profile on server with ID: {profile_id}")
+                            else:
+                                print(f"[MunAutomation] Server returned status {r.status_code}: {r.text}")
+                        except Exception as e_create:
+                            print(f"[MunAutomation] Profile creation error: {e_create}")
+                            
+                    if not profile_id:
+                        self.statusMessage.emit("❌ Không thể xác định hoặc tạo profile MunLogin.")
+                        return
+                        
+                    # 4. Fetch the profile details from server to run
+                    print(f"[MunAutomation] Loading profile details for ID: {profile_id}...")
+                    profile_config = None
+                    try:
+                        url = f"{C69_BASE_URL.rstrip('/')}/dashboard/api/profiles/{profile_id}/"
+                        r = session.get(url, timeout=10)
+                        if r.status_code == 200:
+                            from mun_anti_browser.c69_api import server_to_local
+                            profile_config = server_to_local(r.json())
+                    except Exception as e_load:
+                        print(f"[MunAutomation] Error loading profile: {e_load}")
+                        
+                    if not profile_config:
+                        manager = NodriverBrowserManager()
+                        profile_config = manager.profile_manager.create_random_profile()
+                        profile_config["id"] = profile_id
+                        profile_config["name"] = target_apple_id
+                        profile_config["profile_start_url"] = "https://account.apple.com/account/manage/section/payment"
+
+                    # 5. Start browser
+                    self.statusMessage.emit(f"🚀 Đang mở trình duyệt MunLogin profile '{target_apple_id}'...")
+                    manager = NodriverBrowserManager()
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    browser, tab = loop.run_until_complete(manager.start(profile_config))
+                    if not tab:
+                        self.statusMessage.emit("❌ Không thể khởi chạy trình duyệt.")
+                        return
+                        
+                    url = "https://account.apple.com/account/manage/section/payment"
+                    loop.run_until_complete(tab.get(url))
+                    
+                    # 6. Automatic sign-in (email/password)
+                    is_login = False
+                    for _ in range(5):
+                        try:
+                            current_url = tab.url
+                            if "idmsa.apple.com" in current_url or "signin" in current_url:
+                                is_login = True
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                        
+                    if is_login and target_apple_id and p_password:
+                        self.statusMessage.emit("🔑 Đang tự động nhập Email và Password đăng nhập...")
+                        try:
+                            loop.run_until_complete(self._automate_apple_login(tab, target_apple_id, p_password))
+                        except Exception as e_login:
+                            print(f"[MunAutomation] Sign-in automation error: {e_login}")
+                            
+                    # 7. Wait for 2FA & successful redirect back to account management
+                    self.statusMessage.emit("⏳ Đang chờ người dùng xác thực 2FA trên trình duyệt...")
+                    print("[MunAutomation] Waiting for 2FA section redirect...")
+                    
+                    logged_in = False
+                    for _ in range(300): # Wait up to 5 minutes for 2FA
+                        try:
+                            current_url = tab.url
+                            if "account.apple.com/account/manage" in current_url or "account.apple.com/manage" in current_url:
+                                if "signin" not in current_url and "idmsa.apple.com" not in current_url:
+                                    logged_in = True
+                                    break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                        
+                    if not logged_in:
+                        self.statusMessage.emit("❌ Đăng nhập thất bại (Hết hạn chờ 2FA).")
+                        return
+                        
+                    self.statusMessage.emit("✅ Đăng nhập Apple ID thành công! Đang chuyển đến trang thêm thẻ...")
+                    time.sleep(3)
+                    
+                    # 8. Start adding cards
+                    try:
+                        loop.run_until_complete(self._automate_add_payment_cards(tab, cards))
+                    except Exception as e_add_cards:
+                        print(f"[MunAutomation] Error during card addition flow: {e_add_cards}")
+                        self.statusMessage.emit(f"❌ Có lỗi trong quá trình thêm thẻ: {str(e_add_cards)}")
+                except Exception as ex:
+                    print(f"[MunAutomation] run_flow error: {ex}")
+                    self.statusMessage.emit(f"❌ Lỗi hệ thống: {str(ex)}")
+
+            t = threading.Thread(target=run_flow, daemon=True)
+            t.start()
+            return json.dumps({"success": True, "message": "Đang khởi chạy tiến trình thêm thẻ tự động..."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     @pyqtSlot(str, str, result=str)
     def executeSubscription(self, session_id, tiktok_username):
         try:
