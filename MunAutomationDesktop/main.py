@@ -2173,10 +2173,8 @@ class MunAutomationBridge(QObject):
             
         return None, None
 
-    async def _automate_apple_login(self, tab, apple_id, password):
-        """Automate Apple ID login using CDP to access cross-origin idmsa.apple.com iframe"""
-        print(f"[MunAutomation] Automating Apple ID login for: {apple_id}")
-        
+    async def _evaluate_in_iframe_robust(self, tab, expression):
+        """Evaluate a JS expression inside the cross-origin idmsa.apple.com iframe safely, handling context destruction"""
         import nodriver.cdp.page as cdp_page
         import nodriver.cdp.runtime as cdp_runtime
         
@@ -2190,34 +2188,37 @@ class MunAutomationBridge(QObject):
                         return result
             return None
             
-        # Robust evaluation helper that handles context destruction by recreating it on demand
-        async def evaluate_in_iframe_robust(expression):
-            try:
-                frame_tree = await tab.send(cdp_page.get_frame_tree())
-                login_frame = find_login_frame(frame_tree)
-                if not login_frame:
-                    return None, "IFRAME_NOT_FOUND"
-                
-                # Always create a new isolated world context to guarantee executing on the current active document state
-                context_id = await tab.send(cdp_page.create_isolated_world(
-                    frame_id=login_frame.id_,
-                    world_name="mun_login_inject_robust"
-                ))
-                
-                result = await tab.send(cdp_runtime.evaluate(
-                    expression=expression,
-                    context_id=context_id,
-                    return_by_value=True
-                ))
-                val = result[0].value if hasattr(result[0], 'value') else str(result[0])
-                return val, None
-            except Exception as e:
-                return None, str(e)
+        try:
+            frame_tree = await tab.send(cdp_page.get_frame_tree())
+            login_frame = find_login_frame(frame_tree)
+            if not login_frame:
+                return None, "IFRAME_NOT_FOUND"
+            
+            # Always create a new isolated world context to guarantee executing on the current active document state
+            context_id = await tab.send(cdp_page.create_isolated_world(
+                frame_id=login_frame.id_,
+                world_name="mun_login_inject_robust"
+            ))
+            
+            result = await tab.send(cdp_runtime.evaluate(
+                expression=expression,
+                context_id=context_id,
+                return_by_value=True
+            ))
+            val = result[0].value if hasattr(result[0], 'value') else str(result[0])
+            return val, None
+        except Exception as e:
+            return None, str(e)
+
+    async def _automate_apple_login(self, tab, apple_id, password):
+        """Automate Apple ID login using CDP to access cross-origin idmsa.apple.com iframe"""
+        print(f"[MunAutomation] Automating Apple ID login for: {apple_id}")
         
         # 1. Wait for email input to be visible in iframe
         email_found = False
         for attempt in range(30):  # 30 seconds timeout
-            val, err = await evaluate_in_iframe_robust(
+            val, err = await self._evaluate_in_iframe_robust(
+                tab,
                 "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))"
             )
             if val is True:
@@ -2233,7 +2234,7 @@ class MunAutomationBridge(QObject):
             return False
         
         # 2. Fill email field
-        fill_res, err = await evaluate_in_iframe_robust(f"""
+        fill_res, err = await self._evaluate_in_iframe_robust(tab, f"""
             (() => {{
                 const inp = document.querySelector('input#account_name_text_field') ||
                            document.querySelector('input[type="email"]') ||
@@ -2253,7 +2254,7 @@ class MunAutomationBridge(QObject):
         await asyncio.sleep(1)
         
         # 3. Click the Continue/Sign-In button to trigger password transition
-        click_res, err = await evaluate_in_iframe_robust("""
+        click_res, err = await self._evaluate_in_iframe_robust(tab, """
             (() => {
                 const btn = document.querySelector('button#sign-in') ||
                            document.querySelector('button.si-button') ||
@@ -2272,7 +2273,7 @@ class MunAutomationBridge(QObject):
         pw_filled = False
         for attempt in range(20):
             await asyncio.sleep(0.5)
-            is_visible, err = await evaluate_in_iframe_robust("""
+            is_visible, err = await self._evaluate_in_iframe_robust(tab, """
                 (() => {
                     const pw = document.querySelector('input#password_text_field') ||
                                document.querySelector('input[type="password"]');
@@ -2282,7 +2283,7 @@ class MunAutomationBridge(QObject):
             
             if is_visible is True:
                 # Fill password
-                fill_pw, err = await evaluate_in_iframe_robust(f"""
+                fill_pw, err = await self._evaluate_in_iframe_robust(tab, f"""
                     (() => {{
                         const inp = document.querySelector('input#password_text_field') ||
                                    document.querySelector('input[type="password"]');
@@ -2300,7 +2301,7 @@ class MunAutomationBridge(QObject):
                     
                     # Click sign-in final
                     await asyncio.sleep(1)
-                    signin_res, err = await evaluate_in_iframe_robust("""
+                    signin_res, err = await self._evaluate_in_iframe_robust(tab, """
                         (() => {
                             const btn = document.querySelector('button#sign-in') ||
                                        document.querySelector('button[type="submit"]');
@@ -2971,6 +2972,7 @@ class MunAutomationBridge(QObject):
                     logged_in = False
                     last_login_attempt = 0
                     login_page_keywords = ["idmsa.apple.com", "signin", "sign-in", "authenticate", "iforgot.apple.com"]
+                    notified_2fa = False
                     
                     for wait_i in range(300): # Wait up to 5 minutes
                         try:
@@ -3002,6 +3004,40 @@ class MunAutomationBridge(QObject):
                                         is_login_page = True
                                 except Exception:
                                     pass
+                            
+                            # Detect 2FA screen to alert the client
+                            is_2fa_page = False
+                            try:
+                                is_2fa, _ = loop.run_until_complete(self._evaluate_in_iframe_robust(tab, """
+                                    (() => {
+                                        const hasVerifyInputs = !!(
+                                            document.querySelector('input[id^="char"]') || 
+                                            document.querySelector('.digit-input') || 
+                                            document.querySelector('.verify-code-input') || 
+                                            document.querySelector('.security-code-input')
+                                        );
+                                        const has2FAText = document.body && (
+                                            document.body.innerText.includes('Two-Factor Authentication') || 
+                                            document.body.innerText.includes('Xác thực hai yếu tố') ||
+                                            document.body.innerText.includes('Xác minh Mã xác thực')
+                                        );
+                                        return hasVerifyInputs || has2FAText;
+                                    })()
+                                """))
+                                if is_2fa:
+                                    is_2fa_page = True
+                            except Exception:
+                                pass
+                                
+                            if is_2fa_page:
+                                if not notified_2fa:
+                                    self.statusMessage.emit("⚠️ Yêu cầu mã 2FA! Vui lòng nhập mã 6 số vào trình duyệt MunLogin.")
+                                    print("[MunAutomation] 2FA screen detected. Prompting user...")
+                                    notified_2fa = True
+                            else:
+                                if notified_2fa and wait_i % 10 == 0:
+                                    # Reset notification status if no longer on 2FA page (e.g. page transition)
+                                    notified_2fa = False
                             
                             if is_login_page and (time.time() - last_login_attempt > 15):
                                 if target_apple_id and p_password:
