@@ -72,100 +72,21 @@ try:
 except ImportError:
     TOR_MANAGER_AVAILABLE = False
 
-# === Win32 Network Helper (cải thiện hiệu năng định tuyến) ===
-import ctypes
-from ctypes import wintypes
-
-try:
-    iphlpapi = ctypes.WinDLL('iphlpapi.dll')
-except Exception:
-    iphlpapi = None
-
-class MIB_IPFORWARDROW(ctypes.Structure):
-    _fields_ = [
-        ("dwForwardDest", wintypes.DWORD),
-        ("dwForwardMask", wintypes.DWORD),
-        ("dwForwardPolicy", wintypes.DWORD),
-        ("dwForwardNextHop", wintypes.DWORD),
-        ("dwForwardIfIndex", wintypes.DWORD),
-        ("dwForwardType", wintypes.DWORD),
-        ("dwForwardProto", wintypes.DWORD),
-        ("dwForwardAge", wintypes.DWORD),
-        ("dwForwardNextHopAS", wintypes.DWORD),
-        ("dwForwardMetric1", wintypes.DWORD),
-        ("dwForwardMetric2", wintypes.DWORD),
-        ("dwForwardMetric3", wintypes.DWORD),
-        ("dwForwardMetric4", wintypes.DWORD),
-        ("dwForwardMetric5", wintypes.DWORD),
-    ]
-
-class NET_LUID(ctypes.Structure):
-    _fields_ = [("Value", ctypes.c_uint64)]
-
-IF_MAX_STRING_SIZE = 256
-
-if iphlpapi:
-    iphlpapi.ConvertInterfaceAliasToLuid.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(NET_LUID)]
-    iphlpapi.ConvertInterfaceAliasToLuid.restype = wintypes.ULONG
-
-    iphlpapi.ConvertInterfaceLuidToIndex.argtypes = [ctypes.POINTER(NET_LUID), ctypes.POINTER(wintypes.ULONG)]
-    iphlpapi.ConvertInterfaceLuidToIndex.restype = wintypes.ULONG
-
-    iphlpapi.ConvertInterfaceIndexToLuid.argtypes = [wintypes.ULONG, ctypes.POINTER(NET_LUID)]
-    iphlpapi.ConvertInterfaceIndexToLuid.restype = wintypes.ULONG
-
-    iphlpapi.ConvertInterfaceLuidToAlias.argtypes = [ctypes.POINTER(NET_LUID), ctypes.c_wchar_p, ctypes.c_size_t]
-    iphlpapi.ConvertInterfaceLuidToAlias.restype = wintypes.ULONG
-
-    iphlpapi.GetBestRoute.argtypes = [wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(MIB_IPFORWARDROW)]
-    iphlpapi.GetBestRoute.restype = wintypes.DWORD
-
-def win32_get_best_interface_index(dest_ip: str = "8.8.8.8") -> int:
-    if not iphlpapi:
-        return None
-    try:
-        import socket
-        import struct
-        dest_addr = struct.unpack("I", socket.inet_aton(dest_ip))[0]
-        row = MIB_IPFORWARDROW()
-        res = iphlpapi.GetBestRoute(dest_addr, 0, ctypes.byref(row))
-        if res == 0:
-            return row.dwForwardIfIndex
-    except Exception:
-        pass
-    return None
-
-def win32_alias_to_index(alias: str) -> int:
-    if not iphlpapi or not alias:
-        return None
-    try:
-        luid = NET_LUID()
-        res = iphlpapi.ConvertInterfaceAliasToLuid(alias, ctypes.byref(luid))
-        if res != 0:
-            return None
-        idx = wintypes.ULONG()
-        res = iphlpapi.ConvertInterfaceLuidToIndex(ctypes.byref(luid), ctypes.byref(idx))
-        if res != 0:
-            return None
-        return idx.value
-    except Exception:
-        return None
-
-def win32_index_to_alias(index: int) -> str:
-    if not iphlpapi or index is None:
-        return None
-    try:
-        luid = NET_LUID()
-        res = iphlpapi.ConvertInterfaceIndexToLuid(index, ctypes.byref(luid))
-        if res != 0:
-            return None
-        buf = ctypes.create_unicode_buffer(IF_MAX_STRING_SIZE + 1)
-        res = iphlpapi.ConvertInterfaceLuidToAlias(ctypes.byref(luid), buf, IF_MAX_STRING_SIZE + 1)
-        if res != 0:
-            return None
-        return buf.value
-    except Exception:
-        return None
+# === Modular Helper Imports ===
+from router_automation import (
+    win32_get_best_interface_index,
+    win32_alias_to_index,
+    win32_index_to_alias,
+    start_router_impl,
+    stop_router_impl
+)
+from browser_automation import (
+    evaluate_in_iframe_robust,
+    automate_apple_login,
+    automate_payment_filling,
+    automate_add_payment_cards,
+    find_button_by_text
+)
 
 # Lấy thư mục chạy của script hoặc của file exe đóng gói
 def get_app_dir():
@@ -2148,6 +2069,21 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    async def _evaluate_in_iframe_robust(self, tab, expression):
+        return await evaluate_in_iframe_robust(tab, expression)
+
+    async def _automate_apple_login(self, tab, apple_id, password):
+        return await automate_apple_login(tab, apple_id, password)
+
+    async def _find_button_by_text(self, tab, texts):
+        return await find_button_by_text(tab, texts)
+
+    async def _automate_payment_filling(self, tab, card_data):
+        return await automate_payment_filling(tab, card_data)
+
+    async def _automate_add_payment_cards(self, tab, cards):
+        return await automate_add_payment_cards(self, tab, cards)
+
     async def _find_element_in_all_frames(self, tab, selector):
         """Tìm element bằng selector trong tab chính và tất cả các iframes connectable"""
         # 1. Check main tab
@@ -2172,155 +2108,6 @@ class MunAutomationBridge(QObject):
             pass
             
         return None, None
-
-    async def _evaluate_in_iframe_robust(self, tab, expression):
-        """Evaluate a JS expression inside the cross-origin idmsa.apple.com iframe safely, handling context destruction"""
-        import nodriver.cdp.page as cdp_page
-        import nodriver.cdp.runtime as cdp_runtime
-        
-        def find_login_frame(ft):
-            if 'idmsa.apple.com' in (ft.frame.url or ''):
-                return ft.frame
-            if ft.child_frames:
-                for child in ft.child_frames:
-                    result = find_login_frame(child)
-                    if result:
-                        return result
-            return None
-            
-        try:
-            frame_tree = await tab.send(cdp_page.get_frame_tree())
-            login_frame = find_login_frame(frame_tree)
-            if not login_frame:
-                return None, "IFRAME_NOT_FOUND"
-            
-            # Always create a new isolated world context to guarantee executing on the current active document state
-            context_id = await tab.send(cdp_page.create_isolated_world(
-                frame_id=login_frame.id_,
-                world_name="mun_login_inject_robust"
-            ))
-            
-            result = await tab.send(cdp_runtime.evaluate(
-                expression=expression,
-                context_id=context_id,
-                return_by_value=True
-            ))
-            val = result[0].value if hasattr(result[0], 'value') else str(result[0])
-            return val, None
-        except Exception as e:
-            return None, str(e)
-
-    async def _automate_apple_login(self, tab, apple_id, password):
-        """Automate Apple ID login using CDP to access cross-origin idmsa.apple.com iframe"""
-        print(f"[MunAutomation] Automating Apple ID login for: {apple_id}")
-        
-        # 1. Wait for email input to be visible in iframe
-        email_found = False
-        for attempt in range(30):  # 30 seconds timeout
-            val, err = await self._evaluate_in_iframe_robust(
-                tab,
-                "!!(document.querySelector('input#account_name_text_field') || document.querySelector('input[type=\"email\"]'))"
-            )
-            if val is True:
-                email_found = True
-                print(f"[MunAutomation] Email field detected in iframe at attempt {attempt}")
-                break
-            if attempt % 5 == 0:
-                print(f"[MunAutomation] Waiting for email field... attempt {attempt} (err={err})")
-            await asyncio.sleep(1)
-        
-        if not email_found:
-            print("[MunAutomation] Email field not found in login iframe after 30s")
-            return False
-        
-        # 2. Fill email field
-        fill_res, err = await self._evaluate_in_iframe_robust(tab, f"""
-            (() => {{
-                const inp = document.querySelector('input#account_name_text_field') ||
-                           document.querySelector('input[type="email"]') ||
-                           document.querySelector('input[type="text"]');
-                if (!inp) return 'NO_INPUT';
-                inp.focus();
-                inp.value = '{apple_id}';
-                inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                return 'OK';
-            }})()
-        """)
-        print(f"[MunAutomation] Email fill result: {fill_res} (err={err})")
-        if fill_res != 'OK':
-            return False
-            
-        await asyncio.sleep(1)
-        
-        # 3. Click the Continue/Sign-In button to trigger password transition
-        click_res, err = await self._evaluate_in_iframe_robust(tab, """
-            (() => {
-                const btn = document.querySelector('button#sign-in') ||
-                           document.querySelector('button.si-button') ||
-                           document.querySelector('button[type="submit"]');
-                if (btn) {
-                    btn.click();
-                    return 'CLICKED';
-                }
-                return 'NO_BUTTON';
-            })()
-        """)
-        print(f"[MunAutomation] Continue button click: {click_res} (err={err})")
-        
-        # 4. Wait for transition and fill password
-        print("[MunAutomation] Waiting for password field to be ready...")
-        pw_filled = False
-        for attempt in range(20):
-            await asyncio.sleep(0.5)
-            is_visible, err = await self._evaluate_in_iframe_robust(tab, """
-                (() => {
-                    const pw = document.querySelector('input#password_text_field') ||
-                               document.querySelector('input[type="password"]');
-                    return pw && pw.offsetParent !== null;
-                })()
-            """)
-            
-            if is_visible is True:
-                # Fill password
-                fill_pw, err = await self._evaluate_in_iframe_robust(tab, f"""
-                    (() => {{
-                        const inp = document.querySelector('input#password_text_field') ||
-                                   document.querySelector('input[type="password"]');
-                        if (!inp) return 'NO_PW';
-                        inp.focus();
-                        inp.value = '{password}';
-                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return 'OK';
-                    }})()
-                """)
-                print(f"[MunAutomation] Password fill result: {fill_pw} (err={err})")
-                if fill_pw == 'OK':
-                    pw_filled = True
-                    
-                    # Click sign-in final
-                    await asyncio.sleep(1)
-                    signin_res, err = await self._evaluate_in_iframe_robust(tab, """
-                        (() => {
-                            const btn = document.querySelector('button#sign-in') ||
-                                       document.querySelector('button[type="submit"]');
-                            if (btn) {
-                                btn.click();
-                                return 'CLICKED_FINAL';
-                            }
-                            return 'NO_BTN';
-                        })()
-                    """)
-                    print(f"[MunAutomation] Final Sign-In click: {signin_res} (err={err})")
-                    break
-        
-        if not pw_filled:
-            print("[MunAutomation] Failed to fill password field")
-            return False
-            
-        print("[MunAutomation] Login automation completed successfully")
-        return True
 
     async def _evaluate_in_all_contexts(self, tab, js_code):
         """Evaluate JS in main tab and all nested iframe content frames"""
@@ -2348,137 +2135,6 @@ class MunAutomationBridge(QObject):
             if r:
                 return r
         return None
-    async def _find_button_by_text(self, tab, texts):
-        """Tìm button hoặc clickable element có chứa một trong các chuỗi văn bản chỉ định"""
-        all_buttons = []
-        try:
-            all_buttons.extend(await tab.select_all("button"))
-            all_buttons.extend(await tab.select_all("input[type='button']"))
-            all_buttons.extend(await tab.select_all("input[type='submit']"))
-            all_buttons.extend(await tab.select_all("a"))
-            all_buttons.extend(await tab.select_all("span"))
-        except Exception:
-            pass
-            
-        try:
-            iframes = await tab.select_all("iframe")
-            for iframe in iframes:
-                try:
-                    all_buttons.extend(await tab.query_selector_all("button", iframe))
-                    all_buttons.extend(await tab.query_selector_all("input[type='button']", iframe))
-                    all_buttons.extend(await tab.query_selector_all("input[type='submit']", iframe))
-                    all_buttons.extend(await tab.query_selector_all("a", iframe))
-                    all_buttons.extend(await tab.query_selector_all("span", iframe))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-            
-        for btn in all_buttons:
-            try:
-                text = ""
-                if btn.tag == 'input':
-                    text = btn.attrs.get('value', '').lower()
-                else:
-                    text = btn.text.lower()
-                    
-                for t in texts:
-                    if t.lower() in text:
-                        return btn
-            except Exception:
-                pass
-        return None
-
-    async def _automate_payment_filling(self, tab, card_data):
-        """Automate card form filling using Nodriver elements directly (bypassing JS evaluate sandbox)"""
-        print("[MunAutomation] Automating card form filling...")
-        
-        # We try for up to 12 seconds for inputs to be available on screen
-        for _ in range(12):
-            # 1. Get all inputs from main page
-            all_inputs = []
-            try:
-                all_inputs.extend(await tab.select_all("input"))
-                all_inputs.extend(await tab.select_all("select"))
-            except Exception:
-                pass
-                
-            # 2. Get all inputs from all iframes
-            try:
-                iframes = await tab.select_all("iframe")
-                for iframe in iframes:
-                    try:
-                        all_inputs.extend(await tab.query_selector_all("input", iframe))
-                        all_inputs.extend(await tab.query_selector_all("select", iframe))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-                
-            if not all_inputs:
-                await asyncio.sleep(1)
-                continue
-                
-            filled_any = False
-            # Fill each input based on attribute matching
-            for input_el in all_inputs:
-                try:
-                    name = input_el.attrs.get('name', '').lower()
-                    id_ = input_el.attrs.get('id', '').lower()
-                    label = input_el.attrs.get('aria-label', '').lower()
-                    placeholder = input_el.attrs.get('placeholder', '').lower()
-                    
-                    # Check for card number
-                    if 'cardnumber' in id_ or 'cardnumber' in name or 'card number' in label or 'card number' in placeholder:
-                        await input_el.send_keys(card_data.get("card_number", ""))
-                        filled_any = True
-                        print("[MunAutomation] Filled card number")
-                        
-                    # Check for expiry date
-                    elif 'exp' in id_ or 'exp' in name or 'expiration' in label or 'expiration' in placeholder:
-                        if 'mm/yy' in placeholder or 'month/year' in label:
-                            combined = f"{card_data.get('expiry_month', '')}{card_data.get('expiry_year', '')[-2:]}"
-                            await input_el.send_keys(combined)
-                            filled_any = True
-                            print("[MunAutomation] Filled combined expiry date")
-                        elif 'month' in id_ or 'month' in name or 'month' in label or 'mm' in placeholder:
-                            await input_el.send_keys(card_data.get('expiry_month', ''))
-                            filled_any = True
-                            print("[MunAutomation] Filled expiry month")
-                        elif 'year' in id_ or 'year' in name or 'year' in label or 'yy' in placeholder:
-                            val = card_data.get('expiry_year', '')
-                            if len(val) == 4 and 'yy' in placeholder and not 'yyyy' in placeholder:
-                                val = val[-2:]
-                            await input_el.send_keys(val)
-                            filled_any = True
-                            print("[MunAutomation] Filled expiry year")
-                            
-                    # Check for CVV
-                    elif 'cvv' in id_ or 'cvv' in name or 'cvc' in id_ or 'cvc' in name or 'security code' in label or 'security code' in placeholder or 'verification' in id_ or 'verification' in name:
-                        await input_el.send_keys(card_data.get('cvv', ''))
-                        filled_any = True
-                        print("[MunAutomation] Filled security code (CVV)")
-                        
-                    # Check for name/address
-                    elif 'firstname' in id_ or 'firstname' in name or 'first name' in label or 'first name' in placeholder:
-                        await input_el.send_keys(card_data.get('first_name', 'Nguyen'))
-                    elif 'lastname' in id_ or 'lastname' in name or 'last name' in label or 'last name' in placeholder:
-                        await input_el.send_keys(card_data.get('last_name', 'Van A'))
-                    elif 'street' in id_ or 'street' in name or 'address' in label or 'address' in placeholder:
-                        await input_el.send_keys(card_data.get('address_line1', '123 Le Loi'))
-                    elif 'city' in id_ or 'city' in name or 'city' in label or 'city' in placeholder:
-                        await input_el.send_keys(card_data.get('city', 'Ho Chi Minh'))
-                    elif 'zip' in id_ or 'zip' in name or 'postal' in label or 'postal' in placeholder:
-                        await input_el.send_keys(card_data.get('zip_code', '70000'))
-                    elif 'phone' in id_ or 'phone' in name or 'phone' in label or 'phone' in placeholder:
-                        await input_el.send_keys(card_data.get('phone', '0987654321'))
-                except Exception as e_field:
-                    print(f"[MunAutomation] Error filling individual field: {e_field}")
-            
-            if filled_any:
-                print("[MunAutomation] Card fields found and auto-filled!")
-                break
-            await asyncio.sleep(1)
 
     @pyqtSlot(str, str, result=str)
     def openBrowserProfile(self, profile_name, target_url):
