@@ -2746,9 +2746,9 @@ class MunAutomationBridge(QObject):
                     target_apple_id = p_apple_id or apple_id
                     
                     # Use server proxy if no custom proxy provided
-                    if not proxy and p_server_proxy:
-                        proxy = p_server_proxy
-                        print(f"[MunAutomation] Using proxy from server: {proxy}")
+                    effective_proxy = proxy or p_server_proxy
+                    if effective_proxy and not proxy:
+                        print(f"[MunAutomation] Using proxy from server: {effective_proxy}")
                     
                     if not MUN_ANTI_BROWSER_AVAILABLE:
                         self.statusMessage.emit("❌ MunLogin không khả dụng trên hệ thống này.")
@@ -2849,8 +2849,8 @@ class MunAutomationBridge(QObject):
                             return p_t, f"{pts[0]}:{pts[1]}", pts[2], pts[3]
                         return p_t, proxy_str, "", ""
 
-                    if proxy:
-                        p_type, p_host_port, p_user, p_pass = parse_proxy_string(proxy)
+                    if effective_proxy:
+                        p_type, p_host_port, p_user, p_pass = parse_proxy_string(effective_proxy)
                     else:
                         raw_proxy = (
                             profile_config.get("proxy_string") or 
