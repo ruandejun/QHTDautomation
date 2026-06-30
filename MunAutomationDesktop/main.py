@@ -2180,32 +2180,88 @@ class MunAutomationBridge(QObject):
         # 1. Wait for email field in all contexts
         email_el = None
         target_frame = None
-        for _ in range(25): # 25 seconds timeout
-            try:
-                email_el, target_frame = await self._find_element_in_all_frames(tab, "input[type='text']")
-                if email_el:
-                    placeholder = email_el.attrs.get('placeholder', '').lower()
-                    id_attr = email_el.attrs.get('id', '').lower()
-                    if 'apple id' in placeholder or 'email' in placeholder or 'account_name' in id_attr or 'account_name' in placeholder:
-                        break
-            except Exception:
-                pass
+        # Try multiple selectors for the email/Apple ID input
+        email_selectors = [
+            "input#account_name_text_field",
+            "input[name='account_name']",
+            "input[type='email']",
+            "input[autocomplete='username']",
+            "input[type='text']",
+        ]
+        
+        for attempt in range(30): # 30 seconds timeout
+            for sel in email_selectors:
+                try:
+                    el, frame = await self._find_element_in_all_frames(tab, sel)
+                    if el:
+                        # Basic validation: check if it looks like an email/username field
+                        placeholder = (el.attrs.get('placeholder', '') or '').lower()
+                        id_attr = (el.attrs.get('id', '') or '').lower()
+                        name_attr = (el.attrs.get('name', '') or '').lower()
+                        el_type = (el.attrs.get('type', '') or '').lower()
+                        
+                        # Accept if it matches any known pattern or if it's an email-type input
+                        is_match = (
+                            'apple' in placeholder or 'email' in placeholder or
+                            'account_name' in id_attr or 'account_name' in name_attr or
+                            el_type == 'email' or
+                            'username' in name_attr or 'username' in id_attr
+                        )
+                        
+                        if is_match:
+                            email_el = el
+                            target_frame = frame
+                            print(f"[MunAutomation] Found email field: sel={sel}, id={id_attr}, type={el_type}, placeholder={placeholder[:30]}")
+                            break
+                except Exception:
+                    pass
+            if email_el:
+                break
+            if attempt % 5 == 0:
+                print(f"[MunAutomation] Searching for email field... attempt {attempt}")
             await asyncio.sleep(1)
             
         if not email_el:
-            print("[MunAutomation] Apple ID input field not found.")
+            # Last resort: try to find ANY visible text/email input
+            print("[MunAutomation] Standard selectors failed. Trying fallback: any input field...")
+            for sel in ["input[type='email']", "input[type='text']"]:
+                try:
+                    el, frame = await self._find_element_in_all_frames(tab, sel)
+                    if el:
+                        email_el = el
+                        target_frame = frame
+                        print(f"[MunAutomation] Fallback found input: {sel}")
+                        break
+                except Exception:
+                    pass
+                    
+        if not email_el:
+            print("[MunAutomation] Apple ID input field not found after all attempts.")
             return False
             
-        # Type email
+        # Clear existing value and type email
+        try:
+            await email_el.clear_input()
+        except Exception:
+            pass
         await email_el.send_keys(apple_id)
-        await asyncio.sleep(0.5)
+        print(f"[MunAutomation] Typed email: {apple_id}")
+        await asyncio.sleep(1)
         
         # Click continue button inside same frame
         btn = None
-        for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
+        continue_selectors = [
+            'button#sign-in',
+            'button.si-button',
+            'button[type="submit"]',
+            'button.first-button',
+            'button[idms-sign-in]',
+        ]
+        for selector in continue_selectors:
             try:
                 btn = await target_frame.select(selector, timeout=1)
                 if btn:
+                    print(f"[MunAutomation] Found continue button: {selector}")
                     break
             except Exception:
                 pass
@@ -2216,17 +2272,33 @@ class MunAutomationBridge(QObject):
         else:
             print("[MunAutomation] Continue button not found, pressing Enter")
             await email_el.send_keys("\n")
+        
+        await asyncio.sleep(2)
             
         # 2. Wait for password field in all contexts
         pw_el = None
         target_frame2 = None
-        for _ in range(20): # 20 seconds timeout
-            try:
-                pw_el, target_frame2 = await self._find_element_in_all_frames(tab, "input[type='password']")
-                if pw_el:
-                    break
-            except Exception:
-                pass
+        pw_selectors = [
+            "input#password_text_field",
+            "input[name='password']",
+            "input[type='password']",
+        ]
+        
+        for attempt in range(25): # 25 seconds timeout
+            for sel in pw_selectors:
+                try:
+                    el, frame = await self._find_element_in_all_frames(tab, sel)
+                    if el:
+                        pw_el = el
+                        target_frame2 = frame
+                        print(f"[MunAutomation] Found password field: {sel}")
+                        break
+                except Exception:
+                    pass
+            if pw_el:
+                break
+            if attempt % 5 == 0:
+                print(f"[MunAutomation] Searching for password field... attempt {attempt}")
             await asyncio.sleep(1)
             
         if not pw_el:
@@ -2234,15 +2306,21 @@ class MunAutomationBridge(QObject):
             return False
             
         # Type password
+        try:
+            await pw_el.clear_input()
+        except Exception:
+            pass
         await pw_el.send_keys(password)
-        await asyncio.sleep(0.5)
+        print("[MunAutomation] Typed password")
+        await asyncio.sleep(1)
         
         # Click submit button inside same frame
         btn2 = None
-        for selector in ['button#sign-in', 'button.first-button', 'button[idms-sign-in]', 'button']:
+        for selector in continue_selectors:
             try:
                 btn2 = await target_frame2.select(selector, timeout=1)
                 if btn2:
+                    print(f"[MunAutomation] Found submit button: {selector}")
                     break
             except Exception:
                 pass
@@ -2887,30 +2965,45 @@ class MunAutomationBridge(QObject):
                     
                     logged_in = False
                     last_login_attempt = 0
+                    login_page_keywords = ["idmsa.apple.com", "signin", "sign-in", "authenticate", "iforgot.apple.com"]
                     
-                    for _ in range(300): # Wait up to 5 minutes
+                    for wait_i in range(300): # Wait up to 5 minutes
                         try:
-                            current_url = tab.url
+                            current_url = tab.url or ""
+                            
+                            # Log every 10 seconds for debug
+                            if wait_i % 10 == 0:
+                                print(f"[MunAutomation] Wait loop #{wait_i}: url={current_url[:120]}, has_creds={bool(p_password)}")
                             
                             # Check if successfully logged in and redirected back to account manage section
                             if "account.apple.com/account/manage" in current_url or "account.apple.com/manage" in current_url:
-                                if "signin" not in current_url and "idmsa.apple.com" not in current_url:
+                                if not any(kw in current_url for kw in login_page_keywords):
                                     logged_in = True
+                                    print(f"[MunAutomation] Login success detected! URL: {current_url[:120]}")
                                     break
                                     
-                            # If we are back on the login/signin page, and we haven't tried logging in recently (e.g. within last 15 seconds)
-                            if ("idmsa.apple.com" in current_url or "signin" in current_url) and (time.time() - last_login_attempt > 15):
+                            # If we are on the login/signin page, and we haven't tried logging in recently
+                            is_login_page = any(kw in current_url.lower() for kw in login_page_keywords)
+                            if is_login_page and (time.time() - last_login_attempt > 15):
                                 if target_apple_id and p_password:
-                                    print("[MunAutomation] Login screen detected during wait. Triggering auto sign-in...")
+                                    print(f"[MunAutomation] Login screen detected: {current_url[:100]}. Triggering auto sign-in...")
                                     self.statusMessage.emit("🔑 Phát hiện màn hình đăng nhập. Đang tự động điền tài khoản...")
                                     last_login_attempt = time.time()
                                     try:
-                                        # Run login in the event loop
+                                        # Wait a bit for page to fully render before interacting
+                                        loop.run_until_complete(asyncio.sleep(3))
                                         success = loop.run_until_complete(self._automate_apple_login(tab, target_apple_id, p_password))
                                         if success:
                                             self.statusMessage.emit("⏳ Đã điền xong thông tin. Đang chờ 2FA...")
+                                        else:
+                                            print("[MunAutomation] _automate_apple_login returned False")
                                     except Exception as e_login:
                                         print(f"[MunAutomation] Retried Sign-in automation error: {e_login}")
+                                        import traceback
+                                        traceback.print_exc()
+                                else:
+                                    if wait_i % 30 == 0:
+                                        print(f"[MunAutomation] On login page but no credentials: apple_id={target_apple_id}, has_pass={bool(p_password)}")
                         except Exception as e_check:
                             print(f"[MunAutomation] Wait loop error: {e_check}")
                         time.sleep(1)
