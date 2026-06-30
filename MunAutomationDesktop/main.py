@@ -2230,6 +2230,35 @@ class MunAutomationBridge(QObject):
             
         return True
 
+    async def _evaluate_in_all_contexts(self, tab, js_code):
+        """Evaluate JS in main tab and all nested iframe content frames"""
+        results = []
+        try:
+            res_main = await tab.evaluate(js_code)
+            if res_main:
+                results.append(res_main)
+        except Exception as e:
+            print(f"[MunAutomation] Eval error in main frame: {e}")
+            
+        try:
+            iframes = await tab.select_all("iframe")
+            for iframe in iframes:
+                try:
+                    iframe_page = await iframe.content_frame()
+                    if iframe_page:
+                        res_frame = await iframe_page.evaluate(js_code)
+                        if res_frame:
+                            results.append(res_frame)
+                except Exception:
+                    pass
+        except Exception as e_iframes:
+            print(f"[MunAutomation] Error selecting iframes: {e_iframes}")
+            
+        for r in results:
+            if r:
+                return r
+        return None
+
     async def _automate_payment_filling(self, tab, card_data):
         """Evaluate filling script in all frames to bypass cross-origin restrictions"""
         print("[MunAutomation] Automating card form filling...")
@@ -2305,17 +2334,9 @@ class MunAutomationBridge(QObject):
         for _ in range(12): # Try up to 12 times (12 seconds)
             filled_any = False
             try:
-                res = await tab.evaluate(js_code)
+                res = await self._evaluate_in_all_contexts(tab, js_code)
                 if res:
                     filled_any = True
-                    
-                for frame in tab.frames:
-                    try:
-                        res_frame = await frame.evaluate(js_code)
-                        if res_frame:
-                            filled_any = True
-                    except Exception:
-                        pass
             except Exception as e:
                 print(f"[MunAutomation] Error in evaluation loop: {e}")
                 
@@ -2523,19 +2544,10 @@ class MunAutomationBridge(QObject):
                         return false;
                     })();
                     """
-                    res = await tab.evaluate(js_click_add)
+                    res = await self._evaluate_in_all_contexts(tab, js_click_add)
                     if res:
                         clicked_add = True
                         print("[MunAutomation] Clicked 'Add Payment Method' button")
-                        break
-                    
-                    for frame in tab.frames:
-                        res_frame = await frame.evaluate(js_click_add)
-                        if res_frame:
-                            clicked_add = True
-                            print("[MunAutomation] Clicked 'Add Payment Method' button inside frame")
-                            break
-                    if clicked_add:
                         break
                 except Exception:
                     pass
@@ -2567,16 +2579,9 @@ class MunAutomationBridge(QObject):
                         return false;
                     })();
                     """
-                    res = await tab.evaluate(js_click_save)
+                    res = await self._evaluate_in_all_contexts(tab, js_click_save)
                     if res:
                         clicked_save = True
-                        break
-                    for frame in tab.frames:
-                        res_frame = await frame.evaluate(js_click_save)
-                        if res_frame:
-                            clicked_save = True
-                            break
-                    if clicked_save:
                         break
                 except Exception:
                     pass
@@ -2605,17 +2610,11 @@ class MunAutomationBridge(QObject):
                         return "";
                     })();
                     """
-                    res = await tab.evaluate(js_check_error)
+                    res = await self._evaluate_in_all_contexts(tab, js_check_error)
                     if res:
                         has_error = True
                         error_message = res
                         break
-                    for frame in tab.frames:
-                        res_frame = await frame.evaluate(js_check_error)
-                        if res_frame:
-                            has_error = True
-                            error_message = res_frame
-                            break
                 except Exception:
                     pass
                 await asyncio.sleep(1)
@@ -2640,9 +2639,7 @@ class MunAutomationBridge(QObject):
                         return false;
                     })();
                     """
-                    await tab.evaluate(js_click_cancel)
-                    for frame in tab.frames:
-                        await frame.evaluate(js_click_cancel)
+                    await self._evaluate_in_all_contexts(tab, js_click_cancel)
                 except Exception:
                     pass
                 await asyncio.sleep(2)
