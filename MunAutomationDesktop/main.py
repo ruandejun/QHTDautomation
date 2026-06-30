@@ -2809,6 +2809,7 @@ class MunAutomationBridge(QObject):
         self.statusMessage.emit(f"🎉 Hoàn tất thêm thẻ: {success_count}/{total_count} thành công!")
         return success_count
 
+    @pyqtSlot(str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, str, result=str)
     def addPaymentCardsAuto(self, session_id, apple_id, cards_json, proxy="", password=""):
         try:
