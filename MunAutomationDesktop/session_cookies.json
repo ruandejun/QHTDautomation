@@ -1,10 +1,11 @@
 [
   {
     "name": "sessionid",
-    "value": "jdtbybmjwysz06wbao4cuv13o9o9p1ih",
-    "domain": "c69.us",
+    "value": "7debdcfpzhtqpksz1pbd2yy55marj7mb",
+    "domain": ".c69.us",
     "path": "/",
     "secure": false,
-    "httponly": true
+    "httponly": true,
+    "expiration": "2026-07-14T11:59:45"
   }
 ]

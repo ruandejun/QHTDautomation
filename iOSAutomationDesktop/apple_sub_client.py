@@ -324,7 +324,7 @@ class AppleSubscriptionWorker(QThread):
             self.log_signal.emit(f"\n🎉 ═══════════════════════════════════════════")
             self.log_signal.emit(f"🎉 SUBSCRIPTION THÀNH CÔNG!")
             self.log_signal.emit(f"🎉 TikTok: @{purchase_result.get('tiktok_user', {}).get('username', self.tiktok_username)}")
-            self.log_signal.emit(f"🎉 TxID: {purchase_result.get('purchase_result', {}).get('transaction_id', 'N/A')}")
+            self.log_signal.emit(f"🎉 TxID: {purchase_result.get('purchase_result', {}).get('transaction_id') or 'N/A'}")
             self.log_signal.emit(f"🎉 ═══════════════════════════════════════════\n")
             self.status_signal.emit("Hoàn thành ✅", True)
             self.purchase_complete_signal.emit(purchase_result)

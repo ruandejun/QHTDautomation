@@ -1,5 +1,5 @@
 {
-    "version": "1.0.6",
+    "version": "1.0.7",
     "download_url": "https://c69.us/static/QHTDautomation.exe",
-    "changelog": "Cập nhật tên miền mới c69.us và thương hiệu c69, cùng các cải tiến hệ thống."
+    "changelog": "Cập nhật cấu hình mặc định DNS DHCP Quad9 (9.9.9.9) cùng các cải tiến hệ thống."
 }

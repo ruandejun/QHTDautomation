@@ -2,12 +2,12 @@
 
 
 a = Analysis(
-    ['QHTDautomationDesktop\\main.py'],
+    ['MunAutomationDesktop\\main.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('QHTDautomationDesktop/style.qss', '.'),
-        ('QHTDautomationDesktop/mun_anti_browser/inject_scripts', 'mun_anti_browser/inject_scripts'),
+        ('MunAutomationDesktop/style.qss', '.'),
+        ('MunAutomationDesktop/mun_anti_browser/inject_scripts', 'mun_anti_browser/inject_scripts'),
     ],
     hiddenimports=[],
     hookspath=[],

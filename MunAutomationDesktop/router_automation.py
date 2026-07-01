@@ -124,15 +124,19 @@ def start_router_impl(bridge_obj, config_json, c69_base_url):
         wan_if = config.get("wan_interface") or config.get("wan") or config.get("wan_if")
         dhcp_start = config.get("dhcp_range_start") or config.get("dhcp_start") or config.get("dhcpRangeStart") or config.get("dhcpStart")
         dhcp_end = config.get("dhcp_range_end") or config.get("dhcp_end") or config.get("dhcpRangeEnd") or config.get("dhcpEnd")
-        dns_server = config.get("dns_server") or config.get("dns") or config.get("dnsServer") or "8.8.8.8"
+        # KHÔNG fallback "8.8.8.8" ở đây: 8.8.8.8/1.1.1.1/8.8.4.4/1.0.0.1 bị loại khỏi TUN routing
+        # trong singbox_manager.py (dùng làm upstream resolver thật của sing-box) — nếu ghi đè
+        # dns_server của c69-router bằng 1 trong 4 IP đó, hijack-dns sẽ không bắt được DNS của phone
+        # nữa. Nếu web UI không gửi dns_server, giữ nguyên giá trị đã có sẵn trong config.json.
+        dns_server = config.get("dns_server") or config.get("dns") or config.get("dnsServer")
         
         if not lan_if:
             return json.dumps({"error": f"Vui lòng chọn card mạng LAN. (Nhận được: {config_json})"})
             
-        router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "phonefarm-router")
+        router_dir = os.path.join(os.path.dirname(os.path.dirname(get_app_dir())), "c69-router")
         config_path = os.path.join(router_dir, "data", "config.json")
         
-        # 1. Read existing phonefarm-router config.json for fallback
+        # 1. Read existing c69-router config.json for fallback
         config_data = {}
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
