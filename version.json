@@ -1,5 +1,5 @@
 {
     "version": "2.0.1",
-    "download_url": "https://c69.us/static/QHTDautomation.zip",
+    "download_url": "https://pub-c8d02f9841604fc39be407c18f3699e7.r2.dev/QHTDautomation.zip",
     "changelog": "Sửa lỗi kiểm tra cập nhật tự động (404), cải thiện khả năng phát hiện IP, giảm kích thước file cài đặt."
 }

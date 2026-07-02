@@ -29,12 +29,22 @@ import hashlib
 import json
 import time
 
-# Tự động load biến từ .env nếu có
+# Tự động load biến từ .env trong thư mục của script này
+_here = os.path.dirname(os.path.abspath(__file__))
+_env_path = os.path.join(_here, ".env")
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    if os.path.exists(_env_path):
+        load_dotenv(dotenv_path=_env_path)
 except ImportError:
-    pass  # python-dotenv chưa cài, dùng biến hệ thống
+    # Manual fallback nếu python-dotenv chưa cài
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith('#') and '=' in _line:
+                    _k, _v = _line.split('=', 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
 
 sys.stdout.reconfigure(encoding='utf-8')
 
