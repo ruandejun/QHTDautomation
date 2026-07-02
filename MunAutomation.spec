@@ -51,28 +51,9 @@ a = Analysis(
         'PyQt6.QtTest',
         'PyQt6.QtTextToSpeech',
         'PyQt6.QtVirtualKeyboard',
-        # Thư viện Python không dùng
-        'tkinter',
-        'unittest',
-        'xmlrpc',
-        'pydoc',
-        'doctest',
-        'difflib',
-        'calendar',
-        # 'email',       # KHÔNG exclude — urllib3/requests cần email.errors, email.message
-        # 'html',        # KHÔNG exclude — requests/urllib3 cần html.parser
-        # 'http.server', # KHÔNG exclude — http.client cần thiết cho requests
-        'lib2to3',
-        'multiprocessing',
-        'test',
-        'distutils',
-        'setuptools',
-        'pkg_resources',
-        'xml',
-        'ftplib',
-        'telnetlib',
-        'turtle',
-        'curses',
+        # Chỉ exclude Qt modules không dùng — KHÔNG exclude stdlib
+        # vì requests/urllib3/paramiko cần email, calendar, http, html, xml, v.v.
+        # PyInstaller tự phân tích dependency và chỉ bundle những gì cần thiết.
     ],
     noarchive=False,
     optimize=1,  # Tối ưu bytecode Python (loại bỏ assert và docstring)
