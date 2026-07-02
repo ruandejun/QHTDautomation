@@ -1,5 +1,5 @@
 {
-    "version": "2.0.1",
+    "version": "2.0.2",
     "download_url": "https://cdn.c69.us/QHTDautomation.zip",
-    "changelog": "Sửa lỗi kiểm tra cập nhật tự động (404), cải thiện khả năng phát hiện IP, giảm kích thước file cài đặt."
+    "changelog": "Sửa lỗi cập nhật tự động: thêm c69update.exe riêng biệt để cài đặt không bị khóa file, hiển thị progress bar khi cập nhật."
 }
