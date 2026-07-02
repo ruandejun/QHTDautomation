@@ -70,6 +70,43 @@ ZIP_FILENAME = "QHTDautomation-v2.zip"
 # ============================================================
 
 
+def kill_running_processes():
+    """
+    Tắt C69Automation.exe và c69update.exe nếu đang chạy.
+    Tránh PermissionError khi PyInstaller cố xóa file bị lock bởi Windows.
+    """
+    targets = ["C69Automation.exe", "c69update.exe"]
+    killed_any = False
+
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "name"]):
+            if proc.info["name"] in targets:
+                print(f"  [kill] Đang tắt {proc.info['name']} (PID={proc.info['pid']})...")
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    killed_any = True
+                except Exception as e:
+                    print(f"  [warn] Không tắt được PID {proc.info['pid']}: {e}")
+    except ImportError:
+        # Fallback: dùng taskkill nếu không có psutil
+        for exe in targets:
+            result = subprocess.run(
+                ["taskkill", "/f", "/im", exe],
+                capture_output=True, text=True
+            )
+            if "SUCCESS" in result.stdout:
+                print(f"  [kill] Đã tắt {exe}")
+                killed_any = True
+
+    if killed_any:
+        print("  Đợi 2 giây để OS release file lock...")
+        time.sleep(2)
+    else:
+        print("  Không có process nào đang chạy.")
+
+
 def run_pyinstaller(spec_path="MunAutomation.spec", label="C69Automation"):
     print(f"=== Bắt đầu chạy PyInstaller: {label} ===")
     if not os.path.exists(spec_path):
@@ -332,6 +369,10 @@ def main():
 
     # 1. Build
     if do_build:
+        # Tắt các process đang chạy để tránh PermissionError (file lock)
+        print("\n=== Tắt các process cũ (tránh file lock) ===")
+        kill_running_processes()
+
         # 1a. Build c69update.exe trước (nhỏ, nhanh ~30s)
         print("\n--- Bước 1/2: Build c69update.exe ---")
         ok_updater = run_pyinstaller("c69update.spec", label="c69update")
