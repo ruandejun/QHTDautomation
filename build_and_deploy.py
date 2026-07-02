@@ -70,9 +70,8 @@ ZIP_FILENAME = "QHTDautomation.zip"
 # ============================================================
 
 
-def run_pyinstaller():
-    print("=== Bắt đầu chạy PyInstaller ===")
-    spec_path = "MunAutomation.spec"
+def run_pyinstaller(spec_path="MunAutomation.spec", label="C69Automation"):
+    print(f"=== Bắt đầu chạy PyInstaller: {label} ===")
     if not os.path.exists(spec_path):
         print(f"Lỗi: Không tìm thấy file spec tại {spec_path}")
         return False
@@ -82,7 +81,7 @@ def run_pyinstaller():
         venv_pyinstaller = "pyinstaller"
 
     cmd = [venv_pyinstaller, spec_path, "--clean"]
-    print(f"Đang chạy lệnh: {' '.join(cmd)}")
+    print(f"Chạy: {' '.join(cmd)}")
 
     try:
         process = subprocess.Popen(
@@ -97,10 +96,10 @@ def run_pyinstaller():
                 print(output.strip())
         rc = process.poll()
         if rc == 0:
-            print("=== Đóng gói PyInstaller thành công! ===")
+            print(f"=== {label}: Đóng gói thành công! ===")
             return True
         else:
-            print(f"=== PyInstaller thất bại với mã lỗi: {rc} ===")
+            print(f"=== {label}: Thất bại (exit code {rc}) ===")
             return False
     except Exception as e:
         print(f"Lỗi khi chạy PyInstaller: {e}")
@@ -108,26 +107,38 @@ def run_pyinstaller():
 
 
 def zip_executable():
-    print("=== Bắt đầu nén file C69Automation.exe ===")
-    exe_path = os.path.join("dist", "C69Automation.exe")
-    zip_path = os.path.join("dist", ZIP_FILENAME)
+    """Nén cả C69Automation.exe và c69update.exe vào cùng 1 file zip."""
+    main_exe    = os.path.join("dist", "C69Automation.exe")
+    updater_exe = os.path.join("dist", "c69update.exe")
+    zip_path    = os.path.join("dist", ZIP_FILENAME)
 
-    if not os.path.exists(exe_path):
-        print(f"Lỗi: Không tìm thấy file thực thi tại {exe_path}")
+    if not os.path.exists(main_exe):
+        print(f"Lỗi: Không tìm thấy {main_exe}")
         return None
 
+    if not os.path.exists(updater_exe):
+        print(f"  [Cảnh báo] Không tìm thấy c69update.exe tại {updater_exe}")
+        print(f"  => Chỉ đóng gói C69Automation.exe")
+        updater_exe = None
+
     try:
-        # ZIP_LZMA cho tỷ lệ nén tốt hơn DEFLATED
         print("Đang nén với thuật toán LZMA...")
         t0 = time.time()
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_LZMA) as zipf:
-            zipf.write(exe_path, os.path.basename(exe_path))
+            # Exe chính
+            size_main = os.path.getsize(main_exe) / 1024 / 1024
+            print(f"  + C69Automation.exe ({size_main:.1f} MB)")
+            zipf.write(main_exe, "C69Automation.exe")
 
-        zip_size = os.path.getsize(zip_path) / (1024 * 1024)
-        elapsed = time.time() - t0
+            # Updater (nếu tồn tại)
+            if updater_exe:
+                size_upd = os.path.getsize(updater_exe) / 1024 / 1024
+                print(f"  + c69update.exe ({size_upd:.1f} MB)")
+                zipf.write(updater_exe, "c69update.exe")
+
+        zip_size = os.path.getsize(zip_path) / 1024 / 1024
+        elapsed  = time.time() - t0
         print(f"=== Nén thành công! {zip_size:.1f} MB | {elapsed:.0f}s ===")
-        if zip_size > 100:
-            print(f"  [Lưu ý] File vẫn lớn. Chạy lại với spec mới (có excludes) để giảm kích thước.")
         return zip_path
     except Exception as e:
         print(f"Lỗi khi nén file: {e}")
@@ -321,8 +332,17 @@ def main():
 
     # 1. Build
     if do_build:
-        if not run_pyinstaller():
+        # 1a. Build c69update.exe trước (nhỏ, nhanh ~30s)
+        print("\n--- Bước 1/2: Build c69update.exe ---")
+        ok_updater = run_pyinstaller("c69update.spec", label="c69update")
+        if not ok_updater:
+            print("[Cảnh báo] Build c69update.exe thất bại — tiếp tục build main app...")
+
+        # 1b. Build C69Automation.exe chính
+        print("\n--- Bước 2/2: Build C69Automation.exe ---")
+        if not run_pyinstaller("MunAutomation.spec", label="C69Automation"):
             sys.exit(1)
+
 
     # 2. Zip
     if do_zip:

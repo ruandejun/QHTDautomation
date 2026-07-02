@@ -173,58 +173,43 @@ class UpdateDownloadWorker(QThread):
 
 def _perform_in_place_update(zip_path):
     """
-    Giải nén zip → thay thế exe hiện tại → tạo script xóa file .old → restart.
-    Chỉ thay thế exe; giữ nguyên toàn bộ data, config, c69-router/.
+    Spawn c69update.exe độc lập để thay thế exe sau khi app này thoát.
+
+    Windows KHÔNG cho phép rename/xóa file .exe đang chạy.
+    Giải pháp: c69update.exe là process riêng biệt, đợi PID này kết thúc
+    rồi mới tiến hành thay thế → không bị lock.
     """
-    import zipfile, shutil, subprocess, tempfile
+    import subprocess
 
     app_dir  = get_app_dir()
     exe_name = "C69Automation.exe"
-    cur_exe  = os.path.join(app_dir, exe_name)
-    old_exe  = cur_exe + ".old"
-    new_exe  = cur_exe + ".new"
+    pid      = os.getpid()
 
-    # 1. Giải nén — chỉ lấy exe chính
-    with zipfile.ZipFile(zip_path, "r") as z:
-        exe_found = False
-        for name in z.namelist():
-            if name.endswith(exe_name):
-                with open(new_exe, "wb") as f:
-                    f.write(z.read(name))
-                exe_found = True
-                break
-    if not exe_found:
-        raise FileNotFoundError(f"Không tìm thấy {exe_name} trong file zip tải về.")
+    # Tìm c69update.exe — nằm cùng thư mục với C69Automation.exe
+    updater_exe = os.path.join(app_dir, "c69update.exe")
+    if not os.path.exists(updater_exe):
+        raise FileNotFoundError(
+            f"Không tìm thấy c69update.exe tại:\n{updater_exe}\n\n"
+            "Vui lòng tải lại bản mới nhất từ cdn.c69.us"
+        )
 
-    # 2. Đổi tên exe cũ
-    if os.path.exists(old_exe):
-        os.remove(old_exe)
-    if os.path.exists(cur_exe):
-        os.rename(cur_exe, old_exe)
-
-    # 3. Đổi tên exe mới
-    os.rename(new_exe, cur_exe)
-
-    # 4. Tạo script .bat dọn dẹp và restart
-    bat_content = (
-        "@echo off\r\n"
-        "timeout /t 2 /nobreak >nul\r\n"
-        f'del /f /q "{old_exe}" 2>nul\r\n'
-        f'del /f /q "{zip_path}" 2>nul\r\n'
-        f'start "" "{cur_exe}"\r\n'
-        f'del /f /q "%~f0"\r\n'
-    )
-    bat_path = os.path.join(app_dir, "_updater.bat")
-    with open(bat_path, "w", encoding="ascii") as f:
-        f.write(bat_content)
-
-    # 5. Chạy bat ẩn, thoát app hiện tại
+    # Spawn c69update.exe — chạy độc lập (detached)
     subprocess.Popen(
-        ["cmd", "/c", bat_path],
-        creationflags=0x08000000,   # CREATE_NO_WINDOW
-        close_fds=True
+        [
+            updater_exe,
+            f"--pid={pid}",
+            f"--zip={zip_path}",
+            f"--exe={exe_name}",
+            f"--dir={app_dir}",
+        ],
+        creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        close_fds=True,
+        cwd=app_dir,
     )
+
+    # Thoát app hiện tại — c69update.exe sẽ đợi PID này kết thúc hẳn
     QApplication.quit()
+
 
 
 class UpdateDialog(QDialog):
