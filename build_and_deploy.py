@@ -1,11 +1,64 @@
+"""
+build_and_deploy.py — Build, nén và upload C69Automation lên Cloudflare R2 CDN.
+
+SETUP CLOUDFLARE R2 (làm 1 lần):
+----------------------------------
+1. Đăng nhập https://dash.cloudflare.com → chọn "R2 Object Storage"
+2. Tạo bucket tên: "c69-releases" (hoặc tên tùy ý)
+3. Vào Settings → Public Access → bật "Allow Public Access"
+   → Sao chép "Public Bucket URL" (dạng: https://pub-xxxx.r2.dev/...)
+4. Tạo API Token:
+   - Vào Profile → API Tokens → Create Token
+   - Chọn template "R2 Token" → Edit Object Storage
+   - Permissions: Object:Read, Object:Write, Bucket:Read
+   - Sao chép: Account ID, Token
+5. Điền vào phần CONFIG bên dưới.
+
+CÁCH DÙNG:
+----------
+  python build_and_deploy.py          # Full: build + zip + upload
+  python build_and_deploy.py --zip    # Chỉ zip + upload (không build lại)
+  python build_and_deploy.py --upload # Chỉ upload file zip đã có
+"""
+
 import os
 import sys
 import subprocess
 import zipfile
-import paramiko
+import hashlib
+import json
+import time
 
-# Đảm bảo output có mã hóa UTF-8 để hiển thị tiếng Việt chính xác
+# Tự động load biến từ .env nếu có
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv chưa cài, dùng biến hệ thống
+
 sys.stdout.reconfigure(encoding='utf-8')
+
+# ============================================================
+# CONFIG — Điền thông tin Cloudflare R2 của bạn tại đây
+# ============================================================
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")        # Lấy từ Cloudflare dashboard
+CLOUDFLARE_API_TOKEN  = os.environ.get("CF_API_TOKEN",  "")        # R2 API Token
+R2_BUCKET_NAME        = os.environ.get("CF_R2_BUCKET",  "c69-releases")
+
+# URL public của bucket (sau khi bật Public Access trên dashboard)
+# Dạng: https://pub-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.r2.dev
+R2_PUBLIC_URL         = os.environ.get("CF_R2_PUBLIC_URL", "")
+
+# Fallback: server riêng (dùng khi chưa có R2 config)
+FALLBACK_SFTP_HOST    = "167.233.89.198"
+FALLBACK_SFTP_USER    = "root"
+FALLBACK_SFTP_PASS    = "fJU9JtkbELfi"
+FALLBACK_REMOTE_PATH  = "/root/storagon/static"
+
+# Tên file cố định (để download_url không thay đổi)
+ZIP_FILENAME = "QHTDautomation.zip"
+# ============================================================
+
 
 def run_pyinstaller():
     print("=== Bắt đầu chạy PyInstaller ===")
@@ -13,19 +66,19 @@ def run_pyinstaller():
     if not os.path.exists(spec_path):
         print(f"Lỗi: Không tìm thấy file spec tại {spec_path}")
         return False
-    
-    # Sử dụng python trong môi trường ảo để chạy pyinstaller hoặc gọi trực tiếp từ .venv
+
     venv_pyinstaller = os.path.join(".venv", "Scripts", "pyinstaller.exe")
     if not os.path.exists(venv_pyinstaller):
-        # Fallback nếu không chạy trong venv
         venv_pyinstaller = "pyinstaller"
-        
+
     cmd = [venv_pyinstaller, spec_path, "--clean"]
     print(f"Đang chạy lệnh: {' '.join(cmd)}")
-    
+
     try:
-        # Chạy lệnh build và hiển thị output trực tiếp
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8'
+        )
         while True:
             output = process.stdout.readline()
             if output == '' and process.poll() is not None:
@@ -43,92 +96,257 @@ def run_pyinstaller():
         print(f"Lỗi khi chạy PyInstaller: {e}")
         return False
 
+
 def zip_executable():
     print("=== Bắt đầu nén file C69Automation.exe ===")
     exe_path = os.path.join("dist", "C69Automation.exe")
-    zip_path = os.path.join("dist", "C69Automation.zip")
-    qhtd_zip = os.path.join("dist", "QHTDautomation.zip")
-    
+    zip_path = os.path.join("dist", ZIP_FILENAME)
+
     if not os.path.exists(exe_path):
         print(f"Lỗi: Không tìm thấy file thực thi tại {exe_path}")
-        return False
-        
+        return None
+
     try:
-        # Dùng ZIP_LZMA để nén tốt hơn ZIP_DEFLATED (~50-60% nhỏ hơn)
-        print(f"Đang nén với thuật toán LZMA (chặm hơn nhưng tỷ lệ nén cao hơn)...")
+        # ZIP_LZMA cho tỷ lệ nén tốt hơn DEFLATED
+        print("Đang nén với thuật toán LZMA...")
+        t0 = time.time()
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_LZMA) as zipf:
-            print(f"Đang nén {exe_path} vào {zip_path}...")
             zipf.write(exe_path, os.path.basename(exe_path))
-        
+
         zip_size = os.path.getsize(zip_path) / (1024 * 1024)
-        print(f"=== Nén file thành công! Kích thước file zip: {zip_size:.2f} MB ===")
-        
+        elapsed = time.time() - t0
+        print(f"=== Nén thành công! {zip_size:.1f} MB | {elapsed:.0f}s ===")
         if zip_size > 100:
-            print(f"[Cảnh báo] File zip vẫn lớn ({zip_size:.1f} MB). Cân nhắc tối ưu --excludes trong spec file.")
-        
-        # Copy sang QHTDautomation.zip (tên được dùng trong version.json download_url)
-        import shutil
-        shutil.copyfile(zip_path, qhtd_zip)
-        print(f"=== Đã tạo QHTDautomation.zip ({zip_size:.2f} MB) ===")
-        return True
+            print(f"  [Lưu ý] File vẫn lớn. Chạy lại với spec mới (có excludes) để giảm kích thước.")
+        return zip_path
     except Exception as e:
         print(f"Lỗi khi nén file: {e}")
-        return False
+        return None
 
-def upload_progress(transferred, total):
-    percentage = (transferred / total) * 100
-    print(f"\rĐang tải lên: {transferred / (1024*1024):.2f}MB / {total / (1024*1024):.2f}MB ({percentage:.1f}%)", end='', flush=True)
 
-def upload_to_server():
-    print("=== Bắt đầu upload lên Server ===")
-    hostname = "167.233.89.198"
-    username = "root"
-    password = "fJU9JtkbELfi"
-    
-    local_zip = os.path.join("dist", "C69Automation.zip")
-    local_qhtd_zip = os.path.join("dist", "QHTDautomation.zip")
-    remote_zip = "/root/storagon/static/C69Automation.zip"
-    remote_qhtd_zip = "/root/storagon/static/QHTDautomation.zip"
-    
-    if not os.path.exists(local_zip):
-        print(f"Lỗi: Không tìm thấy file zip để upload tại {local_zip}")
-        return False
-        
+def compute_sha256(filepath):
+    """Tính checksum SHA256 để verify tải về."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# ─────────────────────────────────────────────────────────────
+# CLOUDFLARE R2 UPLOAD (S3-compatible API)
+# ─────────────────────────────────────────────────────────────
+
+def _r2_upload_boto3(zip_path: str) -> str | None:
+    """Upload qua boto3 (S3-compatible). Trả về public URL nếu thành công."""
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError:
+        print("  [R2] boto3 chưa cài. Đang cài: pip install boto3...")
+        os.system(f"{sys.executable} -m pip install boto3 -q")
+        import boto3
+        from botocore.config import Config
+
+    endpoint = f"https://{CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=CLOUDFLARE_API_TOKEN.split(":")[0] if ":" in CLOUDFLARE_API_TOKEN else CLOUDFLARE_API_TOKEN,
+        aws_secret_access_key=CLOUDFLARE_API_TOKEN.split(":")[1] if ":" in CLOUDFLARE_API_TOKEN else CLOUDFLARE_API_TOKEN,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+    file_size = os.path.getsize(zip_path)
+    print(f"  Bắt đầu upload lên R2 bucket [{R2_BUCKET_NAME}]...")
+    print(f"  File: {os.path.basename(zip_path)} ({file_size / 1024 / 1024:.1f} MB)")
+
+    uploaded = [0]
+    start_time = [time.time()]
+
+    def progress(bytes_transferred):
+        uploaded[0] += bytes_transferred
+        pct = uploaded[0] / file_size * 100
+        speed = uploaded[0] / (time.time() - start_time[0] + 0.001) / 1024 / 1024
+        print(
+            f"\r  {uploaded[0]/1024/1024:.1f} MB / {file_size/1024/1024:.1f} MB "
+            f"({pct:.0f}%) — {speed:.1f} MB/s",
+            end="", flush=True
+        )
+
+    s3.upload_file(
+        zip_path,
+        R2_BUCKET_NAME,
+        ZIP_FILENAME,
+        Callback=progress,
+        ExtraArgs={"ContentType": "application/zip"},
+    )
+    print(f"\n  Upload hoàn tất!")
+
+    public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{ZIP_FILENAME}" if R2_PUBLIC_URL else None
+    return public_url
+
+
+def upload_to_r2(zip_path: str) -> str | None:
+    """
+    Upload file lên Cloudflare R2.
+    Trả về public URL hoặc None nếu thất bại.
+    """
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        print("  [R2] Chưa cấu hình CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN.")
+        print("  Hãy set biến môi trường hoặc chỉnh CONFIG trong file này.")
+        return None
+
+    print("=== Upload lên Cloudflare R2 ===")
+    try:
+        url = _r2_upload_boto3(zip_path)
+        return url
+    except Exception as e:
+        print(f"\n  [R2] Upload thất bại: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
+# FALLBACK: Upload lên server riêng qua SFTP
+# ─────────────────────────────────────────────────────────────
+
+def upload_to_server_sftp(zip_path: str) -> str | None:
+    """Upload lên server riêng qua SFTP (fallback)."""
+    import paramiko
+    print(f"=== Fallback: Upload SFTP lên {FALLBACK_SFTP_HOST} ===")
+
+    filename = os.path.basename(zip_path)
+    remote_path = f"{FALLBACK_REMOTE_PATH}/{filename}"
+
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     try:
-        print(f"Đang kết nối tới {hostname}...")
-        ssh.connect(hostname, username=username, password=password, timeout=30)
-        print("Kết nối thành công!")
-        
-        # Đảm bảo thư mục static tồn tại trên server
-        ssh.exec_command("mkdir -p /root/storagon/static")
-        
+        ssh.connect(FALLBACK_SFTP_HOST, username=FALLBACK_SFTP_USER,
+                    password=FALLBACK_SFTP_PASS, timeout=30)
         sftp = ssh.open_sftp()
-        
-        # Upload C69Automation.zip
-        print(f"Bắt đầu upload SFTP tới {remote_zip}...")
-        sftp.put(local_zip, remote_zip, callback=upload_progress)
-        print("\n=== Tải lên C69Automation.zip thành công! ===")
-        
-        # Upload QHTDautomation.zip
-        print(f"Bắt đầu upload SFTP tới {remote_qhtd_zip}...")
-        sftp.put(local_qhtd_zip, remote_qhtd_zip, callback=upload_progress)
-        print("\n=== Tải lên QHTDautomation.zip thành công! ===")
-        
+        file_size = os.path.getsize(zip_path)
+
+        def progress(transferred, total):
+            pct = transferred / total * 100
+            speed = transferred / max(1, time.time() - t0) / 1024 / 1024
+            print(f"\r  {transferred/1024/1024:.1f} MB / {total/1024/1024:.1f} MB "
+                  f"({pct:.0f}%) — {speed:.1f} MB/s", end="", flush=True)
+
+        t0 = time.time()
+        sftp.put(zip_path, remote_path, callback=progress)
+        print(f"\n  Upload SFTP thành công!")
+
+        # Copy sang QHTDautomation.zip (backward compat)
+        if filename != ZIP_FILENAME:
+            qhtd_path = f"{FALLBACK_REMOTE_PATH}/{ZIP_FILENAME}"
+            ssh.exec_command(f'cp "{remote_path}" "{qhtd_path}"')
+
         sftp.close()
-        return True
+        return f"https://c69.us/static/{ZIP_FILENAME}"
     except Exception as e:
-        print(f"\nLỗi khi upload file: {e}")
-        return False
+        print(f"\n  SFTP upload thất bại: {e}")
+        return None
     finally:
         ssh.close()
 
+
+# ─────────────────────────────────────────────────────────────
+# CẬP NHẬT version.json local + server
+# ─────────────────────────────────────────────────────────────
+
+def update_version_json(download_url: str, version: str | None = None):
+    """Cập nhật version.json với download_url mới (sau khi upload lên CDN)."""
+    vf = "version.json"
+    with open(vf, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if version:
+        data["version"] = version
+    data["download_url"] = download_url
+
+    with open(vf, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+    print(f"  version.json cập nhật → download_url: {download_url}")
+
+    # Push lên server backend để API /api/tool-version/ trả URL mới
+    try:
+        import paramiko
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(FALLBACK_SFTP_HOST, username=FALLBACK_SFTP_USER,
+                    password=FALLBACK_SFTP_PASS, timeout=20)
+        sftp = ssh.open_sftp()
+        sftp.put(vf, "/root/storagon/version.json")
+        sftp.close()
+        ssh.close()
+        print("  version.json đồng bộ lên server thành công!")
+    except Exception as e:
+        print(f"  [Cảnh báo] Không thể sync version.json lên server: {e}")
+        print("  Hãy chạy: git push và deploy thủ công.")
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Build & Deploy C69Automation")
+    parser.add_argument("--build",  action="store_true", help="Chỉ build (PyInstaller)")
+    parser.add_argument("--zip",    action="store_true", help="Chỉ zip + upload")
+    parser.add_argument("--upload", action="store_true", help="Chỉ upload (dùng zip đã có)")
+    parser.add_argument("--version", default=None,       help="Ghi đè version (vd: 2.0.2)")
+    parser.add_argument("--sftp",   action="store_true", help="Ép dùng SFTP thay vì R2")
+    args = parser.parse_args()
+
+    # Mặc định: full pipeline
+    do_build  = args.build  or not (args.zip or args.upload)
+    do_zip    = args.zip    or not (args.build or args.upload)
+    do_upload = args.upload or not (args.build or args.zip) or args.zip
+
+    zip_path = os.path.join("dist", ZIP_FILENAME)
+
+    # 1. Build
+    if do_build:
+        if not run_pyinstaller():
+            sys.exit(1)
+
+    # 2. Zip
+    if do_zip:
+        result = zip_executable()
+        if not result:
+            sys.exit(1)
+        zip_path = result
+
+    # 3. Upload
+    if do_upload:
+        if not os.path.exists(zip_path):
+            print(f"Lỗi: Không tìm thấy {zip_path}")
+            sys.exit(1)
+
+        sha256 = compute_sha256(zip_path)
+        print(f"  SHA256: {sha256}")
+
+        # Thử R2 trước, fallback SFTP
+        download_url = None
+        if not args.sftp and CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+            download_url = upload_to_r2(zip_path)
+
+        if download_url is None:
+            print("  Dùng fallback SFTP...")
+            download_url = upload_to_server_sftp(zip_path)
+
+        if download_url:
+            print(f"\n✅ File có thể tải tại: {download_url}")
+            update_version_json(download_url, args.version)
+            print("\n=== HOÀN THÀNH TOÀN BỘ QUY TRÌNH! ===")
+        else:
+            print("\n❌ Upload thất bại hoàn toàn.")
+            sys.exit(1)
+
+
 if __name__ == "__main__":
-    if run_pyinstaller():
-        if zip_executable():
-            if upload_to_server():
-                print("\n=== HOÀN THÀNH TOÀN BỘ QUY TRÌNH! ===")
-                sys.exit(0)
-    sys.exit(1)
+    main()
