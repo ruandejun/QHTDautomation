@@ -59,9 +59,9 @@ a = Analysis(
         'doctest',
         'difflib',
         'calendar',
-        'email',
-        'html',
-        'http.server',
+        # 'email',       # KHÔNG exclude — urllib3/requests cần email.errors, email.message
+        # 'html',        # KHÔNG exclude — requests/urllib3 cần html.parser
+        # 'http.server', # KHÔNG exclude — http.client cần thiết cho requests
         'lib2to3',
         'multiprocessing',
         'test',
@@ -69,7 +69,6 @@ a = Analysis(
         'setuptools',
         'pkg_resources',
         'xml',
-        'xmlrpc',
         'ftplib',
         'telnetlib',
         'turtle',
