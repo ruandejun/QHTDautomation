@@ -1,5 +1,5 @@
 {
     "version": "2.0.2",
-    "download_url": "https://cdn.c69.us/QHTDautomation.zip",
+    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
     "changelog": "Sửa lỗi cập nhật tự động: thêm c69update.exe riêng biệt để cài đặt không bị khóa file, hiển thị progress bar khi cập nhật."
 }

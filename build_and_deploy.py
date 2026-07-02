@@ -65,8 +65,8 @@ FALLBACK_SFTP_USER    = "root"
 FALLBACK_SFTP_PASS    = "fJU9JtkbELfi"
 FALLBACK_REMOTE_PATH  = "/root/storagon/static"
 
-# Tên file cố định (để download_url không thay đổi)
-ZIP_FILENAME = "QHTDautomation.zip"
+# Ten file zip upload len R2 (co version de bypass CDN cache)
+ZIP_FILENAME = "QHTDautomation-v2.zip"
 # ============================================================
 
 
