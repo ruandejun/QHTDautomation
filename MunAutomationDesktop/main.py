@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QFrame, QMessageBox,
-    QDialog, QLineEdit, QGridLayout, QStackedWidget
+    QDialog, QLineEdit, QGridLayout, QStackedWidget, QPlainTextEdit, QScrollBar
 )
 from PyQt6.QtGui import QPixmap, QIcon, QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -94,8 +94,311 @@ def get_app_dir():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-CLIENT_VERSION = "2.0.0"
+CLIENT_VERSION = "2.0.1"
 C69_BASE_URL = "https://c69.us"
+
+# ============================================================================
+# AUTO-UPDATE SYSTEM
+# ============================================================================
+class UpdateChecker(QThread):
+    """Background thread: checks c69.us/api/tool-version/ for a newer version."""
+    update_available = pyqtSignal(str, str, str)   # version, download_url, changelog
+    check_done       = pyqtSignal()
+
+    def run(self):
+        import time as _time
+        _time.sleep(3)  # Delay để không làm chậm khởi động UI
+        try:
+            import urllib.request, ssl, json as _json
+            ctx = ssl._create_unverified_context()
+            req = urllib.request.Request(
+                f"{C69_BASE_URL}/api/tool-version/",
+                headers={"User-Agent": "C69Automation/" + CLIENT_VERSION}
+            )
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                data = _json.loads(resp.read().decode())
+
+            server_ver = data.get("version", "")
+            dl_url     = data.get("download_url", "")
+            changelog  = data.get("changelog", "")
+
+            try:
+                from packaging.version import parse as _parse
+                is_newer = _parse(server_ver) > _parse(CLIENT_VERSION)
+            except Exception:
+                is_newer = server_ver != CLIENT_VERSION and bool(server_ver)
+
+            if is_newer and dl_url:
+                self.update_available.emit(server_ver, dl_url, changelog)
+        except Exception as e:
+            print(f"[AutoUpdate] Kiểm tra thất bại: {e}")
+        finally:
+            self.check_done.emit()
+
+
+class UpdateDownloadWorker(QThread):
+    """Downloads the update zip and emits progress."""
+    progress  = pyqtSignal(int)       # 0–100
+    finished  = pyqtSignal(str)       # zip_path on success
+    error     = pyqtSignal(str)
+
+    def __init__(self, url, dest_path, parent=None):
+        super().__init__(parent)
+        self.url       = url
+        self.dest_path = dest_path
+
+    def run(self):
+        try:
+            import urllib.request, ssl
+            ctx = ssl._create_unverified_context()
+            req = urllib.request.Request(self.url, headers={"User-Agent": "C69Automation/" + CLIENT_VERSION})
+            os.makedirs(os.path.dirname(self.dest_path), exist_ok=True)
+            with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                with open(self.dest_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self.progress.emit(int(downloaded * 100 / total))
+            self.progress.emit(100)
+            self.finished.emit(self.dest_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+def _perform_in_place_update(zip_path):
+    """
+    Giải nén zip → thay thế exe hiện tại → tạo script xóa file .old → restart.
+    Chỉ thay thế exe; giữ nguyên toàn bộ data, config, c69-router/.
+    """
+    import zipfile, shutil, subprocess, tempfile
+
+    app_dir  = get_app_dir()
+    exe_name = "C69Automation.exe"
+    cur_exe  = os.path.join(app_dir, exe_name)
+    old_exe  = cur_exe + ".old"
+    new_exe  = cur_exe + ".new"
+
+    # 1. Giải nén — chỉ lấy exe chính
+    with zipfile.ZipFile(zip_path, "r") as z:
+        exe_found = False
+        for name in z.namelist():
+            if name.endswith(exe_name):
+                with open(new_exe, "wb") as f:
+                    f.write(z.read(name))
+                exe_found = True
+                break
+    if not exe_found:
+        raise FileNotFoundError(f"Không tìm thấy {exe_name} trong file zip tải về.")
+
+    # 2. Đổi tên exe cũ
+    if os.path.exists(old_exe):
+        os.remove(old_exe)
+    if os.path.exists(cur_exe):
+        os.rename(cur_exe, old_exe)
+
+    # 3. Đổi tên exe mới
+    os.rename(new_exe, cur_exe)
+
+    # 4. Tạo script .bat dọn dẹp và restart
+    bat_content = (
+        "@echo off\r\n"
+        "timeout /t 2 /nobreak >nul\r\n"
+        f'del /f /q "{old_exe}" 2>nul\r\n'
+        f'del /f /q "{zip_path}" 2>nul\r\n'
+        f'start "" "{cur_exe}"\r\n'
+        f'del /f /q "%~f0"\r\n'
+    )
+    bat_path = os.path.join(app_dir, "_updater.bat")
+    with open(bat_path, "w", encoding="ascii") as f:
+        f.write(bat_content)
+
+    # 5. Chạy bat ẩn, thoát app hiện tại
+    subprocess.Popen(
+        ["cmd", "/c", bat_path],
+        creationflags=0x08000000,   # CREATE_NO_WINDOW
+        close_fds=True
+    )
+    QApplication.quit()
+
+
+class UpdateDialog(QDialog):
+    """
+    Glassmorphism dialog hiển thị khi có phiên bản mới.
+    Cho phép cập nhật ngay hoặc bỏ qua.
+    """
+    def __init__(self, version, download_url, changelog, parent=None):
+        super().__init__(parent)
+        self.version      = version
+        self.download_url = download_url
+        self.changelog    = changelog
+        self._worker      = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle("Cập nhật phần mềm")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(480)
+
+        self.setStyleSheet("""
+            QDialog { background: transparent; }
+            #card {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(15,20,40,245), stop:1 rgba(8,12,30,245));
+                border: 1px solid rgba(99,179,237,0.35);
+                border-radius: 16px;
+            }
+            QLabel { background: transparent; color: #e2e8f0; }
+            #title { font-size: 18px; font-weight: bold; color: #63b3ed; }
+            #version_badge {
+                background: rgba(99,179,237,0.15);
+                border: 1px solid rgba(99,179,237,0.4);
+                border-radius: 12px; padding: 4px 14px;
+                color: #90cdf4; font-size: 13px; font-weight: bold;
+            }
+            #changelog {
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 8px; padding: 12px;
+                color: #a0aec0; font-size: 12px;
+                line-height: 1.5;
+            }
+            #btn_update {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #3b82f6, stop:1 #6366f1);
+                color: white; border: none; border-radius: 8px;
+                padding: 10px 24px; font-size: 14px; font-weight: bold;
+            }
+            #btn_update:hover {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #60a5fa, stop:1 #818cf8);
+            }
+            #btn_skip {
+                background: rgba(255,255,255,0.06);
+                color: #718096; border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px; padding: 10px 24px; font-size: 13px;
+            }
+            #btn_skip:hover { background: rgba(255,255,255,0.1); color: #a0aec0; }
+            QProgressBar {
+                background: rgba(255,255,255,0.07); border-radius: 6px;
+                height: 10px; border: none; text-align: center; color: transparent;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #3b82f6, stop:1 #6366f1);
+                border-radius: 6px;
+            }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QFrame(self)
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        # Header
+        header = QHBoxLayout()
+        title = QLabel("🚀 Có phiên bản mới!")
+        title.setObjectName("title")
+        badge = QLabel(f"v{self.version}")
+        badge.setObjectName("version_badge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(badge)
+        layout.addLayout(header)
+
+        # Current vs new
+        cur_lbl = QLabel(f"Hiện tại: v{CLIENT_VERSION}  →  Mới nhất: v{self.version}")
+        cur_lbl.setStyleSheet("color: #718096; font-size: 12px;")
+        layout.addWidget(cur_lbl)
+
+        # Changelog
+        cl_lbl = QLabel(self.changelog or "Cải tiến và sửa lỗi.")
+        cl_lbl.setObjectName("changelog")
+        cl_lbl.setWordWrap(True)
+        layout.addWidget(cl_lbl)
+
+        # Progress bar (hidden initially)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color: #718096; font-size: 11px;")
+        self.status_lbl.setVisible(False)
+        layout.addWidget(self.status_lbl)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.btn_skip = QPushButton("Bỏ qua")
+        self.btn_skip.setObjectName("btn_skip")
+        self.btn_skip.setFixedHeight(40)
+        self.btn_skip.clicked.connect(self.reject)
+
+        self.btn_update = QPushButton("⬇  Cập nhật ngay")
+        self.btn_update.setObjectName("btn_update")
+        self.btn_update.setFixedHeight(40)
+        self.btn_update.clicked.connect(self._start_download)
+
+        btn_row.addWidget(self.btn_skip)
+        btn_row.addStretch()
+        btn_row.addWidget(self.btn_update)
+        layout.addLayout(btn_row)
+
+        outer.addWidget(card)
+
+    def _start_download(self):
+        self.btn_update.setEnabled(False)
+        self.btn_update.setText("Đang tải...")
+        self.btn_skip.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.status_lbl.setVisible(True)
+        self.status_lbl.setText("Đang tải file cập nhật...")
+
+        update_dir  = os.path.join(get_app_dir(), "update")
+        zip_path    = os.path.join(update_dir, "C69Automation.zip")
+
+        self._worker = UpdateDownloadWorker(self.download_url, zip_path, self)
+        self._worker.progress.connect(self.progress_bar.setValue)
+        self._worker.finished.connect(self._on_download_done)
+        self._worker.error.connect(self._on_download_error)
+        self._worker.start()
+
+    def _on_download_done(self, zip_path):
+        self.status_lbl.setText("✅ Tải xong! Đang cài đặt và khởi động lại...")
+        QApplication.processEvents()
+        try:
+            _perform_in_place_update(zip_path)
+        except Exception as e:
+            self._on_download_error(f"Cài đặt thất bại: {e}")
+
+    def _on_download_error(self, msg):
+        self.status_lbl.setText(f"❌ {msg}")
+        self.btn_update.setEnabled(True)
+        self.btn_update.setText("⬇  Thử lại")
+        self.btn_skip.setEnabled(True)
+
+    def mousePressEvent(self, event):
+        self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, '_drag_pos'):
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
 
 # ============================================================================
 # DATABASE HELPER (giữ nguyên logic từ bản cũ)
@@ -903,6 +1206,176 @@ class AgentPollSignals(QObject):
     log_signal = pyqtSignal(str)
 
 
+class RouterLogWidget(QWidget):
+    """
+    Phương án C: Log panel nổi (floating) hiển thị log định tuyến ngay trong tool Python.
+    Tự động ẩn sau khi định tuyến hoàn tất (thành công hoặc thất bại).
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._drag_pos = None
+        self._setup_ui()
+        self._entries = []
+
+    def _setup_ui(self):
+        self.setFixedWidth(480)
+        self.setMinimumHeight(120)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # Glass card
+        self._card = QFrame()
+        self._card.setObjectName("routerLogCard")
+        self._card.setStyleSheet("""
+            QFrame#routerLogCard {
+                background: rgba(8, 11, 20, 0.96);
+                border: 1px solid rgba(168, 85, 247, 0.40);
+                border-radius: 12px;
+            }
+        """)
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setContentsMargins(14, 10, 14, 12)
+        card_layout.setSpacing(6)
+
+        # Header row
+        header_row = QHBoxLayout()
+        title = QLabel("  ð£️ Log Định tuyến")
+        title.setStyleSheet("color: #a855f7; font-size: 13px; font-weight: 700;")
+        header_row.addWidget(title)
+        header_row.addStretch()
+
+        self._clear_btn = QPushButton("×")
+        self._clear_btn.setFixedSize(22, 22)
+        self._clear_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(168,85,247,0.15);
+                color: #c084fc;
+                border: 1px solid rgba(168,85,247,0.3);
+                border-radius: 11px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: rgba(168,85,247,0.3); }
+        """)
+        self._clear_btn.clicked.connect(self.hide)
+        header_row.addWidget(self._clear_btn)
+        card_layout.addLayout(header_row)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: rgba(168,85,247,0.2);")
+        card_layout.addWidget(sep)
+
+        # Log text area
+        self._log_area = QPlainTextEdit()
+        self._log_area.setReadOnly(True)
+        self._log_area.setMaximumBlockCount(500)
+        self._log_area.setFixedHeight(240)
+        self._log_area.setStyleSheet("""
+            QPlainTextEdit {
+                background: rgba(0,0,0,0.0);
+                color: #94a3b8;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 11px;
+                border: none;
+                selection-background-color: rgba(168,85,247,0.25);
+            }
+            QScrollBar:vertical {
+                background: rgba(255,255,255,0.03);
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(168,85,247,0.3);
+                border-radius: 3px;
+            }
+        """)
+        card_layout.addWidget(self._log_area)
+
+        # Status bar at bottom
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet("color: #94a3b8; font-size: 11px; padding-top: 2px;")
+        self._status_label.setWordWrap(True)
+        card_layout.addWidget(self._status_label)
+
+        outer.addWidget(self._card)
+
+    def append_log(self, message, level="info"):
+        level_colors = {
+            "success": "#10b981",
+            "warning": "#f59e0b",
+            "error":   "#ef4444",
+            "info":    "#94a3b8",
+        }
+        color = level_colors.get(level, "#94a3b8")
+        timestamp = time.strftime("%H:%M:%S")
+        html = f'<span style="color:#475569">[{timestamp}]</span> <span style="color:{color}">{message}</span>'
+        self._log_area.appendHtml(html)
+        self._log_area.verticalScrollBar().setValue(self._log_area.verticalScrollBar().maximum())
+        # Resize height dynamically up to max 400px
+        doc_h = self._log_area.document().size().height()
+        self._log_area.setFixedHeight(min(int(doc_h) + 20, 400))
+        self.adjustSize()
+        self.show()
+
+    def set_status(self, message, success=None):
+        if success is True:
+            self._status_label.setStyleSheet("color: #10b981; font-size: 11px; font-weight: 600; padding-top: 2px;")
+        elif success is False:
+            self._status_label.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: 600; padding-top: 2px;")
+        else:
+            self._status_label.setStyleSheet("color: #94a3b8; font-size: 11px; padding-top: 2px;")
+        self._status_label.setText(message)
+        self.adjustSize()
+
+    def reposition(self, parent):
+        if parent:
+            pr = parent.geometry()
+            x = pr.right() - self.width() - 20
+            y = pr.bottom() - self.height() - 60
+            self.move(x, y)
+
+    # Drag support
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.MouseButton.LeftButton and self._drag_pos:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
+class RouterStartWorker(QThread):
+    """
+    Chạy start_router_impl trong background thread để không treo UI.
+    Phát log_signal(message, level) và finished_signal(result_json).
+    """
+    log_signal = pyqtSignal(str, str)       # message, level
+    finished_signal = pyqtSignal(str)       # JSON result
+
+    def __init__(self, bridge_obj, config_json, c69_base_url, parent=None):
+        super().__init__(parent)
+        self.bridge_obj = bridge_obj
+        self.config_json = config_json
+        self.c69_base_url = c69_base_url
+
+    def run(self):
+        def log_cb(msg, level="info"):
+            self.log_signal.emit(msg, level)
+
+        result = start_router_impl(self.bridge_obj, self.config_json, self.c69_base_url, log_callback=log_cb)
+        self.finished_signal.emit(result)
+
+
 # ============================================================================
 # MUNAUTOMATION BRIDGE — Python API ↔ JavaScript (QWebChannel)
 # ============================================================================
@@ -932,6 +1405,10 @@ class MunAutomationBridge(QObject):
     torDownloadLog = pyqtSignal(str)     # download progress logs
     torDownloadFinished = pyqtSignal(bool, str) # success, error_msg
 
+    # Router Signals
+    routerLog = pyqtSignal(str, str)          # message, level ('info'|'success'|'warning'|'error')
+    routerStartFinished = pyqtSignal(str)     # JSON result string
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
@@ -946,6 +1423,7 @@ class MunAutomationBridge(QObject):
         self.dopamine_worker = None
         self.tor_download_worker = None
         self.tor_monitor_worker = None
+        self.router_start_worker = None
         self.browser_workers = {}
         self.poll_thread = None
         
@@ -1705,7 +2183,19 @@ class MunAutomationBridge(QObject):
 
     @pyqtSlot(str, result=str)
     def startRouter(self, config_json):
-        return start_router_impl(self, config_json, C69_BASE_URL)
+        """
+        Khởi động router trong background thread để không treo UI.
+        Trả về {"pending": true} ngay lập tức — kết quả thực đến qua signal routerStartFinished.
+        Tương thích cả frontend cũ (c69.us) lẫn frontend mới (signal-based).
+        """
+        if self.router_start_worker and self.router_start_worker.isRunning():
+            self.routerLog.emit("⚠️ Tiến trình khởi động định tuyến đang chạy...", "warning")
+            return json.dumps({"pending": True, "message": "Đang khởi động..."})
+        self.router_start_worker = RouterStartWorker(self, config_json, C69_BASE_URL)
+        self.router_start_worker.log_signal.connect(self.routerLog.emit)
+        self.router_start_worker.finished_signal.connect(self.routerStartFinished.emit)
+        self.router_start_worker.start()
+        return json.dumps({"pending": True, "message": "Đang khởi động định tuyến..."})
 
     @pyqtSlot(result=str)
     def stopRouter(self):
@@ -2592,7 +3082,11 @@ class MunAutomationStoreDesktop(QMainWindow):
         self.setMinimumSize(1100, 700)
         
         # Set window icon
-        icon_path = os.path.join(get_app_dir(), "icon.png")
+        if getattr(sys, 'frozen', False):
+            icon_path = os.path.join(sys._MEIPASS, "icon.png")
+        else:
+            icon_path = os.path.join(get_app_dir(), "icon.png")
+            
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -2739,6 +3233,11 @@ class MunAutomationStoreDesktop(QMainWindow):
         self.bridge.statusMessage.connect(self.update_status)
         self.bridge.automationLog.connect(self.on_automation_log)
 
+        # Option C: Router log floating widget
+        self._router_log_widget = RouterLogWidget(self)
+        self.bridge.routerLog.connect(self.on_router_log)
+        self.bridge.routerStartFinished.connect(self.on_router_start_finished)
+
         # Inject qwebchannel.js before loading
         # The web frontend will detect window.munAutomationBridge / window.qhtdBridge and show extra tabs
         page.loadFinished.connect(self.on_page_loaded)
@@ -2852,6 +3351,36 @@ class MunAutomationStoreDesktop(QMainWindow):
         """Forward automation log to status bar"""
         self.status_label.setText(message)
 
+    def on_router_log(self, message, level):
+        """Option C: Nhận log từ RouterStartWorker và hiển thị trên RouterLogWidget nổi."""
+        # Reposition widget to bottom-right of main window mỗi lần log mới
+        self._router_log_widget.reposition(self)
+        self._router_log_widget.append_log(message, level)
+        # Also update status bar
+        self.status_label.setText(f"[Router] {message}")
+
+    def on_router_start_finished(self, result_json):
+        """Nhận kết quả cuối cùng của quá trình khởi động router."""
+        import json as _json
+        try:
+            result = _json.loads(result_json)
+            if result.get("success"):
+                self._router_log_widget.set_status("✅ Định tuyến đã khởi động thành công!", success=True)
+                self.status_label.setText("✅ Định tuyến sẵn sàng")
+                # Also push result back to JS so frontend updates its state
+                self.web_view.page().runJavaScript(
+                    "if(window.__routerStartFinished) window.__routerStartFinished(%s);" % result_json
+                )
+            else:
+                err = result.get("error", "Lỗi không xác định")
+                self._router_log_widget.set_status(f"❌ {err}", success=False)
+                self.status_label.setText(f"❌ Router lỗi: {err[:60]}")
+                self.web_view.page().runJavaScript(
+                    "if(window.__routerStartFinished) window.__routerStartFinished(%s);" % result_json
+                )
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         """Cleanup khi đóng app"""
         if self.bridge:
@@ -2893,6 +3422,25 @@ class MunAutomationStoreDesktop(QMainWindow):
                 self.bridge.stopAllTorProxies()
             if hasattr(self.bridge, 'stopRouter'):
                 self.bridge.stopRouter()
+
+        # Quét toàn bộ những tool chạy ngầm (C69Automation.exe hoặc QHTDautomation.exe) và tắt hết
+        try:
+            import psutil
+            current_pid = os.getpid()
+            target_names = ["C69Automation.exe", "QHTDautomation.exe"]
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    pinfo = proc.info
+                    pid = pinfo['pid']
+                    name = pinfo['name']
+                    if name in target_names and pid != current_pid:
+                        print(f"[Cleanup] Killing background process: {name} (PID: {pid})")
+                        proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        except Exception as e:
+            print(f"[Cleanup] Error scanning background processes: {e}")
+
         event.accept()
 
     def take_test_screenshot(self):
@@ -3042,6 +3590,22 @@ if __name__ == "__main__":
 
         window.show()
         print("[MunAutomation] Step 7: Window shown OK — entering event loop", flush=True)
+
+        # ── Auto-update: kiểm tra phiên bản mới ở nền ──────────────
+        _update_checker = UpdateChecker()
+        def _on_update_available(ver, url, changelog):
+            dlg = UpdateDialog(ver, url, changelog, window)
+            # Center over main window
+            geo = window.geometry()
+            dlg.adjustSize()
+            dlg.move(
+                geo.x() + (geo.width()  - dlg.width())  // 2,
+                geo.y() + (geo.height() - dlg.height()) // 2
+            )
+            dlg.exec()
+        _update_checker.update_available.connect(_on_update_available)
+        _update_checker.start()
+        # ─────────────────────────────────────────────────────────────
 
         ret = app.exec()
         print(f"[MunAutomation] Step 8: Event loop ended with code {ret}", flush=True)
