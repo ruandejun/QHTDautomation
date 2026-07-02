@@ -18,21 +18,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        # Loại bỏ toàn bộ GUI frameworks nặng
-        'PyQt6', 'PyQt5', 'PySide6', 'PySide2',
-        'wx', 'gi',
-        # Loại bỏ scientific libs
-        'numpy', 'pandas', 'scipy', 'matplotlib',
-        'PIL', 'Pillow',
-        # Loại bỏ network libs không cần
-        'selenium', 'requests', 'urllib3', 'certifi',
-        'cryptography', 'paramiko',
-        'boto3', 'botocore',
-        # Loại bỏ misc
-        'pydub', 'tqdm', 'pytelegrambotapi',
-        'undetected_chromedriver', 'selenium_stealth',
-    ],
+    excludes=[],
     noarchive=False,
     optimize=2,
 )

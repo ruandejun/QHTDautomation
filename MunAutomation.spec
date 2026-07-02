@@ -14,47 +14,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Loại bỏ các thư viện Qt không cần thiết để giảm kích thước exe
-    excludes=[
-        # Qt modules không dùng
-        'PyQt6.Qt3DAnimation',
-        'PyQt6.Qt3DCore',
-        'PyQt6.Qt3DExtras',
-        'PyQt6.Qt3DInput',
-        'PyQt6.Qt3DLogic',
-        'PyQt6.Qt3DRender',
-        'PyQt6.QtBluetooth',
-        'PyQt6.QtCharts',
-        'PyQt6.QtDataVisualization',
-        'PyQt6.QtDesigner',
-        'PyQt6.QtHelp',
-        'PyQt6.QtLocation',
-        'PyQt6.QtMultimedia',
-        'PyQt6.QtMultimediaWidgets',
-        'PyQt6.QtNfc',
-        'PyQt6.QtOpenGL',
-        'PyQt6.QtOpenGLWidgets',
-        'PyQt6.QtPdf',
-        'PyQt6.QtPdfWidgets',
-        'PyQt6.QtPositioning',
-        'PyQt6.QtQml',
-        'PyQt6.QtQuick',
-        'PyQt6.QtQuick3D',
-        'PyQt6.QtQuickWidgets',
-        'PyQt6.QtRemoteObjects',
-        'PyQt6.QtSensors',
-        'PyQt6.QtSerialBus',
-        'PyQt6.QtSerialPort',
-        'PyQt6.QtSql',
-        'PyQt6.QtSvg',
-        'PyQt6.QtSvgWidgets',
-        'PyQt6.QtTest',
-        'PyQt6.QtTextToSpeech',
-        'PyQt6.QtVirtualKeyboard',
-        # Chỉ exclude Qt modules không dùng — KHÔNG exclude stdlib
-        # vì requests/urllib3/paramiko cần email, calendar, http, html, xml, v.v.
-        # PyInstaller tự phân tích dependency và chỉ bundle những gì cần thiết.
-    ],
+    excludes=[],
     noarchive=False,
     optimize=1,  # Tối ưu bytecode Python (loại bỏ assert và docstring)
 )
