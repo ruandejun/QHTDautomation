@@ -3112,9 +3112,23 @@ class MunAutomationStoreDesktop(QMainWindow):
 
         # Hiển thị loading overlay mặc định và kết nối signals
         self.stacked_widget.setCurrentWidget(self.loading_widget)
-        self.web_view.loadStarted.connect(lambda: self.stacked_widget.setCurrentWidget(self.loading_widget))
-        self.web_view.loadFinished.connect(lambda: self.stacked_widget.setCurrentWidget(self.web_view))
-        # Phòng hờ trường hợp không có tín hiệu loadFinished
+        self._initial_load_done = False
+
+        # CHỈ show loading screen 1 lần duy nhất khi khởi động lần đầu.
+        # KHÔNG kết nối loadStarted → tránh nhấp nháy khi React Router
+        # chuyển tab internal hoặc frontend fetch data định kỳ.
+        def _on_first_load_finished(ok):
+            if not self._initial_load_done:
+                self._initial_load_done = True
+                self.stacked_widget.setCurrentWidget(self.web_view)
+                # Ngắt kết nối sau lần đầu — không cần nữa
+                try:
+                    self.web_view.loadFinished.disconnect(_on_first_load_finished)
+                except Exception:
+                    pass
+
+        self.web_view.loadFinished.connect(_on_first_load_finished)
+        # Phòng hờ trường hợp không có tín hiệu loadFinished (timeout 15s)
         QTimer.singleShot(15000, lambda: self.stacked_widget.setCurrentWidget(self.web_view))
 
         # === NATIVE STATUS BAR (bottom) ===
