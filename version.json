@@ -1,5 +1,5 @@
 {
-    "version": "2.0.6",
+    "version": "2.0.7",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Tích hợp tính năng đăng ký TikTok 24/7 chọn lọc Email chưa tạo TikTok thủ công từ danh sách."
+    "changelog": "Hỗ trợ tự động re-authorize Microsoft OAuth qua tab trình duyệt phụ và tự động đánh dấu email lỗi (status=5) lên C69 khi không lấy được OTP."
 }

@@ -155,6 +155,56 @@ class C69Client:
             logger.error(f"Lỗi kết nối API đọc hộp thư C69: {e}")
         return None
 
+    def save_mailbox_results(self, email_id: int, refresh_token: str = None) -> bool:
+        """Lưu refresh token mới (hoặc rotated) lên server C69"""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể cập nhật refresh token.")
+            return False
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/save-mailbox-results/"
+        payload = {}
+        if refresh_token:
+            payload["refresh_token"] = refresh_token
+            
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+            
+        try:
+            r = self.session.post(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201):
+                logger.info(f"Đã lưu refresh token mới cho email ID {email_id} lên C69 thành công!")
+                return True
+            else:
+                logger.error(f"Lỗi lưu refresh token lên C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 save-mailbox-results: {e}")
+        return False
+
+    def update_email_status(self, email_id: int, status: int) -> bool:
+        """Cập nhật trạng thái (status) cho email trong DB C69 (ví dụ: status=5 là lỗi)"""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể cập nhật trạng thái email.")
+            return False
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/"
+        payload = {"status": status}
+        
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+            
+        try:
+            r = self.session.patch(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201, 204):
+                logger.info(f"Đã cập nhật trạng thái email ID {email_id} thành {status} thành công!")
+                return True
+            else:
+                logger.error(f"Lỗi cập nhật trạng thái email trên C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi cập nhật trạng thái email C69: {e}")
+        return False
+
     def add_tiktok_account(self, email_addr: str, password: str, two_factor_key: str,
                            profile_id: str = "none",
                            accounts_emails_id: Optional[int] = None) -> bool:
@@ -1520,6 +1570,155 @@ async def _verify_signup_success(tab: Any, timeout_secs: int = 30) -> bool:
     return False
 
 
+async def auto_login_microsoft_and_get_token(browser, email, password, note_field, client_id, email_id, c69_client):
+    logger.info(f"🔑 Khởi động luồng lấy Token cho {email}...")
+    import re
+    import urllib.parse
+    
+    # Trích xuất email khôi phục từ note
+    recovery_email = None
+    if note_field:
+        emails_found = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', note_field)
+        for e_found in emails_found:
+            if e_found.lower() != email.lower():
+                recovery_email = e_found.strip()
+                break
+    if recovery_email:
+        logger.info(f"🔍 Tìm thấy email khôi phục liên kết: {recovery_email}")
+        
+    tab = await browser.create_tab()
+    try:
+        # Truy cập trang đăng nhập live.com
+        await tab.get("https://login.live.com/")
+        await asyncio.sleep(4)
+        
+        # 1. Điền Email
+        email_inps = await tab.select_all("input[type='email'], input[name='loginfmt']")
+        if email_inps:
+            await email_inps[0].send_keys(email)
+            await asyncio.sleep(1)
+            next_btn = await tab.select("input[type='submit'], input#idSIButton9")
+            if next_btn:
+                await next_btn.click()
+                await asyncio.sleep(3)
+                
+        # 2. Điền Password
+        pass_inps = await tab.select_all("input[type='password'], input[name='passwd']")
+        if pass_inps:
+            await pass_inps[0].send_keys(password)
+            await asyncio.sleep(1)
+            sign_in_btn = await tab.select("input[type='submit'], input#idSIButton9")
+            if sign_in_btn:
+                await sign_in_btn.click()
+                await asyncio.sleep(4)
+                
+        # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập)
+        for _ in range(5):
+            current_url = tab.url
+            if "login.live.com" not in current_url:
+                break
+                
+            # Kiểm tra xem có màn hình bắt điền email khôi phục không
+            body_text = await tab.evaluate("document.body.textContent")
+            body_text_lower = body_text.lower()
+            
+            # Nếu bắt xác minh email khôi phục
+            if "verify your identity" in body_text_lower or "email" in body_text_lower or "khôi phục" in body_text_lower:
+                # Tìm option "Email ....." (thường chứa các ký tự ẩn như ab***@xyz.com)
+                email_proof_options = await tab.select_all("[id*='Proof'], [class*='proof'], [data-value*='@']")
+                if email_proof_options:
+                    await email_proof_options[0].click()
+                    await asyncio.sleep(2)
+                    
+                # Nhập email khôi phục đầy đủ
+                proof_input = await tab.select("input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm']")
+                if proof_input and recovery_email:
+                    logger.info(f"Đang tự động điền email khôi phục: {recovery_email}")
+                    await proof_input.send_keys(recovery_email)
+                    await asyncio.sleep(1)
+                    submit_proof = await tab.select("input[type='submit'], input#idSIButton9")
+                    if submit_proof:
+                        await submit_proof.click()
+                        await asyncio.sleep(4)
+                        
+            # Bấm qua các màn hình khác như "Stay signed in?", "Break free from passwords"
+            submit_btn = await tab.select("input[type='submit'], input#idSIButton9, button[type='submit']")
+            if submit_btn:
+                await submit_btn.click()
+                await asyncio.sleep(3)
+            else:
+                break
+                
+        # 4. Hướng tới URL ủy quyền OAuth
+        redirect_uri = "https://login.microsoftonline.com/common/oauth2/nativeclient"
+        auth_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize" \
+                   f"?client_id={client_id}" \
+                   f"&response_type=code" \
+                   f"&redirect_uri={redirect_uri}" \
+                   f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access"
+                   
+        logger.info("Chuyển hướng trình duyệt tới URL xin quyền OAuth...")
+        await tab.get(auth_url)
+        await asyncio.sleep(4)
+        
+        # Click Accept (nếu có Consent screen)
+        for _ in range(3):
+            current_url = tab.url
+            if "nativeclient" in current_url and "code=" in current_url:
+                break
+            accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
+            if accept_btn:
+                logger.info("Click Accept đồng ý cấp quyền...")
+                await accept_btn.click()
+                await asyncio.sleep(4)
+            else:
+                await asyncio.sleep(1)
+                
+        # 5. Lấy code từ redirect url
+        current_url = tab.url
+        if "code=" in current_url:
+            parsed = urllib.parse.urlparse(current_url)
+            code = urllib.parse.parse_qs(parsed.query).get("code", [None])[0]
+            if code:
+                logger.info(f"Đã lấy được code: {code[:10]}...")
+                # Gửi request POST đổi code lấy token
+                token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                payload = {
+                    "client_id": client_id,
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri
+                }
+                
+                loop = asyncio.get_event_loop()
+                res = await loop.run_in_executor(None, lambda: requests.post(token_url, data=payload, timeout=15))
+                if res.status_code == 200:
+                    res_json = res.json()
+                    new_ref_token = res_json.get("refresh_token")
+                    if new_ref_token:
+                        # Lưu lên C69
+                        saved = await loop.run_in_executor(None, c69_client.save_mailbox_results, email_id, new_ref_token)
+                        if saved:
+                            logger.info("🎉 Tự động làm mới và cập nhật thành công Token OAuth!")
+                            return True
+                    else:
+                        logger.error(f"Response Microsoft không có refresh_token: {res.text}")
+                else:
+                    logger.error(f"Lỗi đổi code lấy token (Status {res.status_code}): {res.text}")
+        else:
+            logger.error(f"Không thể chuyển hướng đến URL callback chứa code (URL hiện tại: {current_url})")
+            
+    except Exception as e:
+        logger.error(f"Lỗi khi tự động lấy token: {e}")
+    finally:
+        try:
+            await tab.close()
+        except Exception:
+            pass
+            
+    return False
+
+
 async def run_tiktok_registration_flow(args):
     logger.info("=== BẮT ĐẦU LUỒNG TỰ ĐỘNG ĐĂNG KÝ TIKTOK ===")
     
@@ -1645,6 +1844,46 @@ async def run_tiktok_registration_flow(args):
     )
     
     auto = TikTokSignupAutomation(manager, tab)
+
+    # Kiểm tra thử khả năng đọc thư qua Graph API nếu là Hotmail/Outlook có liên kết email_id
+    if reg_method == "c69-email" and email_id:
+        email_lower = email_addr.lower()
+        if any(dom in email_lower for dom in ["hotmail.com", "outlook.com", "live.com", "msn.com"]):
+            logger.info("🔍 Kiểm tra kết nối hòm thư Microsoft Graph API...")
+            test_res = None
+            try:
+                loop = asyncio.get_running_loop()
+                test_res = await loop.run_in_executor(None, c69.read_mailbox, email_id)
+            except Exception as e:
+                logger.warning(f"Lỗi khi kiểm tra thử hòm thư: {e}")
+                
+            need_reauth = False
+            if test_res and not test_res.get('success'):
+                msg = test_res.get('message', '')
+                if any(x in msg for x in ["Graph API", "JWT", "InvalidAuthenticationToken", "token", "Token"]):
+                    logger.warning(f"⚠️ Hòm thư Microsoft báo lỗi Token: {msg}")
+                    need_reauth = True
+            elif not test_res:
+                logger.warning("⚠️ Không thể kết nối kiểm tra hòm thư Microsoft.")
+                
+            if need_reauth:
+                logger.info("🚀 Tự động mở tab mới để đăng nhập và lấy lại Token OAuth...")
+                note = args.get("note", "")
+                client_id = args.get("client_id") or "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+                reauth_success = await auto_login_microsoft_and_get_token(
+                    browser=browser,
+                    email=email_addr,
+                    password=password,
+                    note_field=note,
+                    client_id=client_id,
+                    email_id=email_id,
+                    c69_client=c69
+                )
+                if reauth_success:
+                    logger.info("🎉 Cấp lại token thành công! Tạo lại đối tượng hòm thư C69MailBox.")
+                    mail_client = C69MailBox(c69, email_id)
+                else:
+                    logger.error("❌ Tự động cấp lại token OAuth thất bại. Sẽ thử dùng IMAP fallback của server.")
 
     # Chờ trang TikTok load xong (quan trọng khi dùng proxy — trang load chậm hơn)
     logger.info("Đang chờ trang TikTok tải xong...")
@@ -2065,6 +2304,15 @@ async def run_tiktok_registration_flow(args):
                 otp_code = await mail_client.get_otp_code()
                 
             if not otp_code:
+                # Báo email lỗi lên C69
+                if email_id:
+                    logger.warning(f"⚠️ Báo email ID {email_id} lỗi đọc mail/không có OTP lên server C69...")
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, c69.update_email_status, email_id, 5)
+                    except Exception as e:
+                        logger.error(f"Lỗi khi cập nhật trạng thái email lỗi: {e}")
+                
                 print("\n" + "="*50)
                 otp_code = input("Nhập mã OTP 6 số nhận từ Email của bạn: ").strip()
                 print("="*50 + "\n")
