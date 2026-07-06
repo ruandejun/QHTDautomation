@@ -2391,9 +2391,10 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @pyqtSlot(str, str, str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, result=str)
-    def startTikTokRegLoop(self, reg_method, captcha_mode, proxy_list_raw="", proxy_type="socks5", c69_url="https://c69.us"):
+    def startTikTokRegLoop(self, reg_method, captcha_mode, proxy_list_raw="", proxy_type="socks5", c69_url="https://c69.us", email_list_raw=""):
         """Khởi chạy vòng lặp tuần tự tạo tài khoản TikTok 24/7"""
         try:
             if getattr(self, 'tiktok_reg_running', False):
@@ -2405,17 +2406,43 @@ class MunAutomationBridge(QObject):
             
             import threading
             import time
+            import json
             def loop_flow():
                 proxies = [p.strip() for p in proxy_list_raw.split("\n") if p.strip()]
                 proxy_idx = 0
                 
+                # Parse danh sách email thủ công
+                emails_selected = []
+                if email_list_raw:
+                    try:
+                        emails_selected = json.loads(email_list_raw)
+                    except Exception as e:
+                        print(f"[Parse Emails Error] {e}")
+                
+                email_idx = 0
+                
                 while getattr(self, 'tiktok_reg_running', False):
+                    # Nếu chọn email thủ công và đã chạy hết
+                    if emails_selected and email_idx >= len(emails_selected):
+                        self.statusMessage.emit("✅ Đã hoàn thành đăng ký cho toàn bộ danh sách Email được chọn!")
+                        self.tiktok_reg_running = False
+                        break
+                        
                     current_proxy = ""
                     if proxies:
                         current_proxy = proxies[proxy_idx % len(proxies)]
                         proxy_idx += 1
                         
-                    self.statusMessage.emit(f"🔄 Bắt đầu lượt đăng ký mới với proxy: {current_proxy or 'Mặc định'}")
+                    # Email hiện tại (nếu chọn thủ công)
+                    current_email = None
+                    if emails_selected:
+                        current_email = emails_selected[email_idx]
+                        email_idx += 1
+                        self.statusMessage.emit(f"🔄 Lượt {email_idx}: Đăng ký cho email: {current_email.get('email')}")
+                    else:
+                        self.statusMessage.emit("🔄 Bắt đầu lượt đăng ký mới với email tự động trên C69.")
+                        
+                    self.statusMessage.emit(f"📡 Proxy sử dụng: {current_proxy or 'Mặc định'}")
                     
                     try:
                         from tiktok_reg_automation import run_tiktok_registration_flow
@@ -2429,6 +2456,11 @@ class MunAutomationBridge(QObject):
                             "email_mode": "imap",
                         }
                         
+                        if current_email:
+                            args["email"] = current_email.get("email")
+                            args["email_id"] = current_email.get("id")
+                            args["email_password"] = current_email.get("password")
+                        
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         success = loop.run_until_complete(run_tiktok_registration_flow(args))
@@ -2436,7 +2468,7 @@ class MunAutomationBridge(QObject):
                         result_data = {
                             "success": success,
                             "proxy": current_proxy or "Mặc định",
-                            "message": "Đăng ký thành công!" if success else "Thất bại, vui lòng kiểm tra log.",
+                            "message": f"Email: {args.get('email', 'N/A')} - Đăng ký thành công!" if success else f"Email: {args.get('email', 'N/A')} - Thất bại, xem log.",
                             "time": time.strftime("%Y-%m-%d %H:%M:%S")
                         }
                         self.tiktokRegResult.emit(json.dumps(result_data))
@@ -2446,9 +2478,15 @@ class MunAutomationBridge(QObject):
                         self.tiktokRegResult.emit(json.dumps({
                             "success": False,
                             "proxy": current_proxy or "Mặc định",
-                            "message": str(ex),
+                            "message": f"Email: {current_email.get('email') if current_email else 'N/A'} - Lỗi: {str(ex)}",
                             "time": time.strftime("%Y-%m-%d %H:%M:%S")
                         }))
+                        
+                    # Nếu đã chạy hết danh sách email thủ công, thoát luôn không cần delay
+                    if emails_selected and email_idx >= len(emails_selected):
+                        self.statusMessage.emit("✅ Hoàn thành kịch bản!")
+                        self.tiktok_reg_running = False
+                        break
                         
                     # Delay giữa các lượt chạy tránh spam
                     self.statusMessage.emit("⏳ Đợi 20 giây trước khi chạy lượt tiếp theo...")

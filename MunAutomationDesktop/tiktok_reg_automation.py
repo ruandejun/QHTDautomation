@@ -1561,7 +1561,17 @@ async def run_tiktok_registration_flow(args):
     password = ""
     email_id = None         # ID trong AccountsEmails (để đọc OTP và link FK)
 
-    if reg_method == "c69-email":
+    # Nếu truyền trực tiếp email từ GUI chọn thủ công
+    custom_email = args.get("email")
+    custom_email_id = args.get("email_id")
+    custom_email_password = args.get("email_password")
+
+    if custom_email and custom_email_id:
+        email_addr = custom_email
+        email_id = int(custom_email_id)
+        password = custom_email_password or args.get("password") or generate_random_string(12)
+        logger.info(f"Sử dụng email chọn thủ công từ GUI: {email_addr} (id={email_id})")
+    elif reg_method == "c69-email":
         # Lấy email Hotmail/Gmail chưa dùng từ AccountsEmails trên C69
         # Thứ tự ưu tiên: hotmail trước (Microsoft Graph OTP), fallback sang gmail
         c69_email_data = c69.get_unused_email("hotmail") or c69.get_unused_email("gmail")
