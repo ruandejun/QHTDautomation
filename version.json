@@ -1,5 +1,5 @@
 {
-    "version": "2.0.7",
+    "version": "2.0.8",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Hỗ trợ tự động re-authorize Microsoft OAuth qua tab trình duyệt phụ và tự động đánh dấu email lỗi (status=5) lên C69 khi không lấy được OTP."
+    "changelog": "Bổ sung chi tiết địa chỉ email cụ thể trong log lỗi kết nối IMAP/Graph API để dễ kiểm soát tài khoản lỗi."
 }

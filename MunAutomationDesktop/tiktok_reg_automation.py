@@ -134,7 +134,7 @@ class C69Client:
             logger.error(f"Lỗi cập nhật C69: {e}")
         return False
 
-    def read_mailbox(self, email_id: int) -> Optional[Dict[str, Any]]:
+    def read_mailbox(self, email_id: int, email_addr: str = "Email") -> Optional[Dict[str, Any]]:
         """Gọi API backend C69 để đọc hộp thư theo email_id (IMAP cho Gmail, Microsoft Graph OAuth2
         cho Hotmail/Outlook - Microsoft đã tắt Basic Auth IMAP nên không thể đọc trực tiếp bằng mật khẩu)."""
         if not self.logged_in:
@@ -148,11 +148,11 @@ class C69Client:
                 if resp.get("success"):
                     return resp
                 else:
-                    logger.warning(f"Đọc hộp thư C69 thất bại: {resp.get('message')}")
+                    logger.warning(f"❌ [{email_addr}] Đọc hộp thư C69 thất bại: {resp.get('message')}")
             else:
-                logger.error(f"Lỗi API đọc hộp thư C69 (Status {r.status_code}): {r.text}")
+                logger.error(f"❌ [{email_addr}] Lỗi API đọc hộp thư C69 (Status {r.status_code}): {r.text}")
         except Exception as e:
-            logger.error(f"Lỗi kết nối API đọc hộp thư C69: {e}")
+            logger.error(f"❌ [{email_addr}] Lỗi kết nối API đọc hộp thư C69: {e}")
         return None
 
     def save_mailbox_results(self, email_id: int, refresh_token: str = None) -> bool:
@@ -433,17 +433,18 @@ class C69MailBox:
     nên script chỉ cần gọi lại API đó qua email_id trả về từ get-active-account.
     """
 
-    def __init__(self, c69_client: "C69Client", email_id: int):
+    def __init__(self, c69_client: "C69Client", email_id: int, email_addr: str = "Email"):
         self.c69_client = c69_client
         self.email_id = email_id
+        self.email_addr = email_addr
 
     async def get_otp_code(self, timeout_secs: int = 120) -> Optional[str]:
-        logger.info(f"Đang chờ mã OTP qua API đọc hộp thư C69 (email_id={self.email_id}, Timeout: {timeout_secs}s)...")
+        logger.info(f"Đang chờ mã OTP qua API đọc hộp thư C69 ({self.email_addr}, email_id={self.email_id}, Timeout: {timeout_secs}s)...")
         loop = asyncio.get_event_loop()
         start_time = loop.time()
 
         while loop.time() - start_time < timeout_secs:
-            result = await loop.run_in_executor(None, self.c69_client.read_mailbox, self.email_id)
+            result = await loop.run_in_executor(None, self.c69_client.read_mailbox, self.email_id, self.email_addr)
             if result:
                 for msg in result.get("emails", []):
                     subject = (msg.get("subject") or "").lower()
@@ -466,7 +467,7 @@ class C69MailBox:
 
             await asyncio.sleep(6)
 
-        logger.warning("Không tìm thấy mã OTP TikTok qua API đọc hộp thư C69 trong thời gian quy định.")
+        logger.warning(f"Không tìm thấy mã OTP TikTok qua API đọc hộp thư C69 trong thời gian quy định cho {self.email_addr}.")
         return None
 
 
@@ -1328,7 +1329,7 @@ async def change_tiktok_email(tab: Any, mail_client_old: Any, c69: C69Client) ->
         await asyncio.sleep(5)
         
         # Tạo mailbox đọc thư cho email mới
-        mail_client_new = C69MailBox(c69, new_email_id)
+        mail_client_new = C69MailBox(c69, new_email_id, new_email_addr)
         otp_new = await mail_client_new.get_otp_code()
         
         if not otp_new:
@@ -1805,7 +1806,7 @@ async def run_tiktok_registration_flow(args):
             # (Microsoft đã tắt Basic Auth IMAP, đăng nhập IMAP bằng password sẽ luôn thất bại) và
             # IMAP chuẩn cho Gmail. Tránh script tự kết nối IMAP thô sẽ không hoạt động với Hotmail/Outlook.
             logger.info(f"Dùng API đọc hộp thư của C69 (email_id={email_id}) để lấy mã OTP.")
-            mail_client = C69MailBox(c69, email_id)
+            mail_client = C69MailBox(c69, email_id, email_addr)
         else:
             logger.warning(
                 "Tài khoản C69 không có email_id liên kết. Chuyển sang đọc IMAP trực tiếp - "
@@ -1881,7 +1882,7 @@ async def run_tiktok_registration_flow(args):
                 )
                 if reauth_success:
                     logger.info("🎉 Cấp lại token thành công! Tạo lại đối tượng hòm thư C69MailBox.")
-                    mail_client = C69MailBox(c69, email_id)
+                    mail_client = C69MailBox(c69, email_id, email_addr)
                 else:
                     logger.error("❌ Tự động cấp lại token OAuth thất bại. Sẽ thử dùng IMAP fallback của server.")
 
@@ -2375,7 +2376,7 @@ async def run_tiktok_registration_flow(args):
             final_email_id = new_email_data.get("id")
             
             # Tạo mailbox mới để bật lại 2FA qua Email mới
-            mail_client_new = C69MailBox(c69, final_email_id)
+            mail_client_new = C69MailBox(c69, final_email_id, final_email_addr)
             
             # 6.4. Bật lại xác minh qua Email mới (Hotmail)
             await enable_email_2fa_new(tab, mail_client_new)
