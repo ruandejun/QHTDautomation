@@ -1,5 +1,5 @@
 {
-    "version": "2.0.4",
-    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Sửa lỗi không gán được IP tĩnh cho card mạng LAN khi setup router (New-NetIPAddress báo lỗi 'Invalid parameter DefaultGateway')."
+    "version": "2.0.5",
+    "download_url": "https://c69.us/static/QHTDautomation.zip",
+    "changelog": "Tích hợp tính năng đăng ký TikTok tự động qua Google OAuth và cấu hình bảo mật 2FA/Email."
 }
