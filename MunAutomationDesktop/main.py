@@ -1393,6 +1393,7 @@ class MunAutomationBridge(QObject):
     # Router Signals
     routerLog = pyqtSignal(str, str)          # message, level ('info'|'success'|'warning'|'error')
     routerStartFinished = pyqtSignal(str)     # JSON result string
+    tiktokRegResult = pyqtSignal(str)          # JSON result for 24/7 flow
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -1411,6 +1412,7 @@ class MunAutomationBridge(QObject):
         self.router_start_worker = None
         self.browser_workers = {}
         self.poll_thread = None
+        self.tiktok_reg_running = False
         
         # Routing cache & poll thread
         self._cached_interfaces = "[]"
@@ -2388,6 +2390,87 @@ class MunAutomationBridge(QObject):
             return json.dumps({"success": True, "message": "Đang khởi chạy luồng đăng ký TikTok..."})
         except Exception as e:
             return json.dumps({"error": str(e)})
+
+    @pyqtSlot(str, str, str, str, str, result=str)
+    @pyqtSlot(str, str, str, str, result=str)
+    def startTikTokRegLoop(self, reg_method, captcha_mode, proxy_list_raw="", proxy_type="socks5", c69_url="https://c69.us"):
+        """Khởi chạy vòng lặp tuần tự tạo tài khoản TikTok 24/7"""
+        try:
+            if getattr(self, 'tiktok_reg_running', False):
+                return json.dumps({"success": False, "message": "Tiến trình 24/7 đang chạy rồi."})
+            
+            self.tiktok_reg_running = True
+            print(f"[MunAutomation] TikTok 24/7 loop started: method={reg_method}, captcha={captcha_mode}")
+            self.statusMessage.emit("🚀 Bắt đầu vòng lặp đăng ký TikTok 24/7...")
+            
+            import threading
+            import time
+            def loop_flow():
+                proxies = [p.strip() for p in proxy_list_raw.split("\n") if p.strip()]
+                proxy_idx = 0
+                
+                while getattr(self, 'tiktok_reg_running', False):
+                    current_proxy = ""
+                    if proxies:
+                        current_proxy = proxies[proxy_idx % len(proxies)]
+                        proxy_idx += 1
+                        
+                    self.statusMessage.emit(f"🔄 Bắt đầu lượt đăng ký mới với proxy: {current_proxy or 'Mặc định'}")
+                    
+                    try:
+                        from tiktok_reg_automation import run_tiktok_registration_flow
+                        args = {
+                            "reg_method": reg_method,
+                            "captcha_mode": captcha_mode,
+                            "c69_url": c69_url or C69_BASE_URL,
+                            "proxy": current_proxy,
+                            "proxy_type": proxy_type,
+                            "headless": False,
+                            "email_mode": "imap",
+                        }
+                        
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        success = loop.run_until_complete(run_tiktok_registration_flow(args))
+                        
+                        result_data = {
+                            "success": success,
+                            "proxy": current_proxy or "Mặc định",
+                            "message": "Đăng ký thành công!" if success else "Thất bại, vui lòng kiểm tra log.",
+                            "time": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                        self.tiktokRegResult.emit(json.dumps(result_data))
+                        
+                    except Exception as ex:
+                        print(f"[TikTok Loop Error] {ex}")
+                        self.tiktokRegResult.emit(json.dumps({
+                            "success": False,
+                            "proxy": current_proxy or "Mặc định",
+                            "message": str(ex),
+                            "time": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }))
+                        
+                    # Delay giữa các lượt chạy tránh spam
+                    self.statusMessage.emit("⏳ Đợi 20 giây trước khi chạy lượt tiếp theo...")
+                    for _ in range(20):
+                        if not getattr(self, 'tiktok_reg_running', False):
+                            break
+                        time.sleep(1)
+                
+                self.statusMessage.emit("🛑 Đã dừng vòng lặp đăng ký TikTok 24/7.")
+                
+            t = threading.Thread(target=loop_flow, daemon=True)
+            t.start()
+            return json.dumps({"success": True, "message": "Đã bắt đầu loop 24/7."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(result=str)
+    def stopTikTokRegLoop(self):
+        """Dừng vòng lặp đăng ký 24/7"""
+        self.tiktok_reg_running = False
+        self.statusMessage.emit("⏳ Đang dừng vòng lặp đăng ký TikTok...")
+        return json.dumps({"success": True, "message": "Yêu cầu dừng loop đã được gửi."})
 
     async def _evaluate_in_iframe_robust(self, tab, expression):
         return await evaluate_in_iframe_robust(tab, expression)
