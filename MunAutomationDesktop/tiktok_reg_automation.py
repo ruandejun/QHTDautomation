@@ -1,0 +1,2199 @@
+import asyncio
+import os
+import sys
+import random
+import string
+import re
+import json
+import logging
+import urllib.request
+import imaplib
+import email
+from email.header import decode_header
+from typing import Optional, Dict, Any, Tuple, List
+
+# Cấu hình UTF-8 cho console Windows
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+# Đảm bảo import được mun_anti_browser
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import nodriver
+    from mun_anti_browser.browser_manager import NodriverBrowserManager
+    import requests
+    import pyotp
+except ImportError as e:
+    print(f"Lỗi: Không thể import thư viện cần thiết: {e}")
+    print("Vui lòng chạy: ..\\.venv\\Scripts\\pip install requests pyotp nodriver")
+    sys.exit(1)
+
+# Cấu hình Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("TikTokRegAuto")
+
+# ============================================================================
+# UTILITIES
+# ============================================================================
+
+def generate_random_string(length: int = 12, only_letters: bool = False) -> str:
+    """Sinh chuỗi ngẫu nhiên cho mật khẩu hoặc username."""
+    if only_letters:
+        chars = string.ascii_letters
+    else:
+        chars = string.ascii_letters + string.digits + "!@#$%"
+    return "".join(random.choice(chars) for _ in range(length))
+
+
+# ============================================================================
+# C69 API INTEGRATION
+# ============================================================================
+
+class C69Client:
+    """Client giao tiếp với hệ thống C69 backend (https://c69.us)"""
+    
+    def __init__(self, base_url: str = "https://c69.us"):
+        self.base_url = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.logged_in = False
+        
+    def login(self, email_addr: str, password: str) -> bool:
+        """Đăng nhập vào hệ thống C69 bằng Cookie Session"""
+        login_url = f"{self.base_url}/dashboard/login/"
+        try:
+            # Lấy CSRF token trước
+            self.session.get(self.base_url, timeout=10)
+            headers = {
+                "Content-Type": "application/json",
+                "Referer": login_url
+            }
+            # Gửi dữ liệu đăng nhập
+            payload = {"username": email_addr, "password": password}
+            r = self.session.post(login_url, json=payload, headers=headers, timeout=15)
+            if r.status_code == 200 and r.json().get("success"):
+                logger.info("🎉 Đăng nhập vào hệ thống C69 thành công!")
+                self.logged_in = True
+                return True
+            else:
+                logger.error(f"Đăng nhập C69 thất bại: {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi khi kết nối tới C69 để đăng nhập: {e}")
+        return False
+
+    def get_active_account(self, account_type: str) -> Optional[Dict[str, Any]]:
+        """Lấy một tài khoản chưa sử dụng (status = 0) từ C69"""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể lấy tài khoản.")
+            return None
+        url = f"{self.base_url}/dashboard/api/accounts/get-active-account/?type={account_type}"
+        try:
+            r = self.session.get(url, timeout=15)
+            if r.status_code == 200:
+                resp = r.json()
+                if resp.get("success"):
+                    account_data = resp.get("account_data")
+                    logger.info(f"Lấy thành công tài khoản {account_type} từ C69: {account_data.get('email')}")
+                    return account_data
+                else:
+                    logger.warning(f"Không có tài khoản {account_type} hoạt động: {resp.get('message')}")
+            else:
+                logger.error(f"Lỗi API lấy tài khoản từ C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69: {e}")
+        return None
+
+    def update_account_2fa(self, account_id: int, two_factor_key: str) -> bool:
+        """Cập nhật khóa 2FA cho tài khoản đang tồn tại trên C69"""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể cập nhật.")
+            return False
+        url = f"{self.base_url}/dashboard/api/accounts/{account_id}/"
+        payload = {"two_factor_auth": two_factor_key}
+        # Thêm header CSRF token nếu cần thiết
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+            
+        try:
+            r = self.session.patch(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201, 204):
+                logger.info(f"Đã cập nhật khóa 2FA cho tài khoản ID {account_id} trên C69 thành công!")
+                return True
+            else:
+                logger.error(f"Lỗi cập nhật tài khoản trên C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi cập nhật C69: {e}")
+        return False
+
+    def read_mailbox(self, email_id: int) -> Optional[Dict[str, Any]]:
+        """Gọi API backend C69 để đọc hộp thư theo email_id (IMAP cho Gmail, Microsoft Graph OAuth2
+        cho Hotmail/Outlook - Microsoft đã tắt Basic Auth IMAP nên không thể đọc trực tiếp bằng mật khẩu)."""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể đọc hộp thư.")
+            return None
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/read-mailbox/"
+        try:
+            r = self.session.get(url, timeout=20)
+            if r.status_code == 200:
+                resp = r.json()
+                if resp.get("success"):
+                    return resp
+                else:
+                    logger.warning(f"Đọc hộp thư C69 thất bại: {resp.get('message')}")
+            else:
+                logger.error(f"Lỗi API đọc hộp thư C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API đọc hộp thư C69: {e}")
+        return None
+
+    def add_tiktok_account(self, email_addr: str, password: str, two_factor_key: str,
+                           profile_id: str = "none",
+                           accounts_emails_id: Optional[int] = None) -> bool:
+        """Lưu tài khoản TikTok mới tạo kèm mã 2FA lên C69.
+        accounts_emails_id (tuỳ chọn): ID của AccountsEmails nguồn để backend tự động link FK.
+        """
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể thêm tài khoản.")
+            return False
+        url = f"{self.base_url}/dashboard/api/accounts/add-manual/"
+        payload = {
+            "email": email_addr,
+            "password": password,
+            "type": "Tiktok",
+            "two_factor_auth": two_factor_key,
+            "profile_id": profile_id,
+            "note": "Tự động đăng ký qua MunAutomation",
+        }
+        if accounts_emails_id:
+            payload["accounts_emails_id"] = accounts_emails_id
+
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+
+        try:
+            r = self.session.post(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201):
+                resp = r.json()
+                account_id = resp.get("account_id")
+                logger.info(f"🎉 Đã lưu tài khoản TikTok mới đăng ký lên C69 thành công! (account_id={account_id})")
+                return True
+            else:
+                logger.error(f"Lỗi lưu tài khoản TikTok lên C69 (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi lưu tài khoản TikTok: {e}")
+        return False
+
+    def get_unused_email(self, email_type: str = "hotmail") -> Optional[Dict[str, Any]]:
+        """Lấy một email chưa dùng (để đăng ký) từ AccountsEmails trên C69.
+        Sử dụng endpoint /api/emails/get-unused-email/?type=<email_type>.
+        Trả về dict có các key: id, email, password, refresh_token, type
+        """
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể lấy email.")
+            return None
+        url = f"{self.base_url}/dashboard/api/emails/get-unused-email/?type={email_type}"
+        try:
+            r = self.session.get(url, timeout=15)
+            if r.status_code == 200:
+                resp = r.json()
+                if resp.get("success"):
+                    email_data = resp.get("email_data")
+                    logger.info(f"Lấy thành công email {email_type} chưa dùng từ C69: {email_data.get('email')}")
+                    return email_data
+                else:
+                    logger.warning(f"Không có email {email_type} chưa dùng: {resp.get('message')}")
+            else:
+                logger.error(f"Lỗi API get-unused-email (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 get-unused-email: {e}")
+        return None
+
+    def mark_email_as_used(self, email_id: int) -> bool:
+        """Cập nhật trạng thái email thành đã dùng (status=1) sau khi signup thành công."""
+        if not self.logged_in:
+            return False
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/"
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+        try:
+            r = self.session.patch(url, json={"status": 1}, headers=headers, timeout=10)
+            if r.status_code in (200, 201, 204):
+                logger.info(f"Cập nhật email_id={email_id} thành 'status=1 (Đã dùng)' trên C69.")
+                return True
+            else:
+                logger.warning(f"Không được cập nhật trạng thái email (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.warning(f"Lỗi cập nhật trạng thái email: {e}")
+        return False
+
+
+# ============================================================================
+# EMAIL PROVIDER (TEMP-MAIL API & IMAP)
+# ============================================================================
+
+class TempMail1SecMail:
+    """Xử lý email tạm thời qua API miễn phí 1secmail.com"""
+    
+    def __init__(self):
+        self.email_address = ""
+        self.login = ""
+        self.domain = ""
+        
+    def generate_email(self) -> str:
+        """Tạo một email ngẫu nhiên mới."""
+        url = "https://www.1secmail.com/api/v1/?action=genRandomMailbox&count=1"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                emails = json.loads(response.read().decode())
+                if emails:
+                    self.email_address = emails[0]
+                    self.login, self.domain = self.email_address.split("@")
+                    logger.info(f"Đã sinh email tạm thời: {self.email_address}")
+                    return self.email_address
+        except Exception as e:
+            logger.error(f"Lỗi khi tạo email tạm thời từ 1secmail: {e}")
+        return ""
+
+    async def get_otp_code(self, timeout_secs: int = 120) -> Optional[str]:
+        """Polling hộp thư để tìm mã OTP xác minh từ TikTok."""
+        logger.info(f"Đang chờ mã OTP xác minh gửi đến {self.email_address} (Timeout: {timeout_secs}s)...")
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout_secs:
+            url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={self.login}&domain={self.domain}"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    messages = json.loads(response.read().decode())
+                    for msg in messages:
+                        subject = msg.get("subject", "").lower()
+                        sender = msg.get("sender", "").lower()
+                        if "tiktok" in subject or "tiktok" in sender or "verification" in subject or "code" in subject:
+                            msg_id = msg.get("id")
+                            detail_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={self.login}&domain={self.domain}&id={msg_id}"
+                            detail_req = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(detail_req, timeout=10) as detail_resp:
+                                body = json.loads(detail_resp.read().decode())
+                                text_content = body.get("textBody", "") + body.get("body", "")
+                                otp_match = re.search(r'\b\d{6}\b', text_content)
+                                if otp_match:
+                                    code = otp_match.group(0)
+                                    logger.info(f"Tìm thấy mã OTP TikTok: {code}")
+                                    return code
+            except Exception as e:
+                logger.debug(f"Đang kiểm tra mail (lỗi tạm thời: {e})...")
+            
+            await asyncio.sleep(5)
+            
+        logger.warning("Không tìm thấy mã OTP trong khoảng thời gian quy định.")
+        return None
+
+
+class IMAPMailBox:
+    """Xử lý đọc OTP từ email cá nhân thông qua IMAP"""
+    
+    def __init__(self, host: str, user: str, password: str):
+        self.host = host
+        self.user = user
+        self.password = password
+
+    async def get_otp_code(self, timeout_secs: int = 120) -> Optional[str]:
+        logger.info(f"Đang chờ nhận mail OTP qua IMAP ({self.user})...")
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout_secs:
+            try:
+                loop = asyncio.get_running_loop()
+                code = await loop.run_in_executor(None, self._check_imap_mailbox)
+                if code:
+                    return code
+            except Exception as e:
+                logger.debug(f"Lỗi kiểm tra IMAP: {e}")
+            await asyncio.sleep(8)
+        return None
+
+    def _check_imap_mailbox(self) -> Optional[str]:
+        mail = imaplib.IMAP4_SSL(self.host)
+        mail.login(self.user, self.password)
+        mail.select("inbox")
+        
+        # Tìm thư chưa đọc từ TikTok
+        status, messages = mail.search(None, '(UNSEEN)')
+        if status == "OK" and messages[0]:
+            mail_ids = messages[0].split()
+            # Quét các mail chưa đọc từ mới nhất về cũ nhất
+            for mail_id in reversed(mail_ids):
+                status, data = mail.fetch(mail_id, '(RFC822)')
+                if status != "OK":
+                    continue
+                raw_email = data[0][1]
+                msg = email.message_from_bytes(raw_email)
+                
+                subject = decode_header(msg.get("Subject", ""))[0][0]
+                if isinstance(subject, bytes):
+                    subject = subject.decode(errors='ignore')
+                subject = str(subject).lower()
+                
+                from_ = msg.get("From", "").lower()
+                
+                # Check nếu là mail từ TikTok
+                if "tiktok" in subject or "tiktok" in from_ or "verification" in subject:
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            content_type = part.get_content_type()
+                            if content_type in ("text/plain", "text/html"):
+                                try:
+                                    body += part.get_payload(decode=True).decode(errors='ignore')
+                                except Exception:
+                                    pass
+                    else:
+                        body = msg.get_payload(decode=True).decode(errors='ignore')
+                    
+                    otp_match = re.search(r'\b\d{6}\b', body)
+                    if otp_match:
+                        mail.store(mail_id, '+FLAGS', '\\Seen')
+                        mail.logout()
+                        return otp_match.group(0)
+                        
+        mail.logout()
+        return None
+
+
+class C69MailBox:
+    """Đọc OTP qua API backend C69 (/dashboard/api/emails/{id}/read-mailbox/) thay vì IMAP trực tiếp.
+
+    Bắt buộc dùng cho tài khoản Hotmail/Outlook lấy từ C69: Microsoft đã tắt Basic Auth IMAP cho
+    các tài khoản Outlook.com/Hotmail thông thường, nên đăng nhập IMAP bằng email+password sẽ luôn
+    thất bại. Backend C69 đã xử lý việc này bằng Microsoft Graph API (OAuth2 refresh_token/ROPC),
+    nên script chỉ cần gọi lại API đó qua email_id trả về từ get-active-account.
+    """
+
+    def __init__(self, c69_client: "C69Client", email_id: int):
+        self.c69_client = c69_client
+        self.email_id = email_id
+
+    async def get_otp_code(self, timeout_secs: int = 120) -> Optional[str]:
+        logger.info(f"Đang chờ mã OTP qua API đọc hộp thư C69 (email_id={self.email_id}, Timeout: {timeout_secs}s)...")
+        loop = asyncio.get_event_loop()
+        start_time = loop.time()
+
+        while loop.time() - start_time < timeout_secs:
+            result = await loop.run_in_executor(None, self.c69_client.read_mailbox, self.email_id)
+            if result:
+                for msg in result.get("emails", []):
+                    subject = (msg.get("subject") or "").lower()
+                    sender = (msg.get("from") or "").lower()
+                    if "tiktok" in subject or "tiktok" in sender:
+                        text = f"{msg.get('subject', '')} {msg.get('body', '')}"
+                        otp_match = re.search(r'\b\d{6}\b', text)
+                        if otp_match:
+                            code = otp_match.group(0)
+                            logger.info(f"Tìm thấy mã OTP TikTok qua C69: {code}")
+                            return code
+
+                # Dự phòng: dùng latest_code đã được backend trích sẵn nếu email mới nhất là từ TikTok
+                email_data = result.get("email_data") or {}
+                latest_code = email_data.get("latest_code")
+                latest_content = (email_data.get("latest_content") or "").lower()
+                if latest_code and "tiktok" in latest_content:
+                    logger.info(f"Tìm thấy mã OTP TikTok (latest_code) qua C69: {latest_code}")
+                    return latest_code
+
+            await asyncio.sleep(6)
+
+        logger.warning("Không tìm thấy mã OTP TikTok qua API đọc hộp thư C69 trong thời gian quy định.")
+        return None
+
+
+# ============================================================================
+# AUTOMATION LOGIC (TIKTOK SIGNUP, GOOGLE OAUTH, & 2FA)
+# ============================================================================
+
+class TikTokSignupAutomation:
+    
+    def __init__(self, manager: NodriverBrowserManager, tab: Any):
+        self.manager = manager
+        self.tab = tab
+
+    async def select_dropdown_option(self, container_selector: str, option_text: str) -> bool:
+        """Tìm và chọn option trong custom select của TikTok hoặc thẻ select chuẩn."""
+        logger.info(f"Đang chọn giá trị '{option_text}' trong '{container_selector}'")
+        try:
+            # TikTok sử dụng custom div selectors thay vì select chuẩn.
+            # Tìm phần tử container trước
+            elements = await self.tab.select_all(container_selector)
+            if not elements:
+                # Nếu không tìm thấy bằng selector phức tạp, thử tìm các thẻ div/div custom
+                logger.warning(f"Không tìm thấy selector: {container_selector}. Tìm kiếm phần tử div chứa placeholder...")
+            
+            # Thực thi đoạn JS tối ưu để tìm dropdown kích hoạt và chọn phần tử hiển thị tương ứng
+            clicked = await self.tab.evaluate(f"""
+                (() => {{
+                    // 1. Thử tìm select element chuẩn trước
+                    const selectors = "{container_selector}".split(",");
+                    let sel = null;
+                    for (let s of selectors) {{
+                        const found = document.querySelector(s.trim());
+                        if (found) {{ sel = found; break; }}
+                    }}
+                    
+                    if (sel && sel.tag === 'SELECT') {{
+                        for (let i = 0; i < sel.options.length; i++) {{
+                            if (sel.options[i].text.includes('{option_text}') || sel.options[i].value == '{option_text}') {{
+                                sel.selectedIndex = i;
+                                sel.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                return true;
+                            }}
+                        }}
+                    }}
+                    
+                    // 2. Với custom div dropdown của TikTok:
+                    // Click vào phần tử selector trước để hiển thị danh sách dropdown
+                    if (sel) {{
+                        sel.click();
+                    }} else {{
+                        // Dự phòng: Tìm tất cả div có thuộc tính placeholder tương ứng
+                        const allDivs = Array.from(document.querySelectorAll('div'));
+                        const placeholder = "{container_selector}".includes('month') ? 'Month' : ("{container_selector}".includes('day') ? 'Day' : 'Year');
+                        const targetDiv = allDivs.find(d => d.textContent.trim().includes(placeholder) && d.offsetHeight > 0);
+                        if (targetDiv) targetDiv.click();
+                    }}
+                    
+                    // Chờ danh sách hiện ra
+                    return new Promise((resolve) => {{
+                        setTimeout(() => {{
+                            // Tìm tất cả các phần tử option hiển thị trong danh sách mới xuất hiện
+                            const options = Array.from(document.querySelectorAll('div, li, span, p, a'));
+                            const match = options.find(el => {{
+                                const txt = el.textContent.trim().toLowerCase();
+                                return txt === '{option_text.lower()}' || txt === '{option_text.lower().zfill(2)}';
+                            }});
+                            
+                            if (match) {{
+                                match.click();
+                                resolve(true);
+                            }} else {{
+                                // Thử fallback tìm chuỗi con
+                                const subMatch = options.find(el => el.textContent.trim().toLowerCase().includes('{option_text.lower()}'));
+                                if (subMatch) {{
+                                    subMatch.click();
+                                    resolve(true);
+                                }} else {{
+                                    resolve(false);
+                                }}
+                            }}
+                        }}, 500);
+                    }});
+                }})()
+            """)
+            return clicked
+        except Exception as e:
+            logger.error(f"Lỗi khi chọn dropdown '{container_selector}': {e}")
+            return False
+
+    async def fill_input_by_selectors(self, target_tab: Any, selectors: list, value: str) -> bool:
+        """Tìm và điền input theo danh sách các selector có thể có trên tab được chỉ định."""
+        import json as _json
+        # Escape value để nhúng an toàn vào JS string (tránh SyntaxError với ký tự đặc biệt)
+        value_js = _json.dumps(value)  # VD: "Abc!@#" → '"Abc!@#"' (có nháy kép, đã escape)
+
+        for sel in selectors:
+            try:
+                element = await target_tab.select(sel)
+                if element:
+                    await element.click()
+                    await asyncio.sleep(0.2)
+                    # Xóa dữ liệu cũ nếu có — dùng double-quote để querySelector nhận selector có single-quote
+                    sel_js = _json.dumps(sel)
+                    await target_tab.evaluate(f"document.querySelector({sel_js}).value = ''")
+                    # Tự động gõ phím kiểu người dùng thật
+                    for char in value:
+                        await element.send_keys(char)
+                        await asyncio.sleep(random.uniform(0.04, 0.12))
+
+                    # KIỂM TRA LẠI: Xem giá trị đã được điền thành công chưa
+                    # Dùng sel_js thay vì '{sel}' để tránh conflict single-quote trong selector
+                    current_val = await target_tab.evaluate(f"document.querySelector({sel_js}).value")
+                    if current_val != value:
+                        logger.warning(f"Gõ phím thất bại hoặc thiếu ký tự trên {sel}. Đang kích hoạt JS fallback...")
+                        # Dùng value_js (đã được json.dumps escape) để tránh SyntaxError
+                        await target_tab.evaluate(f"""
+                            (() => {{
+                                const input = document.querySelector({sel_js});
+                                if (input) {{
+                                    input.value = {value_js};
+                                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return true;
+                                }}
+                                return false;
+                            }})()
+                        """)
+
+                    logger.info(f"Đã điền thành công vào selector: {sel}")
+                    return True
+            except Exception as e:
+                logger.debug(f"Lỗi khi điền vào selector {sel}: {e}")
+                continue
+        return False
+
+    async def detect_captcha(self) -> bool:
+        """Kiểm tra xem trên màn hình có xuất hiện Captcha hay không."""
+        captcha_indicators = [
+            "#captcha_container", ".captcha_container", 
+            "iframe[src*='captcha']", "iframe[src*='secsdk']",
+            ".secsdk-captcha-drag-icon", "#secsdk-captcha-wrapper",
+            "div[class*='captcha']"
+        ]
+        for indicator in captcha_indicators:
+            try:
+                el = await self.tab.select(indicator)
+                if el:
+                    logger.info(f"Phát hiện chỉ báo Captcha: {indicator}")
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def handle_captcha_flow(self, captcha_mode: str) -> bool:
+        """Giải quyết captcha dựa trên chế độ giải."""
+        is_captcha = await self.detect_captcha()
+        if not is_captcha:
+            return True
+            
+        logger.warning("⚠️ Captcha xuất hiện trên màn hình!")
+        if captcha_mode == "manual":
+            print("\n" + "="*60)
+            print("HỆ THỐNG PHÁT HIỆN CAPTCHA! VUI LÒNG GIẢI CAPTCHA THỦ CÔNG TRÊN TRÌNH DUYỆT.")
+            print("Sau khi giải xong Captcha và màn hình hết che khuất, nhấn Enter tại đây để tiếp tục...")
+            print("="*60 + "\n")
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            return True
+        elif captcha_mode == "extension":
+            logger.info("Đang chờ Extension giải Captcha tự động...")
+            for _ in range(12):
+                await asyncio.sleep(5)
+                if not await self.detect_captcha():
+                    logger.info("Captcha đã được giải bởi Extension!")
+                    return True
+            logger.warning("Extension giải quá lâu hoặc lỗi. Vui lòng giải tay!")
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            return True
+        else:
+            logger.info("API Mode được chọn, đang chờ giải...")
+            await asyncio.sleep(10)
+        return True
+
+
+# ============================================================================
+# GOOGLE OAUTH AUTOMATION
+# ============================================================================
+
+async def automate_google_login(browser: nodriver.Browser, email_addr: str, password: str) -> bool:
+    """Tự động hóa luồng đăng nhập Google OAuth trên cửa sổ Popup của Google bằng cơ chế CDP."""
+    logger.info("Đang lắng nghe cửa sổ Google OAuth đăng nhập...")
+    google_tab = None
+    
+    # Dò tìm Google OAuth tab thông qua nhiều phương pháp (CDP + browser.tabs)
+    for i in range(25):
+        try:
+            targets = await browser._get_targets()
+            for t in targets:
+                if t.type_ == 'page' and t.url and 'accounts.google.com' in t.url:
+                    logger.info(f"Phát hiện Google target qua CDP! Đang cập nhật targets...")
+                    await browser.update_targets()
+                    await asyncio.sleep(1)
+                    break
+        except Exception:
+            pass
+
+        for bt in browser.tabs:
+            url = getattr(bt, 'url', '') or ''
+            if 'accounts.google.com' in url:
+                google_tab = bt
+                break
+
+        if google_tab:
+            break
+
+        # Check tab cuối
+        if len(browser.tabs) > 1:
+            candidate = browser.tabs[-1]
+            try:
+                url = await candidate.evaluate("window.location.href")
+                if url and 'accounts.google.com' in str(url):
+                    google_tab = candidate
+                    break
+            except Exception:
+                pass
+
+        await asyncio.sleep(1)
+        
+    if not google_tab:
+        logger.error("Không tìm thấy cửa sổ Google OAuth đăng nhập.")
+        return False
+        
+    logger.info(f"Đã phát hiện tab Google OAuth: {google_tab.url}")
+    await asyncio.sleep(2)
+    
+    try:
+        # Kích hoạt tab Google
+        try:
+            await google_tab
+        except Exception as e:
+            logger.warning(f"Kích hoạt Google tab: {e}")
+
+        # 1. Nhập email bằng JS evaluate
+        logger.info(f"Đang điền email: {email_addr}...")
+        email_entered = False
+        for attempt in range(15):
+            try:
+                result = await google_tab.evaluate(f"""(() => {{
+                    const el = document.querySelector("input[type='email']") || 
+                               document.querySelector("#identifierId") ||
+                               document.querySelector("input[name='identifier']");
+                    if (!el) return 'no_input';
+                    el.focus();
+                    el.value = '';
+                    el.value = '{email_addr}';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return 'entered';
+                }})()""")
+                if result == 'entered':
+                    email_entered = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+
+        if not email_entered:
+            logger.error("Không tìm thấy ô nhập email của Google.")
+            return False
+            
+        await asyncio.sleep(0.5)
+        
+        # Click nút Next email
+        logger.info("Clicking Next...")
+        await google_tab.evaluate("""(() => {
+            const next = document.querySelector('#identifierNext');
+            if (next) { next.click(); return; }
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const btn = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Tiếp theo') || b.textContent.includes('Tiep'));
+            if (btn) btn.click();
+        })()""")
+
+        logger.info("Đã gửi email, chờ chuyển tiếp sang ô nhập password...")
+        await asyncio.sleep(5)
+        
+        # 2. Nhập mật khẩu bằng JS evaluate
+        logger.info("Đang nhập mật khẩu Gmail...")
+        pass_entered = False
+        for attempt in range(15):
+            try:
+                result = await google_tab.evaluate(f"""(() => {{
+                    const el = document.querySelector("input[type='password']") || 
+                               document.querySelector("input[name='Passwd']");
+                    if (!el) return 'no_input';
+                    el.focus();
+                    el.value = '';
+                    el.value = '{password}';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return 'entered';
+                }})()""")
+                if result == 'entered':
+                    pass_entered = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+
+        if not pass_entered:
+            logger.error("Không tìm thấy ô nhập mật khẩu của Google.")
+            return False
+            
+        await asyncio.sleep(0.5)
+        
+        # Click nút Next password
+        logger.info("Clicking password Next...")
+        await google_tab.evaluate("""(() => {
+            const next = document.querySelector('#passwordNext');
+            if (next) { next.click(); return; }
+            const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+            const btn = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Tiếp theo') || b.textContent.includes('Tiep'));
+            if (btn) btn.click();
+        })()""")
+            
+        logger.info("Đã gửi mật khẩu, chờ đăng nhập hoàn tất...")
+        await asyncio.sleep(6)
+        
+        # 3. Kiểm tra xem có trang yêu cầu xác minh bảo mật hoặc email khôi phục không
+        recovery_prompt = await google_tab.evaluate("""
+            (() => {
+                const bodyText = document.body.textContent;
+                return bodyText.includes('confirm your recovery email') || bodyText.includes('xác nhận email khôi phục') || bodyText.includes('Xác nhận email khôi phục');
+            })()
+        """)
+        if recovery_prompt:
+            logger.warning("⚠️ Google yêu cầu xác nhận email khôi phục!")
+            await google_tab.evaluate("""
+                (() => {
+                    const divs = Array.from(document.querySelectorAll('div, p, span'));
+                    const recoveryOpt = divs.find(d => d.textContent.includes('Confirm your recovery email') || d.textContent.includes('Xác nhận email khôi phục'));
+                    if (recoveryOpt) recoveryOpt.click();
+                })()
+            """)
+            await asyncio.sleep(2)
+            
+            # Gợi ý nhập email khôi phục tự động nếu có sẵn
+            print("\n" + "="*50)
+            rec_email = input("Nhập Email khôi phục (Recovery Email) cho tài khoản Gmail này: ").strip()
+            print("="*50 + "\n")
+            
+            await google_tab.evaluate(f"""(() => {{
+                const el = document.querySelector("input[type='email']");
+                if (el) {{
+                    el.focus();
+                    el.value = '{rec_email}';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }})()""")
+            
+            await asyncio.sleep(0.5)
+            await google_tab.evaluate("""
+                (() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Tiếp theo'));
+                    if (next) next.click();
+                })()
+            """)
+            await asyncio.sleep(5)
+                
+        # Kiểm tra nếu vẫn còn yêu cầu OTP / xác minh điện thoại khác
+        for _ in range(10):
+            # Check xem tab Google đã đóng chưa (tức là đã đăng nhập xong và redirect về TikTok)
+            if google_tab not in browser.tabs:
+                logger.info("Google OAuth login tab đã đóng. Tiếp tục luồng trên TikTok.")
+                return True
+            await asyncio.sleep(2)
+            
+        logger.warning("Cửa sổ Google OAuth vẫn chưa đóng. Có thể đang bị kẹt OTP hoặc xác minh 2 lớp. Vui lòng hoàn thành trên trình duyệt...")
+        print("Nhấn Enter tại đây sau khi bạn đã hoàn tất đăng nhập Google trên trình duyệt...")
+        await asyncio.get_event_loop().run_in_executor(None, input)
+        return True
+    except Exception as e:
+        logger.exception(f"Lỗi khi tự động đăng nhập Google OAuth: {e}")
+        return False
+
+
+# ============================================================================
+# TIKTOK 2FA SETUP AUTOMATION
+# ============================================================================
+
+async def setup_tiktok_2fa(tab: Any, mail_client: Any, email_addr: str) -> Optional[str]:
+    """Tự động truy cập phần cấu hình bảo mật TikTok để bật 2FA bằng Authenticator App"""
+    logger.info("=== BẮT ĐẦU LUỒNG KÍCH HOẠT 2FA TIKTOK ===")
+    
+    # 1. Truy cập trang Setting
+    await tab.get("https://www.tiktok.com/setting?lang=en")
+    await asyncio.sleep(5)
+    
+    try:
+        # 2. Click chọn "Security" từ menu bên trái
+        logger.info("Đang tìm và click mục 'Security'...")
+        clicked_security = await tab.evaluate("""
+            (() => {
+                const els = Array.from(document.querySelectorAll('div, a, span, p'));
+                const sec = els.find(e => e.textContent.trim() === 'Security' && e.offsetHeight > 0);
+                if (sec) {
+                    sec.click();
+                    return true;
+                }
+                return false;
+            })()
+        """)
+        if not clicked_security:
+            # Click phần tử chứa chữ "Security"
+            await tab.evaluate("""
+                (() => {
+                    const els = Array.from(document.querySelectorAll('*'));
+                    const sec = els.find(e => e.textContent.includes('Security') && e.offsetHeight > 0);
+                    if (sec) { sec.click(); return true; }
+                    return false;
+                })()
+            """)
+        await asyncio.sleep(3)
+        
+        # 3. Tìm mục "2-step verification" và click vào nút thiết lập
+        logger.info("Đang tìm và click kích hoạt '2-step verification'...")
+        # Tìm nút hoặc box liên quan đến 2-step verification
+        await tab.evaluate("""
+            (() => {
+                const divs = Array.from(document.querySelectorAll('*'));
+                // Tìm div hoặc button chứa chữ "2-step verification"
+                const item = divs.find(e => e.textContent.includes('2-step verification') && e.offsetHeight > 0);
+                if (item) {
+                    // Click vào nó hoặc nút Turn on bên cạnh
+                    const parent = item.parentElement;
+                    const btn = parent ? parent.querySelector('button, a') : null;
+                    if (btn) {
+                        btn.click();
+                    } else {
+                        item.click();
+                    }
+                }
+            })()
+        """)
+        await asyncio.sleep(3)
+        
+        # 4. Chọn phương thức Authenticator App
+        logger.info("Đang chọn phương thức 'Authenticator app'...")
+        await tab.evaluate("""
+            (() => {
+                const labels = Array.from(document.querySelectorAll('label, div, p, span'));
+                const authOpt = labels.find(e => e.textContent.includes('Authenticator app') && e.offsetHeight > 0);
+                if (authOpt) {
+                    // Tìm checkbox/input trong option này và check
+                    const parent = authOpt.closest('div');
+                    const checkbox = parent ? parent.querySelector('input[type="checkbox"], input[type="radio"]') : null;
+                    if (checkbox) {
+                        checkbox.click();
+                    } else {
+                        authOpt.click();
+                    }
+                }
+            })()
+        """)
+        await asyncio.sleep(1)
+        
+        # Click nút Turn On / Next tiếp tục
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const turnOn = buttons.find(b => b.textContent.includes('Turn on') || b.textContent.includes('Next') || b.textContent.includes('Tiếp tục'));
+                if (turnOn) turnOn.click();
+            })()
+        """)
+        await asyncio.sleep(3)
+        
+        # 5. Nếu TikTok yêu cầu OTP email để xác thực danh tính trước khi đổi cài đặt
+        # Tìm nút Send Code
+        send_code_clicked = await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const send = buttons.find(b => b.textContent.includes('Send code') || b.textContent.includes('Gửi mã'));
+                if (send) {
+                    send.click();
+                    return true;
+                }
+                return false;
+            })()
+        """)
+        if send_code_clicked:
+            logger.info("Đã bấm gửi mã OTP xác nhận thay đổi cài đặt 2FA. Đang chờ lấy OTP...")
+            await asyncio.sleep(3)
+            otp_code = None
+            if mail_client:
+                otp_code = await mail_client.get_otp_code()
+            if not otp_code:
+                print("\n" + "="*50)
+                otp_code = input("Nhập mã xác nhận OTP thay đổi cài đặt gửi về Email của bạn: ").strip()
+                print("="*50 + "\n")
+                
+            if otp_code:
+                # Điền OTP
+                code_inputs = await tab.select_all("input[maxlength='6']")
+                if code_inputs:
+                    await code_inputs[0].click()
+                    await code_inputs[0].send_keys(otp_code)
+                else:
+                    await tab.evaluate(f"""
+                        (() => {{
+                            const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                            if (inp) {{
+                                inp.value = '{otp_code}';
+                                inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            }}
+                        }})()
+                    """)
+                await asyncio.sleep(1)
+                # Bấm Next/Submit
+                await tab.evaluate("""
+                    (() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Submit') || b.textContent.includes('Tiếp tục'));
+                        if (next) next.click();
+                    })()
+                """)
+                await asyncio.sleep(4)
+                
+        # 6. TikTok sẽ hiển thị QR code và Khóa bí mật (Secret Key)
+        logger.info("Đang quét tìm khóa bí mật 2FA (Secret Key) trên màn hình...")
+        # Sử dụng JS quét toàn bộ text tìm khóa bí mật dạng Base32
+        # TikTok 2FA key là một chuỗi chữ và số 16-32 ký tự viết hoa
+        secret_key = await tab.evaluate("""
+            (() => {
+                // 1. Quét tìm trong các phần tử input dạng chỉ đọc
+                const inputs = Array.from(document.querySelectorAll('input'));
+                for (const inp of inputs) {
+                    const val = inp.value.trim().replace(/\\s/g, '');
+                    if (/^[A-Z2-7]{16,32}$/.test(val)) {
+                        return val;
+                    }
+                }
+                
+                // 2. Quét tìm toàn bộ text node
+                const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                let node;
+                while (node = walk.nextNode()) {
+                    const txt = node.textContent.trim().replace(/\\s/g, '');
+                    if (/^[A-Z2-7]{16,32}$/.test(txt)) {
+                        return txt;
+                    }
+                }
+                
+                // 3. Quét các thẻ div, p, span có class hoặc thuộc tính đặc biệt
+                const divs = Array.from(document.querySelectorAll('*'));
+                for (const d of divs) {
+                    if (d.children.length === 0) {
+                        const txt = d.textContent.trim().replace(/\\s/g, '');
+                        if (/^[A-Z2-7]{16,32}$/.test(txt)) {
+                            return txt;
+                        }
+                    }
+                }
+                return null;
+            })()
+        """)
+        
+        if not secret_key:
+            logger.warning("Không tự động trích xuất được 2FA Secret Key từ trang web.")
+            print("\n" + "="*60)
+            secret_key = input("Không tự động lấy được Key. Vui lòng sao chép 2FA Secret Key trên TikTok và dán vào đây: ").strip().replace(" ", "")
+            print("="*60 + "\n")
+            
+        if not secret_key:
+            logger.error("Không có khóa bí mật 2FA. Bỏ qua bật 2FA.")
+            return None
+            
+        logger.info(f"🔑 Đã lấy được Khóa bí mật 2FA: {secret_key}")
+        
+        # 7. Tạo mã TOTP xác thực hoàn thành
+        totp = pyotp.TOTP(secret_key)
+        totp_code = totp.now()
+        logger.info(f"Sinh mã TOTP xác nhận: {totp_code}")
+        
+        # Click Next tiếp tục để chuyển đến trang nhập mã xác thực TOTP
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Tiếp tục'));
+                if (next) next.click();
+            })()
+        """)
+        await asyncio.sleep(2)
+        
+        # Nhập mã TOTP xác thực
+        code_inputs = await tab.select_all("input[maxlength='6']")
+        if code_inputs:
+            await code_inputs[-1].click()
+            await code_inputs[-1].send_keys(totp_code)
+        else:
+            await tab.evaluate(f"""
+                (() => {{
+                    const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                    if (inp) {{
+                        inp.value = '{totp_code}';
+                        inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    }}
+                }})()
+            """)
+        await asyncio.sleep(1)
+        
+        # Bấm xác nhận hoàn tất
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const confirm = buttons.find(b => b.textContent.includes('Confirm') || b.textContent.includes('Done') || b.textContent.includes('Xác nhận'));
+                if (confirm) confirm.click();
+            })()
+        """)
+        await asyncio.sleep(4)
+        logger.info("🎉 Đã hoàn tất cài đặt 2FA trên TikTok!")
+        return secret_key
+        
+    except Exception as e:
+        logger.exception(f"Lỗi trong quá trình kích hoạt 2FA: {e}")
+        return None
+
+
+async def disable_email_2fa(tab: Any, mail_client: Any) -> bool:
+    """Tắt xác minh 2 bước qua Email hiện tại nếu nó đang được kích hoạt."""
+    logger.info("=== BẮT ĐẦU TẮT XÁC MINH EMAIL CŨ (GMAIL) ===")
+    await tab.get("https://www.tiktok.com/setting/security?lang=en")
+    await asyncio.sleep(5)
+    
+    try:
+        # Kiểm tra xem Email verification có đang BẬT không.
+        is_email_active = await tab.evaluate("""
+            (() => {
+                const els = Array.from(document.querySelectorAll('*'));
+                const emailNode = els.find(e => e.textContent.trim() === 'Email' && e.offsetHeight > 0);
+                if (!emailNode) return false;
+                
+                // Đi tìm toggle hoặc trạng thái bên cạnh
+                const parent = emailNode.closest('div');
+                if (!parent) return false;
+                
+                const txt = parent.textContent.toLowerCase();
+                if (txt.includes('active') || txt.includes('on') || txt.includes('bật')) {
+                    return true;
+                }
+                
+                const checkbox = parent.querySelector('input[type="checkbox"]');
+                if (checkbox && checkbox.checked) return true;
+                
+                return false;
+            })()
+        """)
+        
+        if not is_email_active:
+            logger.info("Email verification hiện tại đang TẮT. Không cần tắt.")
+            return True
+            
+        logger.info("Phát hiện Email verification đang BẬT. Tiến hành tắt...")
+        
+        # Click vào nút/toggle Email để tắt
+        await tab.evaluate("""
+            (() => {
+                const els = Array.from(document.querySelectorAll('*'));
+                const emailNode = els.find(e => e.textContent.trim() === 'Email' && e.offsetHeight > 0);
+                if (emailNode) {
+                    const parent = emailNode.closest('div');
+                    const btn = parent ? parent.querySelector('button, input[type="checkbox"], [role="switch"]') : null;
+                    if (btn) btn.click();
+                    else emailNode.click();
+                }
+            })()
+        """)
+        await asyncio.sleep(3)
+        
+        # Click "Turn off" xác nhận trong popup nếu hiện ra
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const turnOff = buttons.find(b => b.textContent.includes('Turn off') || b.textContent.includes('Tắt') || b.textContent.includes('Deactivate'));
+                if (turnOff) turnOff.click();
+            })()
+        """)
+        await asyncio.sleep(3)
+        
+        # Nếu yêu cầu mã OTP gửi về Email cũ
+        send_clicked = await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const send = buttons.find(b => b.textContent.includes('Send code') || b.textContent.includes('Gửi mã'));
+                if (send) { send.click(); return true; }
+                return false;
+            })()
+        """)
+        if send_clicked:
+            logger.info("Đã bấm gửi mã OTP tắt Email 2FA. Đang chờ lấy OTP từ hòm thư cũ...")
+            await asyncio.sleep(5)
+            otp_code = await mail_client.get_otp_code()
+            if not otp_code:
+                print("\n" + "="*50)
+                otp_code = input("Nhập mã xác nhận OTP tắt Email 2FA gửi về Email cũ của bạn: ").strip()
+                print("="*50 + "\n")
+                
+            if otp_code:
+                await tab.evaluate(f"""
+                    (() => {{
+                        const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                        if (inp) {{
+                            inp.value = '{otp_code}';
+                            inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }})()
+                """)
+                await asyncio.sleep(1)
+                await tab.evaluate("""
+                    (() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Confirm') || b.textContent.includes('Submit'));
+                        if (next) next.click();
+                    })()
+                """)
+                await asyncio.sleep(4)
+        
+        logger.info("Đã tắt xác minh qua Email cũ thành công.")
+        return True
+    except Exception as e:
+        logger.exception(f"Lỗi khi tắt xác minh qua Email cũ: {e}")
+        return False
+
+
+async def change_tiktok_email(tab: Any, mail_client_old: Any, c69: C69Client) -> Optional[Dict[str, Any]]:
+    """Thay đổi email liên kết của tài khoản TikTok sang Hotmail mới từ C69."""
+    logger.info("=== BẮT ĐẦU ĐỔI EMAIL TÀI KHOẢN TIKTOK ===")
+    await tab.get("https://www.tiktok.com/setting/account?lang=en")
+    await asyncio.sleep(5)
+    
+    try:
+        # Click vào nút/mục Email hoặc Change email
+        logger.info("Tìm và click nút đổi email...")
+        email_clicked = await tab.evaluate("""
+            (() => {
+                const els = Array.from(document.querySelectorAll('*'));
+                const emailNode = els.find(e => e.textContent.trim() === 'Email' && e.offsetHeight > 0);
+                if (emailNode) {
+                    const parent = emailNode.closest('div');
+                    const btn = parent ? parent.querySelector('button, a, [role="button"]') : null;
+                    if (btn) { btn.click(); return true; }
+                    emailNode.click();
+                    return true;
+                }
+                const changeBtn = els.find(e => e.textContent.includes('Change email') && e.offsetHeight > 0);
+                if (changeBtn) { changeBtn.click(); return true; }
+                return false;
+            })()
+        """)
+        
+        if not email_clicked:
+            logger.error("Không tìm thấy nút hoặc mục Email để đổi.")
+            return None
+            
+        await asyncio.sleep(3)
+        
+        # Bước 1: Xác minh email cũ
+        logger.info("Gửi OTP xác minh email cũ...")
+        send_old_clicked = await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const send = buttons.find(b => b.textContent.includes('Send code') || b.textContent.includes('Gửi mã'));
+                if (send) { send.click(); return true; }
+                return false;
+            })()
+        """)
+        
+        if send_old_clicked:
+            logger.info("Đã gửi OTP về Email cũ. Đang chờ đọc hòm thư cũ...")
+            await asyncio.sleep(5)
+            otp_old = await mail_client_old.get_otp_code()
+            if not otp_old:
+                print("\n" + "="*50)
+                otp_old = input("Nhập mã OTP xác minh email cũ gửi về Email cũ của bạn: ").strip()
+                print("="*50 + "\n")
+                
+            if otp_old:
+                await tab.evaluate(f"""
+                    (() => {{
+                        const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                        if (inp) {{
+                            inp.value = '{otp_old}';
+                            inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }})()
+                """)
+                await asyncio.sleep(1)
+                await tab.evaluate("""
+                    (() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Confirm') || b.textContent.includes('Submit'));
+                        if (next) next.click();
+                    })()
+                """)
+                await asyncio.sleep(4)
+                
+        # Bước 2: Lấy Email Hotmail mới chưa đăng ký từ C69
+        logger.info("Lấy Email Hotmail mới từ C69...")
+        new_email_data = c69.get_unused_email("hotmail")
+        if not new_email_data:
+            logger.error("Không lấy được email Hotmail mới chưa dùng từ C69 để đổi.")
+            return None
+            
+        new_email_addr = new_email_data.get("email") or new_email_data.get("email_address", "")
+        new_email_id = new_email_data.get("id")
+        
+        logger.info(f"Email Hotmail mới nhận được: {new_email_addr} (ID: {new_email_id})")
+        
+        # Nhập Email mới
+        logger.info("Nhập Email mới...")
+        email_filled = await tab.evaluate(f"""
+            (() => {{
+                const inp = document.querySelector("input[type='email']") || 
+                           document.querySelector("input[placeholder*='Email']");
+                if (inp) {{
+                    inp.focus();
+                    inp.value = '{new_email_addr}';
+                    inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return true;
+                }}
+                return false;
+            }})()
+        """)
+        
+        if not email_filled:
+            logger.error("Không tìm thấy ô nhập email mới để điền.")
+            return None
+            
+        await asyncio.sleep(1)
+        
+        # Click "Send code" cho email mới
+        logger.info("Gửi OTP đến Email mới...")
+        send_new_clicked = await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const send = buttons.find(b => b.textContent.includes('Send code') || b.textContent.includes('Gửi mã'));
+                if (send) { send.click(); return true; }
+                return false;
+            })()
+        """)
+        
+        if not send_new_clicked:
+            logger.error("Không click được nút gửi OTP đến Email mới.")
+            return None
+            
+        logger.info("Đã gửi OTP đến Email mới. Đang chờ đọc hòm thư mới từ C69...")
+        await asyncio.sleep(5)
+        
+        # Tạo mailbox đọc thư cho email mới
+        mail_client_new = C69MailBox(c69, new_email_id)
+        otp_new = await mail_client_new.get_otp_code()
+        
+        if not otp_new:
+            print("\n" + "="*50)
+            otp_new = input(f"Nhập mã OTP đổi email gửi về Email mới ({new_email_addr}): ").strip()
+            print("="*50 + "\n")
+            
+        if not otp_new:
+            logger.error("Không có mã OTP cho email mới. Đổi email thất bại.")
+            return None
+            
+        # Điền OTP mới
+        await tab.evaluate(f"""
+            (() => {{
+                const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                if (inp) {{
+                    inp.value = '{otp_new}';
+                    inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }})()
+        """)
+        await asyncio.sleep(1)
+        
+        # Bấm xác nhận hoàn tất đổi email
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const confirm = buttons.find(b => b.textContent.includes('Confirm') || b.textContent.includes('Done') || b.textContent.includes('Next') || b.textContent.includes('Xác nhận'));
+                if (confirm) confirm.click();
+            })()
+        """)
+        await asyncio.sleep(5)
+        
+        logger.info(f"🎉 Thay đổi email thành công! Email mới: {new_email_addr}")
+        return new_email_data
+        
+    except Exception as e:
+        logger.exception(f"Lỗi khi thực hiện thay đổi email liên kết: {e}")
+        return None
+
+
+async def enable_email_2fa_new(tab: Any, mail_client_new: Any) -> bool:
+    """Bật lại tính năng xác minh 2 bước qua Email mới."""
+    logger.info("=== BẮT ĐẦU BẬT XÁC MINH QUA EMAIL MỚI ===")
+    await tab.get("https://www.tiktok.com/setting/security?lang=en")
+    await asyncio.sleep(5)
+    
+    try:
+        # Click chọn Email trong phần "2-step verification"
+        await tab.evaluate("""
+            (() => {
+                const labels = Array.from(document.querySelectorAll('label, div, p, span'));
+                const emailOpt = labels.find(e => e.textContent.trim() === 'Email' && e.offsetHeight > 0);
+                if (emailOpt) {
+                    const parent = emailOpt.closest('div');
+                    const checkbox = parent ? parent.querySelector('input[type="checkbox"], input[type="radio"]') : null;
+                    if (checkbox) checkbox.click();
+                    else emailOpt.click();
+                }
+            })()
+        """)
+        await asyncio.sleep(1)
+        
+        # Click Next/Turn On
+        await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const turnOn = buttons.find(b => b.textContent.includes('Turn on') || b.textContent.includes('Next') || b.textContent.includes('Tiếp tục'));
+                if (turnOn) turnOn.click();
+            })()
+        """)
+        await asyncio.sleep(3)
+        
+        # Click Send Code
+        send_clicked = await tab.evaluate("""
+            (() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const send = buttons.find(b => b.textContent.includes('Send code') || b.textContent.includes('Gửi mã'));
+                if (send) { send.click(); return true; }
+                return false;
+            })()
+        """)
+        
+        if send_clicked:
+            logger.info("Đã gửi OTP kích hoạt Email 2FA mới. Đang chờ lấy OTP...")
+            await asyncio.sleep(5)
+            otp_code = await mail_client_new.get_otp_code()
+            if not otp_code:
+                print("\n" + "="*50)
+                otp_code = input("Nhập mã OTP kích hoạt Email 2FA mới gửi về hòm thư mới của bạn: ").strip()
+                print("="*50 + "\n")
+                
+            if otp_code:
+                await tab.evaluate(f"""
+                    (() => {{
+                        const inp = document.querySelector("input[placeholder*='code'], input[maxlength='6']");
+                        if (inp) {{
+                            inp.value = '{otp_code}';
+                            inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }})()
+                """)
+                await asyncio.sleep(1)
+                
+                await tab.evaluate("""
+                    (() => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const next = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Confirm') || b.textContent.includes('Submit') || b.textContent.includes('Done'));
+                        if (next) next.click();
+                    })()
+                """)
+                await asyncio.sleep(4)
+                
+        logger.info("🎉 Bật xác minh bằng Email mới thành công.")
+        return True
+        
+    except Exception as e:
+        logger.exception(f"Lỗi khi bật lại xác minh qua Email mới: {e}")
+        return False
+
+
+# ============================================================================
+# MAIN SCRIPT EXECUTION
+# ============================================================================
+
+async def _verify_signup_success(tab: Any, timeout_secs: int = 30) -> bool:
+    """Kiểm tra đăng ký TikTok thành công bằng multi-signal detection.
+
+    Positive signals (đăng ký thành công):
+      - URL chuyển về feed / fyp / profile / suggest-accounts / interests
+      - Avatar user hoặc element 'For You' page xuất hiện
+      - Trang chọn sở thích / username (post-signup onboarding)
+
+    Negative signals (đăng ký thất bại):
+      - Vẫn còn OTP input trên màn hình
+      - Error / alert message hiển thị rõ ràng
+    """
+    logger.info(f"Xác minh đăng ký thành công (timeout={timeout_secs}s)...")
+    start = asyncio.get_event_loop().time()
+
+    while asyncio.get_event_loop().time() - start < timeout_secs:
+        try:
+            # Log URL hiện tại để user theo dõi
+            current_url = await tab.evaluate("window.location.href")
+            elapsed = int(asyncio.get_event_loop().time() - start)
+            logger.info(f"[Verify {elapsed}s] URL: {current_url}")
+
+            # --- Negative signals (kiểm tra thất bại trước) ---
+            has_otp_input = await tab.evaluate("""
+                (() => {
+                    const inp = document.querySelector("input[maxlength='6'], input[name='code']");
+                    return inp ? inp.offsetHeight > 0 : false;
+                })()
+            """)
+            if has_otp_input:
+                logger.debug("Vẫn còn OTP input → chưa hoàn tất đăng ký.")
+                await asyncio.sleep(2)
+                continue
+
+            # Kiểm tra error phrase và capture text thực tế để debug
+            error_result = await tab.evaluate("""
+                (() => {
+                    const body = document.body.textContent.toLowerCase();
+                    const errorPhrases = [
+                        'incorrect code', 'invalid code', 'code expired',
+                        'ma\u0303 kho\u00f4ng h\u1ee3p le\u0323', 'ma\u0303 xa\u0301c minh sai', 'something went wrong',
+                        'this email has already been registered',
+                        'maximum number of attempts',
+                        'too many attempts', 'try again later',
+                        'you\\'ve made too many',
+                        'rate limit', 'account suspended',
+                        'network error', 'connection error'
+                    ];
+                    const matched = errorPhrases.find(p => body.includes(p));
+                    // Lấy đoạn text gần khu vực error để debug
+                    const errEl = document.querySelector('[class*="error"], [class*="alert"], [role="alert"]');
+                    const errText = errEl ? errEl.textContent.trim().substring(0, 200) : '';
+                    return { matched: matched || null, errText: errText, bodySnippet: body.substring(0, 300) };
+                })()
+            """)
+            if error_result and error_result.get('matched'):
+                err_phrase = error_result.get('matched')
+                err_text = error_result.get('errText', '')
+                body_snippet = error_result.get('bodySnippet', '')
+                logger.error(f"Phát hiện lỗi đăng ký: phrase='{err_phrase}' | errEl='{err_text}' | body='{body_snippet[:150]}'")
+                return False
+
+            # --- Positive signals ---
+            url_lower = (current_url or "").lower()
+            success_url_parts = [
+                '/foryou', '/fyp', '/following', '/live',
+                '/suggest-accounts', '/profile', '/home',
+                'tiktok.com/@',       # profile page
+                '/interests',         # chọn sở thích
+                '/select-topics',     # chọn chủ đề
+                '/onboarding',        # onboarding flow
+                '/signup/select',     # select interests/username
+            ]
+            if any(part in url_lower for part in success_url_parts):
+                logger.info(f"🎉 URL xác nhận đăng ký thành công: {current_url}")
+                return True
+
+            # Tìm element đặc trưng của user đã đăng nhập hoặc post-signup
+            has_logged_in_el = await tab.evaluate("""
+                (() => {
+                    // Avatar / user menu
+                    if (document.querySelector('[data-e2e="profile-icon"], [data-e2e="user-avatar"]')) return 'avatar';
+                    // "For You" heading
+                    const els = Array.from(document.querySelectorAll('h1, h2, span, p'));
+                    if (els.find(e => e.textContent.trim().toLowerCase() === 'for you' && e.offsetHeight > 0)) return 'foryou';
+                    // Nav bar của user đã đăng nhập
+                    if (document.querySelector('[data-e2e="nav-profile"], [data-e2e="nav-upload"]')) return 'nav';
+                    // Post-signup: chọn interests
+                    const bodyText = document.body.textContent.toLowerCase();
+                    if (bodyText.includes('what are you interested in') || bodyText.includes('select your interests')) return 'interests';
+                    if (bodyText.includes('create a username') || bodyText.includes('choose a username')) return 'username';
+                    // Signup modal đã biến mất (URL vẫn là tiktok.com/ nhưng form đã đóng = thành công)
+                    const signupForm = document.querySelector('form[data-e2e="signup-form"], [class*="SignupModal"], [class*="signup-modal"]');
+                    const loginModal = document.querySelector('[class*="LoginModal"], [class*="login-modal"], [data-e2e="modal-close-inner-button"]');
+                    if (!signupForm && !loginModal) {
+                        // Kiểm tra thêm: video feed hoặc sidebar xuất hiện (dấu hiệu đã vào trang chính)
+                        if (document.querySelector('video, [data-e2e="recommend-list-item-container"], [class*="DivVideoFeed"]')) return 'feed-visible';
+                    }
+                    return null;
+                })()
+            """)
+            if has_logged_in_el:
+                logger.info(f"🎉 Phát hiện signal đăng ký thành công: {has_logged_in_el}")
+                return True
+
+        except Exception as e:
+            logger.debug(f"Lỗi nhỏ khi verify signup: {e}")
+
+        await asyncio.sleep(2)
+
+    logger.warning("Hết timeout xác minh. Không xác định được trạng thái đăng ký.")
+    return False
+
+
+async def run_tiktok_registration_flow(args):
+    logger.info("=== BẮT ĐẦU LUỒNG TỰ ĐỘNG ĐĂNG KÝ TIKTOK ===")
+    
+    # 1. Kết nối và Đăng nhập C69
+    c69 = C69Client(base_url=args.get("c69_url", "https://c69.us"))
+    
+    # Đọc credentials C69 từ login_config.json
+    login_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login_config.json")
+    c69_logged = False
+    
+    if os.path.exists(login_config_path):
+        try:
+            with open(login_config_path, "r") as f:
+                c69_creds = json.load(f)
+                email_c69 = c69_creds.get("email")
+                pass_c69 = c69_creds.get("password")
+                if email_c69 and pass_c69:
+                    logger.info(f"Tìm thấy cấu hình C69: {email_c69}, đang đăng nhập...")
+                    c69_logged = c69.login(email_c69, pass_c69)
+        except Exception as e:
+            logger.error(f"Lỗi đọc login_config.json: {e}")
+            
+    if not c69_logged:
+        # Hỏi thông tin đăng nhập C69 từ console nếu không có file cấu hình
+        print("\n" + "="*50)
+        email_c69 = input("Nhập Email tài khoản C69.us: ").strip()
+        pass_c69 = input("Nhập Mật khẩu C69.us: ").strip()
+        print("="*50 + "\n")
+        c69_logged = c69.login(email_c69, pass_c69)
+        
+    if not c69_logged:
+        logger.error("Không thể đăng nhập vào C69. Dừng chương trình.")
+        return False
+
+    # 2. Lấy thông tin email đầu vào từ C69 để đăng ký
+    reg_method = args.get("reg_method", "c69-email")
+    c69_email_data = None   # dict từ AccountsEmails (nguồn email đăng ký)
+    email_addr = ""
+    password = ""
+    email_id = None         # ID trong AccountsEmails (để đọc OTP và link FK)
+
+    if reg_method == "c69-email":
+        # Lấy email Hotmail/Gmail chưa dùng từ AccountsEmails trên C69
+        # Thứ tự ưu tiên: hotmail trước (Microsoft Graph OTP), fallback sang gmail
+        c69_email_data = c69.get_unused_email("hotmail") or c69.get_unused_email("gmail")
+        if not c69_email_data:
+            logger.error("Không tìm thấy email chưa dùng nào trên C69 để đăng ký.")
+            return False
+        email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
+        password = c69_email_data.get("password", "")
+        email_id = c69_email_data.get("id")  # AccountsEmails.id
+    elif reg_method == "google":
+        # Lấy email chưa đăng ký TikTok từ C69 (Gmail, Google Workspace, Edu — bất kỳ tài khoản Google nào)
+        c69_email_data = c69.get_unused_email("tiktok")
+        if not c69_email_data:
+            logger.error("Không tìm thấy email chưa đăng ký TikTok nào trên C69.")
+            return False
+        email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
+        password = c69_email_data.get("password", "")
+        email_id = c69_email_data.get("id")  # AccountsEmails.id
+    else:
+        # Chế độ tự sinh TempMail
+        mail_client = TempMail1SecMail()
+        email_addr = mail_client.generate_email()
+        password = args.get("password") or generate_random_string(12)
+
+    logger.info(f"Thông tin Tài khoản Đăng ký: Email={email_addr} | Password={password}")
+
+    # 3. Cấu hình Mail Client để nhận OTP
+    mail_client = None
+    if reg_method == "c69-email" or reg_method == "google":
+        if email_id:
+            # Ưu tiên đọc mail qua API backend C69: dùng Microsoft Graph OAuth2 cho Hotmail/Outlook
+            # (Microsoft đã tắt Basic Auth IMAP, đăng nhập IMAP bằng password sẽ luôn thất bại) và
+            # IMAP chuẩn cho Gmail. Tránh script tự kết nối IMAP thô sẽ không hoạt động với Hotmail/Outlook.
+            logger.info(f"Dùng API đọc hộp thư của C69 (email_id={email_id}) để lấy mã OTP.")
+            mail_client = C69MailBox(c69, email_id)
+        else:
+            logger.warning(
+                "Tài khoản C69 không có email_id liên kết. Chuyển sang đọc IMAP trực tiếp - "
+                "lưu ý: Microsoft đã tắt Basic Auth IMAP cho Hotmail/Outlook nên luồng này có thể thất bại."
+            )
+            imap_host = "imap.gmail.com"
+            email_lower = email_addr.lower()
+            if any(dom in email_lower for dom in ["hotmail.com", "outlook.com", "live.com", "msn.com"]):
+                imap_host = "outlook.office365.com"
+
+            mail_client = IMAPMailBox(
+                host=args.get("imap_host") or imap_host,
+                user=email_addr,
+                password=password
+            )
+    elif args.get("email_mode") == "tempmail":
+        mail_client = TempMail1SecMail()
+        mail_client.email_address = email_addr
+        mail_client.login, mail_client.domain = email_addr.split("@")
+
+    # 4. Khởi động Mun AntiBrowser
+    manager = NodriverBrowserManager()
+    extra_args = []
+    extension_path = args.get("extension_path", "")
+    if extension_path and os.path.exists(extension_path):
+        logger.info(f"Đang nạp Extension giải Captcha từ: {extension_path}")
+        extra_args.append(f"--load-extension={extension_path}")
+        
+    logger.info("Đang khởi động trình duyệt chống phát hiện...")
+    browser, tab = await manager.start(
+        proxy_string=args.get("proxy", ""),
+        proxy_type=args.get("proxy_type", "socks5"),
+        start_url="https://www.tiktok.com/",
+        headless=args.get("headless", False),
+        extra_args=extra_args
+    )
+    
+    auto = TikTokSignupAutomation(manager, tab)
+
+    # Chờ trang TikTok load xong (quan trọng khi dùng proxy — trang load chậm hơn)
+    logger.info("Đang chờ trang TikTok tải xong...")
+    page_loaded = False
+    for wait_i in range(15):  # Tối đa 30 giây (15 x 2s)
+        try:
+            ready = await tab.evaluate("""
+                (() => {
+                    if (document.readyState !== 'complete') return 'loading';
+                    // Kiểm tra có nội dung TikTok thực sự (không phải blank page)
+                    const body = document.body ? document.body.textContent : '';
+                    if (body.length < 50) return 'empty';
+                    if (body.toLowerCase().includes('tiktok') || body.toLowerCase().includes('log in') || body.toLowerCase().includes('for you')) return 'ready';
+                    return 'partial';
+                })()
+            """)
+            logger.info(f"  Page status [{wait_i*2}s]: {ready}")
+            if ready == 'ready':
+                page_loaded = True
+                break
+            elif ready == 'partial' and wait_i >= 5:
+                # Sau 10s nếu có content nhưng chưa detect TikTok → vẫn tiếp tục
+                page_loaded = True
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+
+    if not page_loaded:
+        logger.warning("Trang TikTok load chậm — tiếp tục thử click Login...")
+
+    await asyncio.sleep(random.uniform(1.0, 2.0))  # Mô phỏng xem trang
+
+    # 1. Mô phỏng click vào nút Log in / Đăng nhập ở trang chủ để mở Modal
+    logger.info("Đang click nút Log in trên trang chủ...")
+    login_clicked = False
+    for attempt in range(3):
+        login_clicked = await tab.evaluate("""
+            (() => {
+                let btn = document.querySelector('[data-e2e="top-login-button"]');
+                if (btn) { btn.click(); return true; }
+                btn = document.querySelector('[data-e2e="nav-login-button"]');
+                if (btn) { btn.click(); return true; }
+                const els = Array.from(document.querySelectorAll('button, a, div'));
+                const match = els.find(e => {
+                    const txt = e.textContent.toLowerCase();
+                    return (txt.includes('log in') || txt.includes('đăng nhập')) && e.offsetHeight > 0;
+                });
+                if (match) { match.click(); return true; }
+                return false;
+            })()
+        """)
+        await asyncio.sleep(2)
+        # Kiểm tra xem Login Modal đã mở chưa
+        has_modal = await tab.evaluate("""
+            (() => {
+                const text = document.body.textContent.toLowerCase();
+                return text.includes('log in to tiktok') || text.includes('đăng nhập vào tiktok') || !!document.querySelector('iframe[src*="login"]');
+            })()
+        """)
+        if has_modal:
+            logger.info("Đã mở thành công Modal Đăng nhập.")
+            login_clicked = True
+            break
+        else:
+            logger.warning(f"Lần {attempt+1}: Chưa thấy Modal mở. Đang thử lại...")
+
+    if not login_clicked:
+        logger.warning("Không thể mở Modal đăng nhập bằng click. Thực hiện chuyển hướng trực tiếp...")
+        await tab.get("https://www.tiktok.com/login")
+        await asyncio.sleep(4)
+
+    # 2. Click vào link 'Sign up' (Đăng ký) ở dưới chân Modal để đổi sang form Đăng ký
+    logger.info("Đang bấm chuyển hướng sang Modal Đăng ký...")
+    signup_modal_clicked = False
+    for attempt in range(3):
+        signup_modal_clicked = await tab.evaluate("""
+            (() => {
+                const elements = Array.from(document.querySelectorAll('a, p, span, div, button'));
+                let signUpLink = elements.find(l => {
+                    const txt = l.textContent.trim();
+                    if (txt === 'Sign up' || txt === 'Đăng ký') {
+                        const parentTxt = l.parentElement ? l.parentElement.textContent : '';
+                        if (parentTxt.includes("Don't have") || parentTxt.includes("Chưa có tài khoản")) {
+                            return l.offsetHeight > 0;
+                        }
+                    }
+                    return false;
+                });
+                if (!signUpLink) {
+                    signUpLink = elements.find(l => {
+                        const txt = l.textContent.trim();
+                        return (txt === 'Sign up' || txt === 'Đăng ký') && l.offsetHeight > 0;
+                    });
+                }
+                if (!signUpLink) {
+                    const links = Array.from(document.querySelectorAll('a'));
+                    signUpLink = links.find(a => a.href && a.href.includes('/signup'));
+                }
+                if (signUpLink) {
+                    signUpLink.click();
+                    return true;
+                }
+                return false;
+            })()
+        """)
+        await asyncio.sleep(2)
+        # Kiểm tra xem màn hình Đăng ký đã hiện ra chưa
+        has_signup_choices = await tab.evaluate("""
+            (() => {
+                const text = document.body.textContent.toLowerCase();
+                return text.includes('sign up for tiktok') || text.includes('đăng ký tiktok') || window.location.href.includes('/signup');
+            })()
+        """)
+        if has_signup_choices:
+            logger.info("Đã chuyển sang màn hình Đăng ký thành công.")
+            signup_modal_clicked = True
+            break
+        else:
+            logger.warning(f"Lần {attempt+1}: Chưa chuyển sang màn hình Đăng ký. Thử lại...")
+
+    if not signup_modal_clicked:
+        logger.warning("Thực hiện chuyển hướng trực tiếp sang trang Đăng ký...")
+        await tab.get("https://www.tiktok.com/signup")
+        await asyncio.sleep(4)
+
+    # 3. Click chọn phương thức đăng ký trong Modal Đăng ký
+    try:
+        if reg_method == "google":
+            # Luồng Đăng ký bằng Google OAuth
+            logger.info("Đang chọn 'Continue with Google'...")
+            google_btn_clicked = False
+            for attempt in range(5):
+                google_btn_clicked = await tab.evaluate("""
+                    (() => {
+                        const candidates = [];
+                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                        let node;
+                        while (node = walker.nextNode()) {
+                            const ownText = Array.from(node.childNodes)
+                                .filter(n => n.nodeType === 3)
+                                .map(n => n.textContent.trim())
+                                .join(' ').toLowerCase();
+                            if (ownText.includes('google') && node.offsetHeight > 0 && node.offsetWidth > 20) {
+                                const r = node.getBoundingClientRect();
+                                candidates.push({ el: node, area: r.width * r.height, text: ownText });
+                            }
+                        }
+                        if (candidates.length === 0) {
+                            const all = Array.from(document.querySelectorAll('div[role="button"], button, a'));
+                            for (const el of all) {
+                                const t = el.textContent.trim().toLowerCase();
+                                if (t.includes('continue with google') && el.offsetHeight > 0) {
+                                    candidates.push({ el: el, area: 1, text: t });
+                                }
+                            }
+                        }
+                        if (candidates.length === 0) return false;
+                        candidates.sort((a, b) => a.area - b.area);
+                        const best = candidates[0];
+                        
+                        let clickable = best.el;
+                        let parent = best.el;
+                        for (let i = 0; i < 5; i++) {
+                            parent = parent.parentElement;
+                            if (!parent) break;
+                            if (parent.tagName === 'BUTTON' || parent.tagName === 'A' || parent.getAttribute('role') === 'button') {
+                                clickable = parent;
+                                break;
+                            }
+                        }
+                        clickable.click();
+                        return true;
+                    })()
+                """)
+                await asyncio.sleep(2)
+                
+                has_popup = False
+                try:
+                    targets = await browser._get_targets()
+                    has_popup = any(t.url and 'accounts.google.com' in t.url for t in targets)
+                except Exception:
+                    pass
+                    
+                if not has_popup:
+                    has_popup = any("accounts.google.com" in (getattr(t, 'url', '') or '') for t in browser.tabs)
+                    
+                if has_popup:
+                    logger.info("Đã mở cửa sổ Google OAuth thành công.")
+                    google_btn_clicked = True
+                    break
+                else:
+                    logger.warning(f"Lần {attempt+1}: Chưa phát hiện cửa sổ Google OAuth. Thử lại...")
+            
+            if not google_btn_clicked:
+                logger.error("Không thể kích hoạt luồng Google OAuth. Hủy đăng ký.")
+                return False
+
+            google_success = await automate_google_login(browser, email_addr, password)
+            if not google_success:
+                logger.error("Đăng nhập Google OAuth thất bại.")
+                return False
+                
+            logger.info("Chờ TikTok chuyển trang hoàn tất đăng ký...")
+            await asyncio.sleep(8)
+            
+        else:
+            # Luồng Đăng ký bằng Email + Mật khẩu trực tiếp
+            logger.info("Đang click chọn tùy chọn 'Use phone / email / username'...")
+            email_option_clicked = False
+            for attempt in range(3):
+                email_option_clicked = await tab.evaluate("""
+                    (() => {
+                        const elements = Array.from(document.querySelectorAll('button, a, div, p, span'));
+                        const matches = elements.filter(el => {
+                            const txt = el.textContent.trim().toLowerCase();
+                            const hasPhoneEmail = (txt.includes('phone') || txt.includes('điện thoại')) && txt.includes('email');
+                            const hasUsername = txt.includes('username') || txt.includes('tên người dùng');
+                            return (hasPhoneEmail || hasUsername) && el.offsetHeight > 0;
+                        });
+                        if (matches.length === 0) return false;
+                        
+                        // Sắp xếp chọn thẻ lá nhỏ nhất để không bấm nhầm vào container lớn
+                        matches.sort((a, b) => {
+                            const rA = a.getBoundingClientRect();
+                            const rB = b.getBoundingClientRect();
+                            return (rA.width * rA.height) - (rB.width * rB.height);
+                        });
+                        
+                        matches[0].click();
+                        return true;
+                    })()
+                """)
+                await asyncio.sleep(2)
+                # Kiểm tra các dropdown ngày sinh đã hiển thị chưa
+                has_dropdowns = await tab.evaluate("""
+                    (() => {
+                        return !!(document.querySelector('[data-e2e="month-select"]') || document.querySelector('select[name="month"]'));
+                    })()
+                """)
+                if has_dropdowns:
+                    logger.info("Đã mở thành công form điền thông tin đăng ký.")
+                    email_option_clicked = True
+                    break
+                else:
+                    logger.warning(f"Lần {attempt+1}: Chưa mở được form điền Email. Thử lại...")
+
+            if not email_option_clicked:
+                logger.warning("Thực hiện chuyển hướng trực tiếp sang Form đăng ký bằng Email...")
+                await tab.get("https://www.tiktok.com/signup/phone-or-email/email")
+                await asyncio.sleep(4)
+
+            # 1. Điền Ngày sinh (Sinh ngẫu nhiên tuổi từ 18-35)
+            month_names = ["January", "February", "March", "April", "May", "June", 
+                           "July", "August", "September", "October", "November", "December"]
+            birth_month = random.choice(month_names)
+            birth_day = str(random.randint(1, 28))
+            birth_year = str(random.randint(1990, 2005))
+            
+            logger.info(f"Thiết lập ngày sinh ảo: {birth_month} {birth_day}, {birth_year}")
+            
+            # Chọn Tháng, Ngày, Năm
+            month_sel = "[data-e2e='month-select'], select[placeholder='Month'], select[name='month']"
+            await auto.select_dropdown_option(month_sel, birth_month)
+            await asyncio.sleep(0.5)
+            
+            day_sel = "[data-e2e='day-select'], select[placeholder='Day'], select[name='day']"
+            await auto.select_dropdown_option(day_sel, birth_day)
+            await asyncio.sleep(0.5)
+            
+            year_sel = "[data-e2e='year-select'], select[placeholder='Year'], select[name='year']"
+            await auto.select_dropdown_option(year_sel, birth_year)
+            await asyncio.sleep(1)
+
+            # 1.5 Chuyển đổi từ tab Số điện thoại sang tab Email nếu mặc định là Số điện thoại
+            logger.info("Đang chuyển đổi sang tab 'Sign up with email'...")
+            switch_to_email_clicked = False
+            for attempt in range(3):
+                switch_to_email_clicked = await tab.evaluate("""
+                    (() => {
+                        const elements = Array.from(document.querySelectorAll('a, p, span, div, button'));
+                        const matches = elements.filter(l => {
+                            // 1. Khớp theo liên kết href (Cách chính xác và tối ưu nhất)
+                            if (l.tagName === 'A' && l.href && l.href.includes('/signup/phone-or-email/email')) {
+                                return l.offsetHeight > 0;
+                            }
+                            
+                            // 2. Khớp dự phòng bằng văn bản hiển thị
+                            const txt = l.textContent.trim().toLowerCase();
+                            const isEmailSwitch = txt === 'sign up with email' || 
+                                                 txt === 'đăng ký bằng email' || 
+                                                 txt === 'use email' || 
+                                                 txt === 'sử dụng email' ||
+                                                 txt.includes('sign up with email') || 
+                                                 txt.includes('đăng ký bằng email') || 
+                                                 txt.includes('use email') || 
+                                                 txt.includes('sử dụng email');
+                            return isEmailSwitch && l.offsetHeight > 0;
+                        });
+                        
+                        if (matches.length > 0) {
+                            // Sắp xếp chọn thẻ lá nhỏ nhất để click chính xác
+                            matches.sort((a, b) => {
+                                const rA = a.getBoundingClientRect();
+                                const rB = b.getBoundingClientRect();
+                                return (rA.width * rA.height) - (rB.width * rB.height);
+                            });
+                            matches[0].click();
+                            return true;
+                        }
+                        return false;
+                    })()
+                """)
+                await asyncio.sleep(2)
+                
+                # Xác minh: Kiểm tra xem input[name="email"] đã hiện ra chưa
+                has_email_input = await tab.evaluate("""
+                    (() => {
+                        return !!(document.querySelector('input[name="email"]') || document.querySelector('input[type="email"]') || document.querySelector('input[placeholder*="Email"]'));
+                    })()
+                """)
+                if has_email_input:
+                    logger.info("Đã chuyển đổi sang tab Đăng ký bằng Email thành công.")
+                    switch_to_email_clicked = True
+                    break
+                else:
+                    logger.warning(f"Lần {attempt+1}: Chưa chuyển đổi được sang tab Email. Thử lại...")
+            
+            if not switch_to_email_clicked:
+                logger.warning("Không thể chuyển đổi tab qua click. Thực hiện điều hướng trực tiếp sang Form đăng ký bằng Email...")
+                await tab.get("https://www.tiktok.com/signup/phone-or-email/email")
+                await asyncio.sleep(4)
+
+            # 2. Điền Email & Mật khẩu
+            logger.info("Đang điền thông tin tài khoản...")
+            email_selectors = ["input[name='email']", "input[type='email']", "input[placeholder*='Email']"]
+            password_selectors = ["input[type='password']", "input[placeholder*='Password']"]
+            
+            await auto.fill_input_by_selectors(tab, email_selectors, email_addr)
+            await asyncio.sleep(0.5)
+            await auto.fill_input_by_selectors(tab, password_selectors, password)
+            await asyncio.sleep(1)
+
+            # 3. Click gửi mã OTP (Send Code)
+            logger.info("Đang tìm và click nút gửi mã xác minh (Send Code)...")
+            send_btn = None
+            all_buttons = await tab.select_all("button")
+            for btn in all_buttons:
+                text = btn.text.lower()
+                if "send code" in text or "gửi mã" in text or "send otp" in text:
+                    send_btn = btn
+                    break
+                    
+            if send_btn:
+                await send_btn.click()
+            else:
+                send_btn = await tab.select("button[data-e2e='send-code-button'], button[type='button']")
+                if send_btn: await send_btn.click()
+                
+            await asyncio.sleep(3)
+
+            # 3.5. Kiểm tra lỗi rate-limit ngay sau click Send Code
+            page_error = await tab.evaluate("""
+                (() => {
+                    const body = document.body.textContent.toLowerCase();
+                    const rateLimitPhrases = [
+                        'maximum number of attempts',
+                        'too many attempts',
+                        'try again later',
+                        'you\'ve made too many',
+                        'rate limit',
+                        'account suspended',
+                        'this email has already been registered'
+                    ];
+                    const matched = rateLimitPhrases.find(p => body.includes(p));
+                    if (matched) {
+                        // Lấy text error element cụ thể
+                        const errEl = document.querySelector('[class*="error"], [class*="alert"], [role="alert"], [class*="Error"]');
+                        const errText = errEl ? errEl.textContent.trim().substring(0, 300) : '';
+                        return { error: matched, detail: errText || body.substring(0, 300) };
+                    }
+                    return null;
+                })()
+            """)
+            if page_error and isinstance(page_error, dict):
+                err_msg = page_error.get('error', 'unknown')
+                err_detail = page_error.get('detail', '')
+                logger.error(f"TikTok bao loi sau Send Code: '{err_msg}'")
+                logger.error(f"   Chi tiet: {err_detail[:200]}")
+                logger.info("Goi y: Doi IP/proxy hoac cho vai gio truoc khi thu lai.")
+                return False
+
+            # 4. Kiểm tra và Giải quyết Captcha
+            await auto.handle_captcha_flow(args.get("captcha_mode", "manual"))
+
+            # 4.5. Kiểm tra lỗi lần 2 sau captcha (TikTok có thể hiện lỗi sau khi giải captcha)
+            await asyncio.sleep(2)
+            post_captcha_error = await tab.evaluate("""
+                (() => {
+                    const body = document.body.textContent.toLowerCase();
+                    const phrases = [
+                        'maximum number of attempts',
+                        'too many attempts', 'try again later',
+                        'this email has already been registered'
+                    ];
+                    const matched = phrases.find(p => body.includes(p));
+                    return matched || null;
+                })()
+            """)
+            if post_captcha_error and isinstance(post_captcha_error, str):
+                logger.error(f"TikTok bao loi sau Captcha: '{post_captcha_error}'")
+                logger.info("Goi y: Doi IP/proxy hoac cho vai gio truoc khi thu lai.")
+                return False
+
+            # 5. Nhận mã OTP và điền xác minh
+            otp_code = None
+            if mail_client:
+                otp_code = await mail_client.get_otp_code()
+                
+            if not otp_code:
+                print("\n" + "="*50)
+                otp_code = input("Nhập mã OTP 6 số nhận từ Email của bạn: ").strip()
+                print("="*50 + "\n")
+                
+            if not otp_code:
+                logger.error("Không có mã OTP. Dừng luồng đăng ký.")
+                return False
+
+            code_input_selectors = ["input[placeholder*='code']", "input[name='code']", "input[data-e2e='code-input']", "input[maxlength='6']"]
+            await auto.fill_input_by_selectors(tab, code_input_selectors, otp_code)
+            await asyncio.sleep(1)
+
+            # 6. Click Sign Up hoàn tất
+            logger.info("Đang thực hiện click đăng ký tài khoản...")
+            signup_btn = None
+            all_buttons = await tab.select_all("button")
+            for btn in all_buttons:
+                text = btn.text.lower()
+                if "next" in text or "sign up" in text or "đăng ký" in text or "tiếp tục" in text:
+                    signup_btn = btn
+                    break
+                    
+            if signup_btn:
+                await signup_btn.click()
+            else:
+                signup_btn = await tab.select("button[type='submit']")
+                if signup_btn: await signup_btn.click()
+
+            await asyncio.sleep(8)
+            
+        # 5. Xác minh đăng ký thành công trên TikTok (multi-signal detection)
+        logger.info("Đang xác minh kết quả đăng ký TikTok...")
+        success = await _verify_signup_success(tab, timeout_secs=30)
+
+        if not success:
+            logger.error("⛔ Xác minh đăng ký thất bại — TikTok không xác nhận tài khoản mới.")
+            return False
+
+        logger.info("🎉 ĐĂNG KÝ TÀI KHOẢN TIKTOK THÀNH CÔNG!")
+        
+        # 6. Thiết lập và tối ưu bảo mật tài khoản
+        final_email_addr = email_addr
+        final_email_id = email_id
+        two_factor_key = ""
+        
+        # 6.1. Tắt xác minh qua Email cũ (Gmail) nếu đang bật
+        await disable_email_2fa(tab, mail_client)
+        
+        # 6.2. Kích hoạt bảo mật 2 lớp qua Authenticator App
+        two_factor_key = await setup_tiktok_2fa(tab, mail_client, email_addr)
+        if not two_factor_key:
+            logger.warning("Bật 2FA Authenticator thất bại hoặc bị bỏ qua.")
+            two_factor_key = ""
+            
+        # 6.3. Đổi Email tài khoản TikTok sang Hotmail mới từ C69
+        new_email_data = await change_tiktok_email(tab, mail_client, c69)
+        
+        if new_email_data:
+            final_email_addr = new_email_data.get("email") or new_email_data.get("email_address", "")
+            final_email_id = new_email_data.get("id")
+            
+            # Tạo mailbox mới để bật lại 2FA qua Email mới
+            mail_client_new = C69MailBox(c69, final_email_id)
+            
+            # 6.4. Bật lại xác minh qua Email mới (Hotmail)
+            await enable_email_2fa_new(tab, mail_client_new)
+        else:
+            logger.error("Đổi Email tài khoản TikTok sang Hotmail mới thất bại! Giữ nguyên Gmail cũ.")
+
+        # 7. Đồng bộ lưu trữ kết quả lên C69 với thông tin tài khoản hoàn thiện
+        profile_id = str(manager._current_profile.get("id", "none"))
+
+        c69.add_tiktok_account(
+            email_addr=final_email_addr,
+            password=password,
+            two_factor_key=two_factor_key,
+            profile_id=profile_id,
+            accounts_emails_id=final_email_id,  # Link về email Hotmail mới hoạt động
+        )
+
+        # Đánh dấu email mới là đã sử dụng
+        if final_email_id:
+            c69.mark_email_as_used(final_email_id)
+            
+        # Lưu trữ dự phòng ở file cục bộ
+        account_data = {
+            "email": final_email_addr,
+            "password": password,
+            "two_factor_auth": two_factor_key,
+            "profile_id": profile_id,
+            "timestamp": asyncio.get_event_loop().time()
+        }
+        
+        output_file = "registered_accounts.json"
+        accounts = []
+        if os.path.exists(output_file):
+            try:
+                with open(output_file, "r") as f:
+                    accounts = json.load(f)
+            except Exception: pass
+            
+        accounts.append(account_data)
+        with open(output_file, "w") as f:
+            json.dump(accounts, f, indent=4)
+            
+        logger.info("Đã hoàn tất quy trình và lưu trữ thông tin tài khoản!")
+        return True
+
+    except Exception as e:
+        logger.exception(f"Lỗi không mong muốn trong quá trình thực thi: {e}")
+        return False
+        
+    finally:
+        await asyncio.sleep(5)
+        logger.info("Đang đóng trình duyệt...")
+        await manager.close()
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="TikTok Auto-Registration Tool via Mun AntiBrowser")
+    parser.add_argument("--reg-method", choices=["c69-email", "google", "tempmail"], default="c69-email",
+                        help="Phương thức đăng ký: c69-email (email C69), google (Google OAuth Gmail C69), tempmail (TempMail)")
+    parser.add_argument("--email-mode", choices=["tempmail", "imap", "manual"], default="imap",
+                        help="Chế độ email: tempmail, imap, manual")
+    parser.add_argument("--c69-url", default="https://c69.us", help="URL của máy chủ C69")
+    parser.add_argument("--email", default="", help="Địa chỉ email nếu dùng chế độ manual")
+    parser.add_argument("--password", default="", help="Mật khẩu tài khoản TikTok (mặc định sinh ngẫu nhiên)")
+    parser.add_argument("--proxy", default="", help="Proxy kết nối (ví dụ: host:port hoặc user:pass@host:port)")
+    parser.add_argument("--proxy-type", default="socks5", choices=["socks5", "http"], help="Loại proxy")
+    parser.add_argument("--captcha-mode", choices=["manual", "extension", "api"], default="manual",
+                        help="Chế độ giải captcha: manual (giải tay), extension (load ext), api")
+    parser.add_argument("--extension-path", default="", help="Đường dẫn đến thư mục extension giải captcha")
+    parser.add_argument("--headless", action="store_true", help="Chạy ẩn danh trình duyệt (không khuyến khích khi cần giải tay)")
+    
+    # Cấu hình IMAP
+    parser.add_argument("--imap-host", default="", help="Địa chỉ máy chủ IMAP")
+    parser.add_argument("--imap-user", default="", help="Tài khoản IMAP")
+    parser.add_argument("--imap-pass", default="", help="Mật khẩu IMAP")
+
+    args = parser.parse_args()
+    asyncio.run(run_tiktok_registration_flow(vars(args)))

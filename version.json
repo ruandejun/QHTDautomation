@@ -1,5 +1,5 @@
 {
-    "version": "2.0.3",
+    "version": "2.0.4",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Sửa lỗi nhấp nháy màn hình trên máy cấu hình thấp: loading screen chỉ hiện 1 lần khi khởi động, không còn bị kích hoạt liên tục khi chuyển tab."
+    "changelog": "Sửa lỗi không gán được IP tĩnh cho card mạng LAN khi setup router (New-NetIPAddress báo lỗi 'Invalid parameter DefaultGateway')."
 }

@@ -2351,6 +2351,44 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @pyqtSlot(str, str, str, str, str, result=str)
+    @pyqtSlot(str, str, str, str, result=str)
+    def runTikTokRegAuto(self, reg_method, captcha_mode, proxy="", proxy_type="socks5", c69_url="https://c69.us"):
+        """Khởi chạy đăng ký tự động tài khoản TikTok từ Web Dashboard"""
+        try:
+            print(f"[MunAutomation] TikTok Auto-Reg requested: method={reg_method}, captcha={captcha_mode}, proxy={proxy}")
+            self.statusMessage.emit("🚀 Đang khởi chạy tiến trình đăng ký TikTok tự động...")
+            
+            import threading
+            def run_flow():
+                try:
+                    from tiktok_reg_automation import run_tiktok_registration_flow
+                    args = {
+                        "reg_method": reg_method,
+                        "captcha_mode": captcha_mode,
+                        "c69_url": c69_url or C69_BASE_URL,
+                        "proxy": proxy,
+                        "proxy_type": proxy_type,
+                        "headless": False,
+                        "email_mode": "imap",
+                    }
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    success = loop.run_until_complete(run_tiktok_registration_flow(args))
+                    if success:
+                        self.statusMessage.emit("✅ Đăng ký tài khoản TikTok và thiết lập bảo mật thành công!")
+                    else:
+                        self.statusMessage.emit("❌ Đăng ký tài khoản TikTok thất bại. Vui lòng thử lại.")
+                except Exception as ex:
+                    print(f"[MunAutomation] TikTok Reg error: {ex}")
+                    self.statusMessage.emit(f"❌ Lỗi đăng ký TikTok: {str(ex)}")
+            
+            t = threading.Thread(target=run_flow, daemon=True)
+            t.start()
+            return json.dumps({"success": True, "message": "Đang khởi chạy luồng đăng ký TikTok..."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     async def _evaluate_in_iframe_robust(self, tab, expression):
         return await evaluate_in_iframe_robust(tab, expression)
 

@@ -15,6 +15,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import logging
 import os
 import random
@@ -74,6 +75,7 @@ class NodriverBrowserManager:
         disable_images: bool = False,
         headless: bool = False,
         start_url: str = "",
+        extra_args: Optional[list] = None,
     ) -> Tuple[nodriver.Browser, Any]:
         """
         Start a new anti-detect browser instance.
@@ -87,6 +89,7 @@ class NodriverBrowserManager:
             disable_images: Disable image loading.
             headless: Run in headless mode.
             start_url: URL to open after launch.
+            extra_args: Optional list of additional Chrome command-line arguments.
 
         Returns:
             (browser, main_tab) tuple.
@@ -106,6 +109,14 @@ class NodriverBrowserManager:
             profile_config, disable_images, headless,
             proxy_string, proxy_type, proxy_username, proxy_password,
         )
+        if extra_args:
+            for arg in extra_args:
+                if arg not in chrome_args:
+                    chrome_args.append(arg)
+            # Remove --disable-extensions if we are loading an extension
+            if any(arg.startswith("--load-extension") for arg in extra_args):
+                if "--disable-extensions" in chrome_args:
+                    chrome_args.remove("--disable-extensions")
 
         # Build injection script
         self._injection_script = self.script_loader.compose_injection(profile_config)
@@ -213,6 +224,9 @@ class NodriverBrowserManager:
                 proxy_str, proxy_type, proxy_username, proxy_password,
             )
             if proxy_config:
+                # Nếu proxy có auth → start local relay (Chrome không hỗ trợ SOCKS5 auth)
+                if proxy_config.has_auth:
+                    self.proxy_manager.start_auth_relay(proxy_config)
                 args.extend(self.proxy_manager.get_chrome_args(proxy_config))
 
         # WebRTC protection (ALWAYS enabled - prevents IP leak)
@@ -270,8 +284,70 @@ class NodriverBrowserManager:
         """
         pass  # CDP injection scripts persist via addScriptToEvaluateOnNewDocument
 
+    async def _setup_proxy_auth(self, tab: Any, proxy_config: 'ProxyConfig'):
+        """Setup CDP-based proxy authentication.
 
+        Chrome's --proxy-server flag does NOT support inline authentication
+        (user:pass@host:port). For SOCKS5/HTTP proxies with credentials,
+        we use CDP Fetch domain to intercept 407 Proxy Authentication Required
+        responses and automatically provide credentials.
 
+        Args:
+            tab: The browser tab to setup auth on.
+            proxy_config: Parsed ProxyConfig with username/password.
+        """
+        if not proxy_config.has_auth:
+            return
+
+        username = proxy_config.username
+        password = proxy_config.password
+        logger.info(f"Setting up CDP proxy auth for {proxy_config.address} (user: {username})")
+
+        try:
+            # Use Network.setExtraHTTPHeaders is not enough for proxy auth.
+            # Instead, use Fetch domain to handle authRequired events.
+            import nodriver.cdp.fetch as fetch_cdp
+
+            # Enable Fetch domain with handleAuthRequests=True
+            await tab.send(fetch_cdp.enable(
+                handle_auth_requests=True
+            ))
+
+            # Define handler for auth challenges
+            async def handle_auth_required(event: fetch_cdp.AuthRequired):
+                """Handle proxy 407 auth challenge automatically."""
+                try:
+                    await tab.send(fetch_cdp.continue_with_auth(
+                        request_id=event.request_id,
+                        auth_challenge_response=fetch_cdp.AuthChallengeResponse(
+                            response="ProvideCredentials",
+                            username=username,
+                            password=password,
+                        )
+                    ))
+                    logger.debug("Proxy auth credentials provided via CDP Fetch")
+                except Exception as e:
+                    logger.warning(f"Error handling proxy auth: {e}")
+
+            # Define handler for regular requests (continue them normally)
+            async def handle_request_paused(event: fetch_cdp.RequestPaused):
+                """Continue non-auth paused requests normally."""
+                try:
+                    await tab.send(fetch_cdp.continue_request(
+                        request_id=event.request_id
+                    ))
+                except Exception:
+                    pass  # Silently ignore errors for continued requests
+
+            # Register event handlers
+            tab.add_handler(fetch_cdp.AuthRequired, handle_auth_required)
+            tab.add_handler(fetch_cdp.RequestPaused, handle_request_paused)
+
+            logger.info("CDP proxy authentication handler registered successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to setup CDP proxy auth: {e}")
+            logger.info("Falling back to no-auth proxy connection")
 
     async def new_tab(self, url: str = "") -> Any:
         """

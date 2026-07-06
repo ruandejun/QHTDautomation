@@ -51,3 +51,6 @@ scratch/
 # Runtime profile data
 QHTDautomationDesktop/chrome_data/
 QHTDautomationDesktop/browser_profiles.json
+MunAutomationDesktop/chrome_data/
+*.log
+registered_accounts.json

@@ -21,8 +21,8 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 TOR_EXE_SUBPATH_1 = os.path.join(TOR_DIR, "tor", "tor.exe")
 TOR_EXE_SUBPATH_2 = os.path.join(TOR_DIR, "tor.exe")
 
-PRIMARY_URL = "https://dist.torproject.org/torbrowser/15.0.16/tor-expert-bundle-windows-x86_64-15.0.16.tar.gz"
-FALLBACK_URL = "https://dist.torproject.org/torbrowser/14.0.1/tor-expert-bundle-windows-x86_64-14.0.1.tar.gz"
+PRIMARY_URL = "https://dist.torproject.org/torbrowser/15.0.17/tor-expert-bundle-windows-x86_64-15.0.17.tar.gz"
+FALLBACK_URL = "https://archive.torproject.org/tor-package-archive/torbrowser/14.0.1/tor-expert-bundle-windows-x86_64-14.0.1.tar.gz"
 
 def get_tor_exe_path():
     """Returns the absolute path to tor.exe if it exists, otherwise None."""
