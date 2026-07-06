@@ -1,5 +1,5 @@
 {
-    "version": "2.0.5",
-    "download_url": "https://c69.us/static/QHTDautomation.zip",
-    "changelog": "Tích hợp tính năng đăng ký TikTok tự động qua Google OAuth và cấu hình bảo mật 2FA/Email."
+    "version": "2.0.6",
+    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
+    "changelog": "Tích hợp tính năng đăng ký TikTok 24/7 chọn lọc Email chưa tạo TikTok thủ công từ danh sách."
 }
