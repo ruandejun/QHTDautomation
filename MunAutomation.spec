@@ -31,7 +31,22 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    # Loại các DLL đồ hoạ/WebEngine khỏi UPX — nén UPX lên các DLL này (ANGLE giả lập
+    # OpenGL ES qua DirectX, D3D compiler, chính Qt WebEngine/Chromium) là nguyên nhân
+    # phổ biến gây lỗi rendering (nhấp nháy, giật hình) CHỈ xảy ra ở bản exe đã đóng gói
+    # UPX — vì lúc chạy code nguồn dùng thẳng DLL gốc chưa nén nên không gặp lỗi này.
+    upx_exclude=[
+        'Qt6WebEngineCore.dll',
+        'Qt6WebEngineWidgets.dll',
+        'Qt6Gui.dll',
+        'Qt6Quick.dll',
+        'libEGL.dll',
+        'libGLESv2.dll',
+        'd3dcompiler_47.dll',
+        'opengl32sw.dll',
+        'python3*.dll',
+        'vcruntime*.dll',
+    ],
     runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
