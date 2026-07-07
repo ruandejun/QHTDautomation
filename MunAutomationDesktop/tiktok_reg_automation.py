@@ -289,10 +289,131 @@ class C69Client:
             logger.warning(f"Lỗi cập nhật trạng thái email: {e}")
         return False
 
+    # ─────────────────────────────────────────────────────────────────────
+    # TIKTOK NURTURE METHODS
+    # ─────────────────────────────────────────────────────────────────────
+
+    def get_tiktok_accounts(self, status: Optional[int] = None,
+                            page_size: int = 100) -> List[Dict[str, Any]]:
+        """Lấy danh sách tài khoản TikTok từ C69 (có thể filter theo status)."""
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể lấy danh sách TikTok accounts.")
+            return []
+        url = f"{self.base_url}/dashboard/api/accounts/?type=tiktok&page_size={page_size}"
+        if status is not None:
+            url += f"&status={status}"
+        try:
+            r = self.session.get(url, timeout=15)
+            if r.status_code == 200:
+                resp = r.json()
+                results = resp.get("results", resp) if isinstance(resp, dict) else resp
+                logger.info(f"Lấy được {len(results)} TikTok accounts từ C69.")
+                return results if isinstance(results, list) else []
+            else:
+                logger.error(f"Lỗi API get TikTok accounts (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 get_tiktok_accounts: {e}")
+        return []
+
+    def get_nurture_queue(self, limit: int = 10, status: int = 0) -> List[Dict[str, Any]]:
+        """Lấy danh sách tài khoản TikTok cần nuôi, ưu tiên chưa nuôi lâu nhất.
+
+        Endpoint: GET /dashboard/api/accounts/get-nurture-queue/?limit=N&status=0
+        """
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể lấy nurture queue.")
+            return []
+        url = f"{self.base_url}/dashboard/api/accounts/get-nurture-queue/?limit={limit}&status={status}"
+        try:
+            r = self.session.get(url, timeout=15)
+            if r.status_code == 200:
+                resp = r.json()
+                if resp.get("success"):
+                    accounts = resp.get("accounts", [])
+                    logger.info(f"Lấy được {len(accounts)} TikTok accounts từ nurture queue C69.")
+                    return accounts
+                else:
+                    logger.warning(f"Không lấy được nurture queue: {resp.get('message', '')}")
+            else:
+                logger.error(f"Lỗi API get-nurture-queue (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 get_nurture_queue: {e}")
+        return []
+
+    def log_nurture_session(self, account_id: int, stats: Dict[str, Any]) -> bool:
+        """Ghi lại kết quả phiên nuôi TikTok lên C69.
+
+        Endpoint: POST /dashboard/api/accounts/{id}/log-nurture/
+
+        Args:
+            account_id: ID của AccountsCreated trên C69
+            stats: {videos_watched, likes, comments, follows, session_duration_secs, success, error}
+        """
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể ghi log nuôi.")
+            return False
+        url = f"{self.base_url}/dashboard/api/accounts/{account_id}/log-nurture/"
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+        try:
+            r = self.session.post(url, json=stats, headers=headers, timeout=15)
+            if r.status_code in (200, 201):
+                resp = r.json()
+                if resp.get("success"):
+                    s = resp.get("stats", {})
+                    logger.info(
+                        f"✅ Đã ghi log nuôi account_id={account_id}: "
+                        f"sessions={s.get('nurture_sessions')}, "
+                        f"total_videos={s.get('videos_watched_total')}"
+                    )
+                    return True
+                else:
+                    logger.warning(f"Ghi log nuôi thất bại: {resp}")
+            else:
+                logger.error(f"Lỗi API log-nurture (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 log_nurture_session: {e}")
+        return False
+
+    def update_account_cookies(self, account_id: int, cookies: str,
+                               tiktok_username: str = "") -> bool:
+        """Lưu cookies/session mới lên AccountsCreated sau phiên nuôi.
+
+        Endpoint: POST /dashboard/api/accounts/{id}/update-cookies/
+        """
+        if not self.logged_in:
+            logger.error("Chưa đăng nhập C69. Không thể cập nhật cookies.")
+            return False
+        url = f"{self.base_url}/dashboard/api/accounts/{account_id}/update-cookies/"
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+        payload: Dict[str, Any] = {"cookies": cookies}
+        if tiktok_username:
+            payload["username"] = tiktok_username
+        try:
+            r = self.session.post(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201):
+                resp = r.json()
+                if resp.get("success"):
+                    logger.info(f"✅ Đã cập nhật cookies cho account_id={account_id}.")
+                    return True
+                else:
+                    logger.warning(f"Cập nhật cookies thất bại: {resp}")
+            else:
+                logger.error(f"Lỗi API update-cookies (Status {r.status_code}): {r.text}")
+        except Exception as e:
+            logger.error(f"Lỗi kết nối API C69 update_account_cookies: {e}")
+        return False
+
 
 # ============================================================================
 # EMAIL PROVIDER (TEMP-MAIL API & IMAP)
 # ============================================================================
+
 
 class TempMail1SecMail:
     """Xử lý email tạm thời qua API miễn phí 1secmail.com"""
