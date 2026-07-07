@@ -2540,6 +2540,7 @@ class MunAutomationBridge(QObject):
               "gemini_api_key": "",
               "video_language": "vi",
               "auto_post_video": false,
+              "post_probability": 0.2,
               "video_niche": "trending",
               "c69_url": "https://c69.us",
               "c69_username": "",
@@ -2551,6 +2552,12 @@ class MunAutomationBridge(QObject):
         continuous_247=true: sau khi nuôi hết 1 vòng account đã cho, nghỉ 15-30 phút rồi tự động
         lấy queue mới từ C69 (cần c69_username/c69_password để backend tự đăng nhập lại) và lặp
         vô hạn cho tới khi stopTikTokNurture() được gọi — giống cơ chế của startTikTokRegLoop.
+
+        auto_post_video=true: chạy 1 thread RIÊNG (video_producer_loop) liên tục tạo + kiểm tra
+        video AI, giữ sẵn một pool nhỏ (mặc định 3 video đã xác minh) — tách khỏi luồng duyệt/
+        like/comment để không còn treo/giật khi tạo video (Gemini + TTS + ghép moviepy rất nặng).
+        Mỗi vòng nuôi chỉ có post_probability cơ hội rút 1 video có sẵn trong pool để đăng — không
+        bắt buộc đăng mỗi vòng/mỗi tài khoản, đúng tinh thần "thỉnh thoảng đăng là được".
         """
         try:
             if getattr(self, 'tiktok_nurture_running', False):
@@ -2563,11 +2570,93 @@ class MunAutomationBridge(QObject):
                 return json.dumps({"error": "Không có tài khoản nào để nuôi."})
 
             continuous_247 = bool(settings.get("continuous_247", False))
+            auto_post_video = bool(settings.get("auto_post_video", False))
+            # Xac suat MOI VONG se dang 1 video da co san trong pool (khong phai moi tai khoan/moi
+            # ngay deu phai up) - "thinh thoang up la ok" theo yeu cau.
+            post_probability = float(settings.get("post_probability", 0.2))
 
             self.tiktok_nurture_running = True
             self.statusMessage.emit(f"🌱 Bắt đầu nuôi {len(accounts)} tài khoản TikTok...")
 
             import threading
+
+            # ─── Pool video AI đã tạo & xác minh xong, sẵn sàng để đăng ────────────
+            # Tach rieng khoi vong nuoi/luot trinh duyet de viec tao video (Gemini + TTS +
+            # ghep moviepy, rat nang CPU/IO) khong con lam treo/giat luong duyet+like+comment.
+            _video_pool_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_videos")
+            _video_pool_path = os.path.join(_video_pool_dir, "pool_manifest.json")
+            _video_pool_lock = threading.Lock()
+
+            def _load_video_pool():
+                try:
+                    with open(_video_pool_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    return []
+
+            def _save_video_pool(pool):
+                os.makedirs(_video_pool_dir, exist_ok=True)
+                with open(_video_pool_path, "w", encoding="utf-8") as f:
+                    json.dump(pool, f, ensure_ascii=False, indent=2)
+
+            def _verify_video_file(path):
+                try:
+                    return bool(path) and os.path.exists(path) and os.path.getsize(path) > 10_000
+                except Exception:
+                    return False
+
+            def on_progress(msg, level="info"):
+                update_data = json.dumps({"message": msg, "level": level})
+                self.tiktokNurtureUpdate.emit(update_data)
+                self.statusMessage.emit(f"🌱 {msg}")
+
+            def video_producer_loop():
+                """Thread rieng: lien tuc tao video AI va giu san 1 pool nho (mac dinh 3 video)
+                da duoc kiem tra tao thanh cong, khong lien quan/khong lam cho luong duyet TikTok."""
+                target_pool_size = 3
+                try:
+                    from ai_video_creator import AIVideoCreator, VideoCreatorConfig
+                    import asyncio as _asyncio
+                    vid_cfg = VideoCreatorConfig(
+                        gemini_api_key=settings.get("gemini_api_key", ""),
+                        niche=settings.get("video_niche", "trending"),
+                        tts_language=settings.get("video_language", "vi"),
+                    )
+                    creator = AIVideoCreator(vid_cfg)
+
+                    while self.tiktok_nurture_running:
+                        with _video_pool_lock:
+                            pool_size = len(_load_video_pool())
+
+                        if pool_size >= target_pool_size:
+                            for _ in range(60):
+                                if not self.tiktok_nurture_running:
+                                    return
+                                time.sleep(1)
+                            continue
+
+                        loop = _asyncio.new_event_loop()
+                        _asyncio.set_event_loop(loop)
+                        video = loop.run_until_complete(creator.create_video())
+
+                        if video and _verify_video_file(video.get("path")):
+                            video["created_at"] = time.time()
+                            with _video_pool_lock:
+                                pool = _load_video_pool()
+                                pool.append(video)
+                                _save_video_pool(pool)
+                            on_progress(
+                                f"🎬 Video AI mới sẵn sàng ({len(pool)}/{target_pool_size} trong kho): {video.get('topic', '')}",
+                                "success",
+                            )
+                        else:
+                            on_progress("⚠️ Tạo video AI thất bại, thử lại sau ít phút...", "warning")
+                            for _ in range(60):
+                                if not self.tiktok_nurture_running:
+                                    return
+                                time.sleep(1)
+                except Exception as ex:
+                    on_progress(f"❌ Lỗi thread tạo video AI: {ex}", "error")
 
             def nurture_loop():
                 try:
@@ -2578,10 +2667,9 @@ class MunAutomationBridge(QObject):
                         import os as _os
                         _os.environ["GEMINI_API_KEY"] = settings["gemini_api_key"]
 
-                    def on_progress(msg, level="info"):
-                        update_data = json.dumps({"message": msg, "level": level})
-                        self.tiktokNurtureUpdate.emit(update_data)
-                        self.statusMessage.emit(f"🌱 {msg}")
+                    if auto_post_video:
+                        vt = threading.Thread(target=video_producer_loop, daemon=True)
+                        vt.start()
 
                     # Vong dau dung danh sach da chon tren UI; tu vong 2 tro di (che do 24/7) luon
                     # de accounts=[] de TikTokNurtureManager tu dong lay queue moi tu C69 (round-robin
@@ -2614,28 +2702,24 @@ class MunAutomationBridge(QObject):
                             progress_callback=on_progress,
                         )
 
-                        # Tao video AI neu co cau hinh. So luong: bang so account da biet truoc,
-                        # hoac 20 khi dang auto-fetch (trung limit mac dinh cua get_nurture_queue).
+                        # Khong con tu tao video o day (gay treo/giat) - chi RUT 1 video da co san
+                        # trong pool (neu co) theo xac suat post_probability, "thinh thoang up la ok".
                         ai_videos = None
-                        if settings.get("auto_post_video", False):
-                            try:
-                                from ai_video_creator import AIVideoCreator, VideoCreatorConfig
-                                import asyncio as _asyncio
-                                vid_cfg = VideoCreatorConfig(
-                                    gemini_api_key=settings.get("gemini_api_key", ""),
-                                    niche=settings.get("video_niche", "trending"),
-                                    tts_language=settings.get("video_language", "vi"),
-                                )
-                                creator = AIVideoCreator(vid_cfg)
-                                batch_count = len(round_accounts) if round_accounts else 20
-                                loop = _asyncio.new_event_loop()
-                                _asyncio.set_event_loop(loop)
-                                ai_videos = loop.run_until_complete(
-                                    creator.create_batch(count=batch_count)
-                                )
-                                on_progress(f"🎬 Đã tạo {len(ai_videos)} video AI để đăng (vòng {round_num}).", "success")
-                            except Exception as ve:
-                                on_progress(f"⚠️ Tạo video AI thất bại: {ve}", "warning")
+                        if auto_post_video and random.random() < post_probability:
+                            with _video_pool_lock:
+                                pool = _load_video_pool()
+                                if pool:
+                                    picked, pool = pool[0], pool[1:]
+                                    _save_video_pool(pool)
+                                    ai_videos = [{
+                                        "path": picked["path"],
+                                        "caption": picked.get("caption", ""),
+                                        "hashtags": picked.get("hashtags", []),
+                                    }]
+                                    on_progress(
+                                        f"📤 Vòng {round_num}: sẽ đăng video đã chuẩn bị sẵn - {picked.get('topic', '')}",
+                                        "info",
+                                    )
 
                         if not self.tiktok_nurture_running:
                             break
