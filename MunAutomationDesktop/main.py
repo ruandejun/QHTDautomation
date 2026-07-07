@@ -2814,48 +2814,77 @@ class MunAutomationBridge(QObject):
     def createAITikTokVideo(self, topic=""):
         """
         Tạo một video AI TikTok từ topic đã cho (hoặc tự động chọn xu hướng).
+        Chạy hoàn toàn trên thread nền và trả về NGAY LẬP TỨC — không được block GUI thread
+        (slot này chạy trên main/GUI thread vì được gọi qua QWebChannel từ JS, nên .wait() ở
+        đây trước đây từng làm treo/giật toàn bộ app trong lúc tạo video).
+
+        Kết quả thật sự (thành công hay lỗi) được báo qua signal tiktokNurtureUpdate với
+        field "ai_video_done": true (và "ai_video_path" nếu thành công) — frontend lắng nghe
+        signal này để tắt trạng thái loading, thay vì đoán 1 khoảng thời gian cố định.
 
         Args:
-            topic: Chủ đề video (để trống để AI tự chọn xu hướng)
+            topic: chuỗi chủ đề đơn giản, HOẶC chuỗi JSON {topic, language, niche, gemini_api_key}
+                   (đúng định dạng TikTokNurture.jsx đang gửi lên)
 
         Returns:
-            JSON {path, caption, hashtags, topic, script} hoặc {error}
+            JSON {success: true, message: "..."} ngay lập tức.
         """
         try:
-            self.statusMessage.emit(f"🎬 Đang tạo video AI TikTok: {'tự động' if not topic else topic}...")
-            import threading
+            topic_text, language, niche = "", "vi", "trending"
+            gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            if topic:
+                try:
+                    parsed = json.loads(topic)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    topic_text = parsed.get("topic") or ""
+                    language = parsed.get("language") or language
+                    niche = parsed.get("niche") or niche
+                    gemini_key = parsed.get("gemini_api_key") or gemini_key
+                else:
+                    topic_text = topic
 
-            result_holder = {"result": None, "error": None}
-            done_event = __import__("threading").Event()
+            self.statusMessage.emit(f"🎬 Đang tạo video AI TikTok: {'tự động' if not topic_text else topic_text}...")
+            import threading
 
             def create_thread():
                 try:
                     from ai_video_creator import AIVideoCreator, VideoCreatorConfig
                     vid_cfg = VideoCreatorConfig(
-                        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
-                        niche="trending",
-                        tts_language="vi",
+                        gemini_api_key=gemini_key,
+                        niche=niche,
+                        tts_language=language,
                     )
                     creator = AIVideoCreator(vid_cfg)
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(creator.create_video(topic or None))
-                    result_holder["result"] = result
+                    result = loop.run_until_complete(creator.create_video(topic_text or None))
+                    if result:
+                        self.tiktokNurtureUpdate.emit(json.dumps({
+                            "message": f"✅ Video AI đã tạo xong: {result.get('topic', '')}",
+                            "level": "success",
+                            "ai_video_done": True,
+                            "ai_video_path": result.get("path", ""),
+                            "ai_video_data": result,
+                        }, ensure_ascii=False))
+                        self.statusMessage.emit(f"✅ Video AI đã tạo: {result.get('path', '')}")
+                    else:
+                        self.tiktokNurtureUpdate.emit(json.dumps({
+                            "message": "❌ Tạo video AI thất bại.",
+                            "level": "error",
+                            "ai_video_done": True,
+                        }))
                 except Exception as ex:
-                    result_holder["error"] = str(ex)
-                finally:
-                    done_event.set()
+                    self.tiktokNurtureUpdate.emit(json.dumps({
+                        "message": f"❌ Lỗi tạo video AI: {ex}",
+                        "level": "error",
+                        "ai_video_done": True,
+                    }))
 
             t = threading.Thread(target=create_thread, daemon=True)
             t.start()
-            done_event.wait(timeout=300)  # Max 5 phut
-
-            if result_holder["error"]:
-                return json.dumps({"error": result_holder["error"]})
-            if result_holder["result"]:
-                self.statusMessage.emit(f"✅ Video AI đã tạo: {result_holder['result'].get('path', '')}")
-                return json.dumps(result_holder["result"], ensure_ascii=False)
-            return json.dumps({"error": "Tạo video thất bại hoặc timeout."})
+            return json.dumps({"success": True, "message": "Đang tạo video AI, sẽ báo khi xong."})
         except Exception as e:
             return json.dumps({"error": str(e)})
 

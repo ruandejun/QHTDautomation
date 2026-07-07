@@ -1,5 +1,5 @@
 {
-    "version": "2.1.1",
+    "version": "2.1.2",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Nuôi TikTok: tách tạo video AI ra thread riêng (không còn treo/giật màn hình khi tạo video), chỉ đăng video khi có sẵn trong kho và theo xác suất mỗi vòng thay vì bắt buộc mỗi vòng đều phải tạo/đăng."
+    "changelog": "Sửa nốt lỗi treo/quay vòng tròn khi bấm \"Tạo video AI\": nút này trước đó tự khoá luồng giao diện chính tới 5 phút chờ video xong. Giờ chạy hoàn toàn nền, giao diện báo kết quả khi thực sự xong."
 }
