@@ -1395,6 +1395,9 @@ class MunAutomationBridge(QObject):
     routerStartFinished = pyqtSignal(str)     # JSON result string
     tiktokRegResult = pyqtSignal(str)          # JSON result for 24/7 flow
 
+    # TikTok Nurture Signals
+    tiktokNurtureUpdate = pyqtSignal(str)      # JSON {message, level, stats} real-time
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main_window = main_window
@@ -1413,6 +1416,9 @@ class MunAutomationBridge(QObject):
         self.browser_workers = {}
         self.poll_thread = None
         self.tiktok_reg_running = False
+        # TikTok Nurture state
+        self.tiktok_nurture_running = False
+        self.tiktok_nurture_manager = None
         
         # Routing cache & poll thread
         self._cached_interfaces = "[]"
@@ -2503,6 +2509,7 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+
     @pyqtSlot(result=str)
     def stopTikTokRegLoop(self):
         """Dừng vòng lặp đăng ký 24/7"""
@@ -2510,10 +2517,270 @@ class MunAutomationBridge(QObject):
         self.statusMessage.emit("⏳ Đang dừng vòng lặp đăng ký TikTok...")
         return json.dumps({"success": True, "message": "Yêu cầu dừng loop đã được gửi."})
 
+    # ═══════════════════════════════════════════════════════════════════
+    # TIKTOK NURTURE BRIDGES — Nuôi tài khoản TikTok tự động
+    # ═══════════════════════════════════════════════════════════════════
+
+    @pyqtSlot(str, result=str)
+    def runTikTokNurture(self, config_json="{}"):
+        """
+        Khởi động vòng lặp nuôi tài khoản TikTok.
+
+        config_json: JSON string với:
+          {
+            "accounts": [{id, email, password, username, tiktok_username, profile_id}],
+            "config": {
+              "videos_per_session": 30,
+              "like_probability": 0.70,
+              "comment_probability": 0.15,
+              "follow_probability": 0.05,
+              "proxy": "",
+              "proxy_type": "socks5",
+              "headless": false,
+              "gemini_api_key": "",
+              "video_language": "vi",
+              "auto_post_video": false,
+              "video_niche": "trending",
+              "c69_url": "https://c69.us",
+              "c69_username": "",
+              "c69_password": "",
+              "continuous_247": false
+            }
+          }
+
+        continuous_247=true: sau khi nuôi hết 1 vòng account đã cho, nghỉ 15-30 phút rồi tự động
+        lấy queue mới từ C69 (cần c69_username/c69_password để backend tự đăng nhập lại) và lặp
+        vô hạn cho tới khi stopTikTokNurture() được gọi — giống cơ chế của startTikTokRegLoop.
+        """
+        try:
+            if getattr(self, 'tiktok_nurture_running', False):
+                return json.dumps({"success": False, "message": "Tiến trình nuôi đang chạy rồi."})
+
+            cfg = json.loads(config_json) if config_json else {}
+            accounts = cfg.get("accounts", [])
+            settings = cfg.get("config", {})
+            if not accounts:
+                return json.dumps({"error": "Không có tài khoản nào để nuôi."})
+
+            continuous_247 = bool(settings.get("continuous_247", False))
+
+            self.tiktok_nurture_running = True
+            self.statusMessage.emit(f"🌱 Bắt đầu nuôi {len(accounts)} tài khoản TikTok...")
+
+            import threading
+
+            def nurture_loop():
+                try:
+                    import random
+                    from tiktok_nurture import NurtureConfig, TikTokNurtureManager
+
+                    if settings.get("gemini_api_key"):
+                        import os as _os
+                        _os.environ["GEMINI_API_KEY"] = settings["gemini_api_key"]
+
+                    def on_progress(msg, level="info"):
+                        update_data = json.dumps({"message": msg, "level": level})
+                        self.tiktokNurtureUpdate.emit(update_data)
+                        self.statusMessage.emit(f"🌱 {msg}")
+
+                    # Vong dau dung danh sach da chon tren UI; tu vong 2 tro di (che do 24/7) luon
+                    # de accounts=[] de TikTokNurtureManager tu dong lay queue moi tu C69 (round-robin
+                    # toan bo pool theo last_nurtured_at, xem c69_auto_fetch trong tiktok_nurture.py)
+                    round_accounts = accounts
+                    round_num = 0
+
+                    while self.tiktok_nurture_running:
+                        round_num += 1
+
+                        nurture_cfg = NurtureConfig(
+                            videos_per_session=int(settings.get("videos_per_session", 30)),
+                            like_probability=float(settings.get("like_probability", 0.70)),
+                            comment_probability=float(settings.get("comment_probability", 0.15)),
+                            follow_probability=float(settings.get("follow_probability", 0.05)),
+                            proxy=settings.get("proxy", ""),
+                            proxy_type=settings.get("proxy_type", "socks5"),
+                            headless=bool(settings.get("headless", False)),
+                            video_language=settings.get("video_language", "vi"),
+                            video_niche=settings.get("video_niche", "trending"),
+                            c69_url=settings.get("c69_url", "https://c69.us"),
+                            c69_username=settings.get("c69_username", ""),
+                            c69_password=settings.get("c69_password", ""),
+                            c69_auto_fetch=True,
+                        )
+
+                        self.tiktok_nurture_manager = TikTokNurtureManager(
+                            accounts=round_accounts,
+                            config=nurture_cfg,
+                            progress_callback=on_progress,
+                        )
+
+                        # Tao video AI neu co cau hinh. So luong: bang so account da biet truoc,
+                        # hoac 20 khi dang auto-fetch (trung limit mac dinh cua get_nurture_queue).
+                        ai_videos = None
+                        if settings.get("auto_post_video", False):
+                            try:
+                                from ai_video_creator import AIVideoCreator, VideoCreatorConfig
+                                import asyncio as _asyncio
+                                vid_cfg = VideoCreatorConfig(
+                                    gemini_api_key=settings.get("gemini_api_key", ""),
+                                    niche=settings.get("video_niche", "trending"),
+                                    tts_language=settings.get("video_language", "vi"),
+                                )
+                                creator = AIVideoCreator(vid_cfg)
+                                batch_count = len(round_accounts) if round_accounts else 20
+                                loop = _asyncio.new_event_loop()
+                                _asyncio.set_event_loop(loop)
+                                ai_videos = loop.run_until_complete(
+                                    creator.create_batch(count=batch_count)
+                                )
+                                on_progress(f"🎬 Đã tạo {len(ai_videos)} video AI để đăng (vòng {round_num}).", "success")
+                            except Exception as ve:
+                                on_progress(f"⚠️ Tạo video AI thất bại: {ve}", "warning")
+
+                        if not self.tiktok_nurture_running:
+                            break
+
+                        # Chay nurture cho tat ca tai khoan trong vong nay
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        results = loop.run_until_complete(
+                            self.tiktok_nurture_manager.run_all(ai_videos=ai_videos)
+                        )
+
+                        ok = sum(1 for r in results if r.get("success"))
+                        summary = {
+                            "success": True,
+                            "round": round_num,
+                            "total": len(results),
+                            "succeeded": ok,
+                            "failed": len(results) - ok,
+                            "results": results,
+                        }
+                        self.tiktokNurtureUpdate.emit(json.dumps({
+                            "message": f"✅ Vòng {round_num} xong: {ok}/{len(results)} tài khoản thành công!",
+                            "level": "success",
+                            "stats": summary,
+                        }))
+                        self.statusMessage.emit(f"✅ Nuôi TikTok vòng {round_num}: {ok}/{len(results)}")
+
+                        if not continuous_247 or not self.tiktok_nurture_running:
+                            break
+
+                        round_accounts = []  # tu vong sau, luon auto-fetch queue moi tu C69
+                        rest_minutes = random.uniform(15, 30)
+                        on_progress(f"⏳ Nghỉ {rest_minutes:.1f} phút trước vòng nuôi tiếp theo...", "info")
+                        for _ in range(int(rest_minutes * 60)):
+                            if not self.tiktok_nurture_running:
+                                break
+                            time.sleep(1)
+
+                    self.tiktokNurtureUpdate.emit(json.dumps({
+                        "message": "⏹️ Đã dừng vòng lặp nuôi TikTok.",
+                        "level": "warning",
+                        "status": "stopped",
+                    }))
+
+                except Exception as ex:
+                    import traceback
+                    traceback.print_exc()
+                    self.tiktokNurtureUpdate.emit(json.dumps({
+                        "message": f"❌ Lỗi nuôi TikTok: {str(ex)}",
+                        "level": "error",
+                        "status": "stopped",
+                    }))
+                    self.statusMessage.emit(f"❌ Lỗi nuôi TikTok: {str(ex)}")
+                finally:
+                    self.tiktok_nurture_running = False
+                    self.tiktok_nurture_manager = None
+
+            t = threading.Thread(target=nurture_loop, daemon=True)
+            t.start()
+            mode_txt = "24/7 liên tục" if continuous_247 else "1 vòng"
+            return json.dumps({"success": True, "message": f"Đang khởi động nuôi {len(accounts)} tài khoản TikTok ({mode_txt})..."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(result=str)
+    def stopTikTokNurture(self):
+        """Dừng toàn bộ tiến trình nuôi TikTok."""
+        try:
+            if self.tiktok_nurture_manager:
+                self.tiktok_nurture_manager.stop()
+            self.tiktok_nurture_running = False
+            self.statusMessage.emit("⏹️ Đã gửi yêu cầu dừng nuôi TikTok...")
+            return json.dumps({"success": True, "message": "Yêu cầu dừng nuôi đã được gửi."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(result=str)
+    def getTikTokNurtureStatus(self):
+        """Lấy trạng thái hiện tại của tiến trình nuôi TikTok."""
+        try:
+            is_running = getattr(self, 'tiktok_nurture_running', False)
+            manager = getattr(self, 'tiktok_nurture_manager', None)
+            return json.dumps({
+                "is_running": is_running,
+                "has_manager": manager is not None,
+            })
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(str, result=str)
+    @pyqtSlot(result=str)
+    def createAITikTokVideo(self, topic=""):
+        """
+        Tạo một video AI TikTok từ topic đã cho (hoặc tự động chọn xu hướng).
+
+        Args:
+            topic: Chủ đề video (để trống để AI tự chọn xu hướng)
+
+        Returns:
+            JSON {path, caption, hashtags, topic, script} hoặc {error}
+        """
+        try:
+            self.statusMessage.emit(f"🎬 Đang tạo video AI TikTok: {'tự động' if not topic else topic}...")
+            import threading
+
+            result_holder = {"result": None, "error": None}
+            done_event = __import__("threading").Event()
+
+            def create_thread():
+                try:
+                    from ai_video_creator import AIVideoCreator, VideoCreatorConfig
+                    vid_cfg = VideoCreatorConfig(
+                        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
+                        niche="trending",
+                        tts_language="vi",
+                    )
+                    creator = AIVideoCreator(vid_cfg)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(creator.create_video(topic or None))
+                    result_holder["result"] = result
+                except Exception as ex:
+                    result_holder["error"] = str(ex)
+                finally:
+                    done_event.set()
+
+            t = threading.Thread(target=create_thread, daemon=True)
+            t.start()
+            done_event.wait(timeout=300)  # Max 5 phut
+
+            if result_holder["error"]:
+                return json.dumps({"error": result_holder["error"]})
+            if result_holder["result"]:
+                self.statusMessage.emit(f"✅ Video AI đã tạo: {result_holder['result'].get('path', '')}")
+                return json.dumps(result_holder["result"], ensure_ascii=False)
+            return json.dumps({"error": "Tạo video thất bại hoặc timeout."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+
     async def _evaluate_in_iframe_robust(self, tab, expression):
         return await evaluate_in_iframe_robust(tab, expression)
 
     async def _automate_apple_login(self, tab, apple_id, password):
+
         return await automate_apple_login(tab, apple_id, password)
 
     async def _find_button_by_text(self, tab, texts):
