@@ -1,5 +1,5 @@
 {
-    "version": "2.0.8",
+    "version": "2.1.0",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Bổ sung chi tiết địa chỉ email cụ thể trong log lỗi kết nối IMAP/Graph API để dễ kiểm soát tài khoản lỗi."
+    "changelog": "Nuôi TikTok: chạy 24/7 tự lấy queue mới từ C69, sửa lỗi cấu hình (video/like/comment/proxy/Gemini key) bị bỏ qua, sửa lỗi khởi động trình duyệt (NodriverBrowserManager) khiến phiên nuôi luôn lỗi ngay từ đầu, sửa thiếu thư viện tạo video AI (moviepy)."
 }

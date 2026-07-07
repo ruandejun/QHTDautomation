@@ -620,14 +620,21 @@ class TikTokNurtureSession:
         profile_id = self.account.get("profile_id") or f"nurture_{self.account.get('id', 'default')}"
         try:
             self.log(f"Starting browser (profile={profile_id})...")
-            self.browser_manager = NodriverBrowserManager(
-                profile_id=profile_id,
-                proxy=self.config.proxy or None,
+            self.browser_manager = NodriverBrowserManager()
+            # Random fingerprint moi phien, nhung "id" co dinh theo tai khoan de dung chung
+            # 1 thu muc user_data_dir (persist cookie/login) giua cac lan nuoi cua cung 1 account
+            profile_config = self.browser_manager.profile_manager.create_random_profile(
+                socks5=self.config.proxy if self.config.proxy_type == "socks5" else "",
+                proxy=self.config.proxy if self.config.proxy_type != "socks5" else "",
+            )
+            profile_config["id"] = profile_id
+            _, self.tab = await self.browser_manager.start(
+                profile_config=profile_config,
+                proxy_string=self.config.proxy or "",
                 proxy_type=self.config.proxy_type,
                 headless=self.config.headless,
+                start_url="https://www.tiktok.com",
             )
-            browser = await self.browser_manager.start()
-            self.tab = await browser.get("https://www.tiktok.com")
             await asyncio.sleep(3)
             self.log("Browser started.", "success")
             return True
@@ -638,7 +645,7 @@ class TikTokNurtureSession:
     async def _stop_browser(self) -> None:
         try:
             if self.browser_manager:
-                await self.browser_manager.stop()
+                await self.browser_manager.close()
         except Exception:
             pass
 

@@ -38,7 +38,8 @@ tqdm>=4.64.0
 PyExecJS>=1.5.1
 
 # Image processing (captcha)
-Pillow>=9.4.0
+# Pillow pinned <10.0.0: moviepy==1.0.3 (below) calls the removed Image.ANTIALIAS constant
+Pillow>=9.4.0,<10.0.0
 
 # Process management
 psutil>=5.9.0
@@ -48,6 +49,10 @@ paramiko>=3.1.0
 
 # Env variables
 python-dotenv>=1.0.0
+
+# AI Video Creator (TikTok nurture auto-post)
+# Pinned to 1.0.3: ai_video_creator.py uses the moviepy.editor API, removed in moviepy 2.x
+moviepy==1.0.3
 
 # Additional dependencies
 ShopifyAPI
