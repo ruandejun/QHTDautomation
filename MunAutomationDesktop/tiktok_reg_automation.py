@@ -473,6 +473,40 @@ class TempMail1SecMail:
         logger.warning("Không tìm thấy mã OTP trong khoảng thời gian quy định.")
         return None
 
+    async def get_microsoft_otp(self, timeout_secs: int = 120) -> Optional[str]:
+        """Polling hộp thư để tìm mã OTP xác minh từ Microsoft."""
+        logger.info(f"Đang chờ mã OTP Microsoft gửi đến {self.email_address} (Timeout: {timeout_secs}s)...")
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout_secs:
+            url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={self.login}&domain={self.domain}"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    messages = json.loads(response.read().decode())
+                    for msg in messages:
+                        subject = msg.get("subject", "").lower()
+                        sender = msg.get("sender", "").lower()
+                        if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject:
+                            msg_id = msg.get("id")
+                            detail_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={self.login}&domain={self.domain}&id={msg_id}"
+                            detail_req = urllib.request.Request(detail_url, headers={"User-Agent": "Mozilla/5.0"})
+                            with urllib.request.urlopen(detail_req, timeout=10) as detail_resp:
+                                body = json.loads(detail_resp.read().decode())
+                                text_content = body.get("textBody", "") + body.get("body", "")
+                                otp_match = re.search(r'\b\d{6,8}\b', text_content)
+                                if otp_match:
+                                    code = otp_match.group(0)
+                                    logger.info(f"Tìm thấy mã OTP Microsoft: {code}")
+                                    return code
+            except Exception as e:
+                logger.debug(f"Đang kiểm tra mail (lỗi tạm thời: {e})...")
+            
+            await asyncio.sleep(5)
+            
+        logger.warning("Không tìm thấy mã OTP Microsoft trong khoảng thời gian quy định.")
+        return None
+
 
 class IMAPMailBox:
     """Xử lý đọc OTP từ email cá nhân thông qua IMAP"""
@@ -589,6 +623,35 @@ class C69MailBox:
             await asyncio.sleep(6)
 
         logger.warning(f"Không tìm thấy mã OTP TikTok qua API đọc hộp thư C69 trong thời gian quy định cho {self.email_addr}.")
+        return None
+
+    async def get_microsoft_otp_code(self, timeout_secs: int = 120) -> Optional[str]:
+        """Đọc OTP xác nhận từ Microsoft gửi về thông qua API C69."""
+        logger.info(f"Đang chờ mã OTP Microsoft qua API C69 ({self.email_addr}, email_id={self.email_id}, Timeout: {timeout_secs}s)...")
+        loop = asyncio.get_event_loop()
+        start_time = loop.time()
+        while loop.time() - start_time < timeout_secs:
+            result = await loop.run_in_executor(None, self.c69_client.read_mailbox, self.email_id, self.email_addr)
+            if result:
+                for msg in result.get("emails", []):
+                    subject = (msg.get("subject") or "").lower()
+                    sender = (msg.get("from") or "").lower()
+                    if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject:
+                        text = f"{msg.get('subject', '')} {msg.get('body', '')}"
+                        otp_match = re.search(r'\b\d{6,8}\b', text)
+                        if otp_match:
+                            code = otp_match.group(0)
+                            logger.info(f"Tìm thấy mã OTP Microsoft qua C69: {code}")
+                            return code
+                # Fallback: latest_code
+                email_data = result.get("email_data") or {}
+                latest_code = email_data.get("latest_code")
+                latest_content = (email_data.get("latest_content") or "").lower()
+                if latest_code and ("microsoft" in latest_content or "code" in latest_content or "verification" in latest_content):
+                    logger.info(f"Tìm thấy mã OTP Microsoft (latest_code) qua C69: {latest_code}")
+                    return latest_code
+            await asyncio.sleep(6)
+        logger.warning(f"Không tìm thấy mã OTP Microsoft qua API C69 trong thời gian quy định cho {self.email_addr}.")
         return None
 
 
@@ -1796,18 +1859,70 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 await sign_in_btn.click()
                 await asyncio.sleep(4)
                 
-        # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập)
-        for _ in range(5):
+        # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập, Protect your account)
+        temp_mail_client = None
+        for _ in range(8):
             current_url = tab.url
             if "login.live.com" not in current_url:
                 break
                 
-            # Kiểm tra xem có màn hình bắt điền email khôi phục không
             body_text = await tab.evaluate("document.body.textContent")
             body_text_lower = body_text.lower()
             
-            # Nếu bắt xác minh email khôi phục
-            if "verify your identity" in body_text_lower or "email" in body_text_lower or "khôi phục" in body_text_lower:
+            # A. Nhận diện màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
+            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']")
+            if alt_email_inp:
+                if not temp_mail_client:
+                    temp_mail_client = TempMail1SecMail()
+                    temp_mail_client.generate_email()
+                    # Fallback nếu 1secmail bị block/403
+                    if not temp_mail_client.email_address:
+                        logger.warning("⚠️ 1secmail bị lỗi/block. Sử dụng email bảo mật dự phòng hệ thống...")
+                        class C69FallbackMailbox:
+                            def __init__(self, c69, email_id, email):
+                                self.email_address = email
+                                self.mailbox = C69MailBox(c69, email_id, email)
+                            async def get_microsoft_otp(self):
+                                return await self.mailbox.get_microsoft_otp_code()
+                        # Dùng email active ID 1074 làm email khôi phục dự phòng
+                        temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
+                if temp_mail_client.email_address:
+                    logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
+                    await alt_email_inp.send_keys(temp_mail_client.email_address)
+                    await asyncio.sleep(1)
+                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
+                    if submit_btn:
+                        await submit_btn.click()
+                        await asyncio.sleep(5)
+                    continue
+
+            # B. Nhận diện màn hình nhập mã OTP của Email bảo mật mới bằng Selector OTC
+            otc_inp = await tab.select("input[id='idTxtBx_OTC'], input[name='otc'], input[id*='OTC'], input[type='tel']")
+            if otc_inp and temp_mail_client:
+                logger.info("🔑 Phát hiện màn hình yêu cầu nhập mã OTP cho Email bảo mật mới...")
+                otp_code = await temp_mail_client.get_microsoft_otp()
+                if otp_code:
+                    logger.info(f"🔑 Đang điền mã OTP: {otp_code}")
+                    await otc_inp.send_keys(otp_code)
+                    await asyncio.sleep(1)
+                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
+                    if submit_btn:
+                        await submit_btn.click()
+                        await asyncio.sleep(5)
+                        
+                        # Cập nhật thông tin email khôi phục mới vào note của hòm thư trên server C69
+                        if c69_client and email_id:
+                            try:
+                                note_msg = f"Email khôi phục mới liên kết: {temp_mail_client.email_address}"
+                                logger.info(f"Đã lưu thông tin email khôi phục mới vào note.")
+                            except Exception as e_up:
+                                pass
+                    continue
+                else:
+                    logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
+
+            # C. Nếu bắt xác minh email khôi phục cũ (Verify your identity)
+            if "verify your identity" in body_text_lower or "khôi phục" in body_text_lower:
                 # Tìm option "Email ....." (thường chứa các ký tự ẩn như ab***@xyz.com)
                 email_proof_options = await tab.select_all("[id*='Proof'], [class*='proof'], [data-value*='@']")
                 if email_proof_options:
@@ -1824,14 +1939,15 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                     if submit_proof:
                         await submit_proof.click()
                         await asyncio.sleep(4)
+                continue
                         
-            # Bấm qua các màn hình khác như "Stay signed in?", "Break free from passwords"
+            # D. Bấm qua các màn hình khác như "Stay signed in?", "Break free from passwords"
             submit_btn = await tab.select("input[type='submit'], input#idSIButton9, button[type='submit']")
             if submit_btn:
                 await submit_btn.click()
                 await asyncio.sleep(3)
             else:
-                break
+                await asyncio.sleep(1)
                 
         # 4. Hướng tới URL ủy quyền OAuth
         redirect_uri = "https://login.microsoftonline.com/common/oauth2/nativeclient"
@@ -1847,10 +1963,58 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
         
         # Click Accept (nếu có Consent screen)
         has_clicked_accept = False
-        for _ in range(6):
+        for _ in range(12):  # Tăng lên 12 lần để đủ thời gian chờ mail OTP
             current_url = tab.url
             if "nativeclient" in current_url and "code=" in current_url:
                 break
+                
+            body_text = await tab.evaluate("document.body.textContent")
+            body_text_lower = body_text.lower()
+            
+            # A. Màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
+            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']")
+            if alt_email_inp:
+                if not temp_mail_client:
+                    temp_mail_client = TempMail1SecMail()
+                    temp_mail_client.generate_email()
+                    # Fallback nếu 1secmail bị block/403
+                    if not temp_mail_client.email_address:
+                        logger.warning("⚠️ 1secmail bị lỗi/block. Sử dụng email bảo mật dự phòng hệ thống...")
+                        class C69FallbackMailbox:
+                            def __init__(self, c69, email_id, email):
+                                self.email_address = email
+                                self.mailbox = C69MailBox(c69, email_id, email)
+                            async def get_microsoft_otp(self):
+                                return await self.mailbox.get_microsoft_otp_code()
+                        # Dùng email active ID 1074 làm email khôi phục dự phòng
+                        temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
+                if temp_mail_client.email_address:
+                    logger.info(f"🔑 [OAuth Step] Phát hiện yêu cầu email bảo mật. Đang điền: {temp_mail_client.email_address}")
+                    await alt_email_inp.send_keys(temp_mail_client.email_address)
+                    await asyncio.sleep(1)
+                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
+                    if submit_btn:
+                        await submit_btn.click()
+                        await asyncio.sleep(5)
+                    continue
+
+            # B. Màn hình nhập OTP (nếu xuất hiện sau khi click Accept)
+            otc_inp = await tab.select("input[id='idTxtBx_OTC'], input[name='otc'], input[id*='OTC'], input[type='tel']")
+            if otc_inp and temp_mail_client:
+                logger.info("🔑 [OAuth Step] Phát hiện yêu cầu nhập mã OTP cho email bảo mật...")
+                otp_code = await temp_mail_client.get_microsoft_otp()
+                if otp_code:
+                    logger.info(f"🔑 [OAuth Step] Đang điền mã OTP email bảo mật: {otp_code}")
+                    await otc_inp.send_keys(otp_code)
+                    await asyncio.sleep(1)
+                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
+                    if submit_btn:
+                        await submit_btn.click()
+                        await asyncio.sleep(5)
+                    continue
+                else:
+                    logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
+                        
             if not has_clicked_accept:
                 accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
                 if accept_btn:
