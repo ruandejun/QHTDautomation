@@ -1770,7 +1770,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
     if recovery_email:
         logger.info(f"🔍 Tìm thấy email khôi phục liên kết: {recovery_email}")
         
-    tab = await browser.create_tab()
+    tab = await browser.get("about:blank", new_tab=True)
     try:
         # Truy cập trang đăng nhập live.com
         await tab.get("https://login.live.com/")
