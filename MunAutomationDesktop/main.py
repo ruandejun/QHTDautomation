@@ -3714,7 +3714,7 @@ class MunAutomationBridge(QObject):
     def _on_email_completed(self, email_id, success):
         try:
             js_code = f"if (window.onMicrosoftEmailCompleted) {{ window.onMicrosoftEmailCompleted({email_id}, {json.dumps(success)}); }}"
-            self.main_window.browser.page().runJavaScript(js_code)
+            self.main_window.web_view.page().runJavaScript(js_code)
         except Exception as e:
             print(f"[MunAutomation] Lỗi khi gọi javascript callback onMicrosoftEmailCompleted: {e}")
 
@@ -3726,7 +3726,7 @@ class MunAutomationBridge(QObject):
             
         try:
             js_code = f"if (window.onMicrosoftTokenFinished) {{ window.onMicrosoftTokenFinished({json.dumps(success)}, {json.dumps(message)}); }}"
-            self.main_window.browser.page().runJavaScript(js_code)
+            self.main_window.web_view.page().runJavaScript(js_code)
         except Exception as e:
             print(f"[MunAutomation] Lỗi khi gọi javascript callback onMicrosoftTokenFinished: {e}")
 
