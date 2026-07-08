@@ -1846,17 +1846,20 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
         await asyncio.sleep(4)
         
         # Click Accept (nếu có Consent screen)
-        for _ in range(3):
+        has_clicked_accept = False
+        for _ in range(6):
             current_url = tab.url
             if "nativeclient" in current_url and "code=" in current_url:
                 break
-            accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
-            if accept_btn:
-                logger.info("Click Accept đồng ý cấp quyền...")
-                await accept_btn.click()
-                await asyncio.sleep(4)
-            else:
-                await asyncio.sleep(1)
+            if not has_clicked_accept:
+                accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
+                if accept_btn:
+                    logger.info("Click Accept đồng ý cấp quyền...")
+                    await accept_btn.click()
+                    has_clicked_accept = True
+                    await asyncio.sleep(6)
+                    continue
+            await asyncio.sleep(2)
                 
         # 5. Lấy code từ redirect url
         current_url = tab.url
