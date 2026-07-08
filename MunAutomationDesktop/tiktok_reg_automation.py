@@ -1835,26 +1835,40 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
         
     tab = await browser.get("about:blank", new_tab=True)
     try:
-        # Truy cập trang đăng nhập live.com
-        await tab.get("https://login.live.com/")
-        await asyncio.sleep(4)
+        # Truy cập trang đăng nhập live.com (timeout tối đa 8s để tránh treo chờ tài nguyên phụ)
+        try:
+            await asyncio.wait_for(tab.get("https://login.live.com/"), timeout=8)
+        except Exception:
+            logger.info("Chờ load trang live.com timeout, tiếp tục...")
+        await asyncio.sleep(2)
         
-        # 1. Điền Email
-        email_inps = await tab.select_all("input[type='email'], input[name='loginfmt']")
+        # 1. Điền Email (Chờ tối đa 15s cho form email hiển thị)
+        email_inps = []
+        for _ in range(15):
+            email_inps = await tab.select_all("input[type='email'], input[name='loginfmt']")
+            if email_inps:
+                break
+            await asyncio.sleep(1)
+            
         if email_inps:
             await email_inps[0].send_keys(email)
             await asyncio.sleep(1)
-            next_btn = await tab.select("input[type='submit'], input#idSIButton9")
+            next_btn = await tab.select("#idSIButton9, input[type='submit'], button[type='submit']")
             if next_btn:
                 await next_btn.click()
-                await asyncio.sleep(3)
                 
-        # 2. Điền Password
-        pass_inps = await tab.select_all("input[type='password'], input[name='passwd']")
+        # 2. Điền Password (Chờ tối đa 15s cho form password hiển thị sau khi click Next)
+        pass_inps = []
+        for _ in range(15):
+            pass_inps = await tab.select_all("input[type='password'], input[name='passwd']")
+            if pass_inps:
+                break
+            await asyncio.sleep(1)
+            
         if pass_inps:
             await pass_inps[0].send_keys(password)
             await asyncio.sleep(1)
-            sign_in_btn = await tab.select("input[type='submit'], input#idSIButton9")
+            sign_in_btn = await tab.select("#idSIButton9, input[type='submit'], button[type='submit']")
             if sign_in_btn:
                 await sign_in_btn.click()
                 await asyncio.sleep(4)
@@ -1958,8 +1972,11 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                    f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access"
                    
         logger.info("Chuyển hướng trình duyệt tới URL xin quyền OAuth...")
-        await tab.get(auth_url)
-        await asyncio.sleep(4)
+        try:
+            await asyncio.wait_for(tab.get(auth_url), timeout=8)
+        except Exception:
+            logger.info("Chờ load trang OAuth timeout, tiếp tục...")
+        await asyncio.sleep(2)
         
         # Click Accept (nếu có Consent screen)
         has_clicked_accept = False
