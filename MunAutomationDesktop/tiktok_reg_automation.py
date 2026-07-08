@@ -1835,11 +1835,10 @@ async def safe_send_keys(tab, selector, text, retries=3):
                 await el.send_keys(text)
                 return True
         except Exception as e:
-            if "node" in str(e).lower() or "id" in str(e).lower() or "stale" in str(e).lower():
-                logger.warning(f"[CDP Retry] Lỗi stale node khi gõ vào {selector}, đang thử lại lần {i+1}...")
-                await asyncio.sleep(1)
-            else:
+            if i == retries - 1:
                 raise e
+            logger.warning(f"[CDP Retry] Gặp lỗi khi gõ vào {selector} ({e}), đang thử lại lần {i+1}...")
+            await asyncio.sleep(1)
     return False
 
 async def safe_click(tab, selector, retries=3):
@@ -1850,11 +1849,10 @@ async def safe_click(tab, selector, retries=3):
                 await el.click()
                 return True
         except Exception as e:
-            if "node" in str(e).lower() or "id" in str(e).lower() or "stale" in str(e).lower():
-                logger.warning(f"[CDP Retry] Lỗi stale node khi click vào {selector}, đang thử lại lần {i+1}...")
-                await asyncio.sleep(1)
-            else:
+            if i == retries - 1:
                 raise e
+            logger.warning(f"[CDP Retry] Gặp lỗi khi click vào {selector} ({e}), đang thử lại lần {i+1}...")
+            await asyncio.sleep(1)
     return False
 
 
