@@ -494,9 +494,14 @@ class TempMail1SecMail:
                             with urllib.request.urlopen(detail_req, timeout=10) as detail_resp:
                                 body = json.loads(detail_resp.read().decode())
                                 text_content = body.get("textBody", "") + body.get("body", "")
-                                otp_match = re.search(r'\b\d{6,8}\b', text_content)
+                                otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                if not otp_match:
+                                    otp_match = re.search(r'(?:code|mã)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                if not otp_match:
+                                    otp_match = re.search(r'\b\d{6,8}\b', text_content)
+                                    
                                 if otp_match:
-                                    code = otp_match.group(0)
+                                    code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
                                     logger.info(f"Tìm thấy mã OTP Microsoft: {code}")
                                     return code
             except Exception as e:
@@ -638,9 +643,14 @@ class C69MailBox:
                     sender = (msg.get("from") or "").lower()
                     if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject:
                         text = f"{msg.get('subject', '')} {msg.get('body', '')}"
-                        otp_match = re.search(r'\b\d{6,8}\b', text)
+                        otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6,8})', text, re.IGNORECASE)
+                        if not otp_match:
+                            otp_match = re.search(r'(?:code|mã)[:\s]+(\d{6,8})', text, re.IGNORECASE)
+                        if not otp_match:
+                            otp_match = re.search(r'\b\d{6,8}\b', text)
+                            
                         if otp_match:
-                            code = otp_match.group(0)
+                            code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
                             logger.info(f"Tìm thấy mã OTP Microsoft qua C69: {code}")
                             return code
                 # Fallback: latest_code
