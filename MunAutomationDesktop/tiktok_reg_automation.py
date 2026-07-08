@@ -1881,6 +1881,8 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 break
                 
             body_text = await tab.evaluate("document.body.textContent")
+            if not isinstance(body_text, str):
+                body_text = ""
             body_text_lower = body_text.lower()
             
             # A. Nhận diện màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
@@ -1986,6 +1988,8 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 break
                 
             body_text = await tab.evaluate("document.body.textContent")
+            if not isinstance(body_text, str):
+                body_text = ""
             body_text_lower = body_text.lower()
             
             # A. Màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
