@@ -1161,6 +1161,75 @@ class BrowserWorker(QThread):
         self._stop_flag = True
 
 
+class MicrosoftTokenWorker(QThread):
+    """QThread wrapper to run Microsoft OAuth login flow local."""
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str) # success, message
+
+    def __init__(self, bridge, email_id, email, password, note, parent=None):
+        super().__init__(parent)
+        self.bridge = bridge
+        self.email_id = email_id
+        self.email = email
+        self.password = password
+        self.note = note
+        self.manager = None
+
+    def run(self):
+        if not MUN_ANTI_BROWSER_AVAILABLE:
+            self.log_signal.emit("❌ Lỗi: Không tìm thấy module mun_anti_browser.")
+            self.finished_signal.emit(False, "Không tìm thấy module mun_anti_browser.")
+            return
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_token_fetch())
+        except Exception as e:
+            self.log_signal.emit(f"❌ Microsoft OAuth Error: {str(e)}")
+            self.finished_signal.emit(False, str(e))
+        finally:
+            loop.close()
+
+    async def _run_token_fetch(self):
+        self.manager = NodriverBrowserManager()
+        self.log_signal.emit(f"🔑 Đang khởi chạy Anti-Detect Browser để đăng nhập {self.email}...")
+        try:
+            profile = self.manager.profile_manager.create_random_profile()
+            browser, tab = await self.manager.start(profile)
+            if not tab:
+                self.log_signal.emit("❌ Lỗi: Không thể khởi chạy trình duyệt.")
+                self.finished_signal.emit(False, "tab is None")
+                return
+
+            from tiktok_reg_automation import auto_login_microsoft_and_get_token, C69Client
+            c69 = C69Client(C69_BASE_URL)
+            c69.session = self.bridge.get_requests_session()
+            c69.logged_in = True
+
+            success = await auto_login_microsoft_and_get_token(
+                browser=browser,
+                email=self.email,
+                password=self.password,
+                note_field=self.note,
+                client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                email_id=self.email_id,
+                c69_client=c69
+            )
+            if success:
+                self.log_signal.emit("🎉 Tự động cấp lại token và cập nhật thành công!")
+                self.finished_signal.emit(True, "Cập nhật Token thành công!")
+            else:
+                self.log_signal.emit("❌ Tự động cấp lại token thất bại.")
+                self.finished_signal.emit(False, "Lấy token thất bại.")
+        except Exception as e:
+            self.log_signal.emit(f"❌ Lỗi quy trình: {str(e)}")
+            self.finished_signal.emit(False, str(e))
+        finally:
+            if self.manager and self.manager.is_running:
+                await self.manager.close()
+
+
 class RequestWorker(QThread):
     finished_signal = pyqtSignal(str)
 
@@ -3592,6 +3661,31 @@ class MunAutomationBridge(QObject):
             return json.dumps({"success": True, "message": f"Đang thực thi tác vụ Subscribe cho {tiktok_username}"})
         except Exception as e:
             return json.dumps({"error": str(e)})
+
+    @pyqtSlot(int, str, str, str, result=str)
+    def getMicrosoftToken(self, email_id, email, password, note):
+        """Kích hoạt luồng chạy lấy Token Microsoft OAuth từ frontend Web"""
+        if getattr(self, "microsoft_token_worker", None) and self.microsoft_token_worker.isRunning():
+            return json.dumps({"success": False, "message": "Đang có luồng lấy token chạy song song."})
+            
+        self.microsoft_token_worker = MicrosoftTokenWorker(self, email_id, email, password, note)
+        self.microsoft_token_worker.log_signal.connect(lambda msg: self.statusMessage.emit(f"📧 {msg}"))
+        self.microsoft_token_worker.finished_signal.connect(self._on_microsoft_token_finished)
+        self.microsoft_token_worker.start()
+        
+        return json.dumps({"success": True, "message": "Đang khởi chạy luồng lấy token Microsoft..."})
+        
+    def _on_microsoft_token_finished(self, success, message):
+        if success:
+            self.statusMessage.emit(f"✅ {message}")
+        else:
+            self.statusMessage.emit(f"❌ {message}")
+            
+        try:
+            js_code = f"if (window.onMicrosoftTokenFinished) {{ window.onMicrosoftTokenFinished({json.dumps(success)}, {json.dumps(message)}); }}"
+            self.main_window.browser.page().runJavaScript(js_code)
+        except Exception as e:
+            print(f"[MunAutomation] Lỗi khi gọi javascript callback onMicrosoftTokenFinished: {e}")
 
 # Backward compatibility alias
 QHTDBridge = MunAutomationBridge
