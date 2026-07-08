@@ -881,7 +881,7 @@ async def automate_google_login(browser: nodriver.Browser, email_addr: str, pass
                 result = await google_tab.evaluate(f"""(() => {{
                     const el = document.querySelector("input[type='password']") || 
                                document.querySelector("input[name='Passwd']");
-                    if (!el) return 'no_input';
+                    if (!el || el.offsetHeight === 0) return 'no_input';
                     el.focus();
                     el.value = '';
                     el.value = '{password}';
@@ -906,9 +906,9 @@ async def automate_google_login(browser: nodriver.Browser, email_addr: str, pass
         logger.info("Clicking password Next...")
         await google_tab.evaluate("""(() => {
             const next = document.querySelector('#passwordNext');
-            if (next) { next.click(); return; }
+            if (next && next.offsetHeight > 0) { next.click(); return; }
             const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-            const btn = buttons.find(b => b.textContent.includes('Next') || b.textContent.includes('Tiếp theo') || b.textContent.includes('Tiep'));
+            const btn = buttons.find(b => (b.textContent.includes('Next') || b.textContent.includes('Tiếp theo') || b.textContent.includes('Tiep')) && b.offsetHeight > 0);
             if (btn) btn.click();
         })()""")
             
@@ -958,12 +958,68 @@ async def automate_google_login(browser: nodriver.Browser, email_addr: str, pass
             """)
             await asyncio.sleep(5)
                 
-        # Kiểm tra nếu vẫn còn yêu cầu OTP / xác minh điện thoại khác
-        for _ in range(10):
+        # Kiểm tra nếu vẫn còn yêu cầu OTP / xác minh điện thoại / ủy quyền
+        for _ in range(30):
             # Check xem tab Google đã đóng chưa (tức là đã đăng nhập xong và redirect về TikTok)
             if google_tab not in browser.tabs:
                 logger.info("Google OAuth login tab đã đóng. Tiếp tục luồng trên TikTok.")
                 return True
+                
+            # Thử tự động click các nút "Understand", "Continue", "Allow", "Tôi hiểu", "Tiếp tục" nếu xuất hiện
+            try:
+                action = await google_tab.evaluate("""
+                    (() => {
+                        const findButtonByText = (texts) => {
+                            const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+                            return buttons.find(b => {
+                                if (b.offsetHeight === 0) return false;
+                                const text = b.textContent.trim().toLowerCase();
+                                return texts.some(t => text === t || text.includes(t));
+                            });
+                        };
+
+                        const clickElement = (el) => {
+                            const opts = { bubbles: true, cancelable: true, view: window };
+                            el.focus();
+                            el.dispatchEvent(new MouseEvent('mousedown', opts));
+                            el.dispatchEvent(new MouseEvent('mouseup', opts));
+                            el.dispatchEvent(new MouseEvent('click', opts));
+                            
+                            const children = el.querySelectorAll('*');
+                            children.forEach(c => {
+                                c.dispatchEvent(new MouseEvent('mousedown', opts));
+                                c.dispatchEvent(new MouseEvent('mouseup', opts));
+                                c.dispatchEvent(new MouseEvent('click', opts));
+                            });
+                        };
+
+                        // 1. Tìm nút Understand / Tôi hiểu / Tôi đã hiểu
+                        const understandBtn = findButtonByText(['understand', 'tôi hiểu', 'tôi đã hiểu', 'tôi đồng ý']);
+                        if (understandBtn) {
+                            clickElement(understandBtn);
+                            return 'clicked_understand';
+                        }
+                        
+                        // 2. Tìm nút Continue / Tiếp tục / Allow / Cho phép / Confirm / Xác nhận
+                        const continueBtn = findButtonByText(['continue', 'tiếp tục', 'allow', 'cho phép', 'confirm', 'xác nhận']);
+                        if (continueBtn) {
+                            // Tránh click nhầm các nút Next/Tiếp tục của form nhập email/pass
+                            if (document.querySelector("input[type='email']") || document.querySelector("input[type='password']")) {
+                                return 'none'; 
+                            }
+                            clickElement(continueBtn);
+                            return 'clicked_continue';
+                        }
+                        
+                        return 'none';
+                    })()
+                """)
+                if action != 'none':
+                    logger.info(f"Đã tự động click nút trên Google OAuth: {action}")
+                    await asyncio.sleep(2)
+            except Exception:
+                pass
+                
             await asyncio.sleep(2)
             
         logger.warning("Cửa sổ Google OAuth vẫn chưa đóng. Có thể đang bị kẹt OTP hoặc xác minh 2 lớp. Vui lòng hoàn thành trên trình duyệt...")
@@ -1323,7 +1379,7 @@ async def disable_email_2fa(tab: Any, mail_client: Any) -> bool:
         return False
 
 
-async def change_tiktok_email(tab: Any, mail_client_old: Any, c69: C69Client) -> Optional[Dict[str, Any]]:
+async def change_tiktok_email(tab: Any, mail_client_old: Any, c69: C69Client, replacement_email_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Thay đổi email liên kết của tài khoản TikTok sang Hotmail mới từ C69."""
     logger.info("=== BẮT ĐẦU ĐỔI EMAIL TÀI KHOẢN TIKTOK ===")
     await tab.get("https://www.tiktok.com/setting/account?lang=en")
@@ -1396,11 +1452,17 @@ async def change_tiktok_email(tab: Any, mail_client_old: Any, c69: C69Client) ->
                 """)
                 await asyncio.sleep(4)
                 
-        # Bước 2: Lấy Email Hotmail mới chưa đăng ký từ C69
-        logger.info("Lấy Email Hotmail mới từ C69...")
-        new_email_data = c69.get_unused_email("hotmail")
+        # Bước 2: Lấy Email Hotmail mới chưa đăng ký từ C69 hoặc dùng email được chỉ định sẵn
+        new_email_data = None
+        if replacement_email_data:
+            new_email_data = replacement_email_data
+            logger.info("Sử dụng Email Hotmail thay thế được chỉ định sẵn...")
+        else:
+            logger.info("Lấy Email Hotmail mới từ C69...")
+            new_email_data = c69.get_unused_email("hotmail")
+            
         if not new_email_data:
-            logger.error("Không lấy được email Hotmail mới chưa dùng từ C69 để đổi.")
+            logger.error("Không lấy được email Hotmail mới chưa dùng để đổi.")
             return None
             
         new_email_addr = new_email_data.get("email") or new_email_data.get("email_address", "")
@@ -1887,35 +1949,56 @@ async def run_tiktok_registration_flow(args):
     custom_email_id = args.get("email_id")
     custom_email_password = args.get("email_password")
 
-    if custom_email and custom_email_id:
+    if custom_email:
         email_addr = custom_email
-        email_id = int(custom_email_id)
+        if custom_email_id is not None:
+            try:
+                email_id = int(custom_email_id)
+            except (ValueError, TypeError):
+                email_id = None
+        else:
+            email_id = None
         password = custom_email_password or args.get("password") or generate_random_string(12)
         logger.info(f"Sử dụng email chọn thủ công từ GUI: {email_addr} (id={email_id})")
-    elif reg_method == "c69-email":
-        # Lấy email Hotmail/Gmail chưa dùng từ AccountsEmails trên C69
-        # Thứ tự ưu tiên: hotmail trước (Microsoft Graph OTP), fallback sang gmail
-        c69_email_data = c69.get_unused_email("hotmail") or c69.get_unused_email("gmail")
-        if not c69_email_data:
-            logger.error("Không tìm thấy email chưa dùng nào trên C69 để đăng ký.")
-            return False
-        email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
-        password = c69_email_data.get("password", "")
-        email_id = c69_email_data.get("id")  # AccountsEmails.id
-    elif reg_method == "google":
-        # Lấy email chưa đăng ký TikTok từ C69 (Gmail, Google Workspace, Edu — bất kỳ tài khoản Google nào)
-        c69_email_data = c69.get_unused_email("tiktok")
-        if not c69_email_data:
-            logger.error("Không tìm thấy email chưa đăng ký TikTok nào trên C69.")
-            return False
-        email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
-        password = c69_email_data.get("password", "")
-        email_id = c69_email_data.get("id")  # AccountsEmails.id
     else:
-        # Chế độ tự sinh TempMail
-        mail_client = TempMail1SecMail()
-        email_addr = mail_client.generate_email()
-        password = args.get("password") or generate_random_string(12)
+        # Nếu không có email chọn thủ công, lấy email tự động từ C69 theo phương thức đăng ký
+        if reg_method == "c69-email":
+            # Lấy email Hotmail/Gmail chưa dùng từ AccountsEmails trên C69
+            # Thứ tự ưu tiên: hotmail trước (Microsoft Graph OTP), fallback sang gmail
+            c69_email_data = c69.get_unused_email("hotmail") or c69.get_unused_email("gmail")
+            if not c69_email_data:
+                logger.error("Không tìm thấy email chưa dùng nào trên C69 để đăng ký.")
+                return False
+            email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
+            password = c69_email_data.get("password", "")
+            email_id = c69_email_data.get("id")  # AccountsEmails.id
+        elif reg_method == "google":
+            # Lấy email chưa đăng ký TikTok từ C69 (Gmail, Google Workspace, Edu — bất kỳ tài khoản Google nào)
+            c69_email_data = c69.get_unused_email("tiktok")
+            if not c69_email_data:
+                logger.error("Không tìm thấy email chưa đăng ký TikTok nào trên C69.")
+                return False
+            email_addr = c69_email_data.get("email") or c69_email_data.get("email_address", "")
+            password = c69_email_data.get("password", "")
+            email_id = c69_email_data.get("id")  # AccountsEmails.id
+        else:
+            # Chế độ tự sinh TempMail
+            mail_client = TempMail1SecMail()
+            email_addr = mail_client.generate_email()
+            password = args.get("password") or generate_random_string(12)
+
+    # Xử lý thông tin email thay thế (replacement_email)
+    custom_replacement_email = args.get("replacement_email")
+    custom_replacement_email_id = args.get("replacement_email_id")
+    custom_replacement_email_password = args.get("replacement_email_password")
+    
+    replacement_email_data = None
+    if custom_replacement_email:
+        replacement_email_data = {
+            "email": custom_replacement_email,
+            "id": custom_replacement_email_id,
+            "password": custom_replacement_email_password
+        }
 
     logger.info(f"Thông tin Tài khoản Đăng ký: Email={email_addr} | Password={password}")
 
@@ -2490,7 +2573,7 @@ async def run_tiktok_registration_flow(args):
             two_factor_key = ""
             
         # 6.3. Đổi Email tài khoản TikTok sang Hotmail mới từ C69
-        new_email_data = await change_tiktok_email(tab, mail_client, c69)
+        new_email_data = await change_tiktok_email(tab, mail_client, c69, replacement_email_data)
         
         if new_email_data:
             final_email_addr = new_email_data.get("email") or new_email_data.get("email_address", "")
@@ -2507,17 +2590,21 @@ async def run_tiktok_registration_flow(args):
         # 7. Đồng bộ lưu trữ kết quả lên C69 với thông tin tài khoản hoàn thiện
         profile_id = str(manager._current_profile.get("id", "none"))
 
+        db_email_id = final_email_id
+        if db_email_id and not str(db_email_id).isdigit():
+            db_email_id = None
+
         c69.add_tiktok_account(
             email_addr=final_email_addr,
             password=password,
             two_factor_key=two_factor_key,
             profile_id=profile_id,
-            accounts_emails_id=final_email_id,  # Link về email Hotmail mới hoạt động
+            accounts_emails_id=db_email_id,  # Link về email Hotmail mới hoạt động
         )
 
         # Đánh dấu email mới là đã sử dụng
-        if final_email_id:
-            c69.mark_email_as_used(final_email_id)
+        if db_email_id:
+            c69.mark_email_as_used(db_email_id)
             
         # Lưu trữ dự phòng ở file cục bộ
         account_data = {
