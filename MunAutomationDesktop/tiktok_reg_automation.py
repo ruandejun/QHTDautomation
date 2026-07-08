@@ -1817,6 +1817,37 @@ async def _verify_signup_success(tab: Any, timeout_secs: int = 30) -> bool:
     return False
 
 
+async def safe_send_keys(tab, selector, text, retries=3):
+    for i in range(retries):
+        try:
+            el = await tab.select(selector)
+            if el:
+                await el.send_keys(text)
+                return True
+        except Exception as e:
+            if "node" in str(e).lower() or "id" in str(e).lower() or "stale" in str(e).lower():
+                logger.warning(f"[CDP Retry] Lỗi stale node khi gõ vào {selector}, đang thử lại lần {i+1}...")
+                await asyncio.sleep(1)
+            else:
+                raise e
+    return False
+
+async def safe_click(tab, selector, retries=3):
+    for i in range(retries):
+        try:
+            el = await tab.select(selector)
+            if el:
+                await el.click()
+                return True
+        except Exception as e:
+            if "node" in str(e).lower() or "id" in str(e).lower() or "stale" in str(e).lower():
+                logger.warning(f"[CDP Retry] Lỗi stale node khi click vào {selector}, đang thử lại lần {i+1}...")
+                await asyncio.sleep(1)
+            else:
+                raise e
+    return False
+
+
 async def auto_login_microsoft_and_get_token(browser, email, password, note_field, client_id, email_id, c69_client):
     logger.info(f"🔑 Khởi động luồng lấy Token cho {email}...")
     import re
@@ -1851,11 +1882,10 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             await asyncio.sleep(1)
             
         if email_inps:
-            await email_inps[0].send_keys(email)
+            await safe_send_keys(tab, "input[type='email'], input[name='loginfmt']", email)
             await asyncio.sleep(1)
-            next_btn = await tab.select("#idSIButton9, input[type='submit'], button[type='submit']")
-            if next_btn:
-                await next_btn.click()
+            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
+            await asyncio.sleep(1)
                 
         # 2. Điền Password (Chờ tối đa 15s cho form password hiển thị sau khi click Next)
         pass_inps = []
@@ -1866,12 +1896,10 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             await asyncio.sleep(1)
             
         if pass_inps:
-            await pass_inps[0].send_keys(password)
+            await safe_send_keys(tab, "input[type='password'], input[name='passwd']", password)
             await asyncio.sleep(1)
-            sign_in_btn = await tab.select("#idSIButton9, input[type='submit'], button[type='submit']")
-            if sign_in_btn:
-                await sign_in_btn.click()
-                await asyncio.sleep(4)
+            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
+            await asyncio.sleep(4)
                 
         # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập, Protect your account)
         temp_mail_client = None
@@ -1904,12 +1932,10 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                         temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
                 if temp_mail_client.email_address:
                     logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
-                    await alt_email_inp.send_keys(temp_mail_client.email_address)
+                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']", temp_mail_client.email_address)
                     await asyncio.sleep(1)
-                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
-                    if submit_btn:
-                        await submit_btn.click()
-                        await asyncio.sleep(5)
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await asyncio.sleep(5)
                     continue
 
             # B. Nhận diện màn hình nhập mã OTP của Email bảo mật mới bằng Selector OTC
@@ -1919,20 +1945,18 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 otp_code = await temp_mail_client.get_microsoft_otp()
                 if otp_code:
                     logger.info(f"🔑 Đang điền mã OTP: {otp_code}")
-                    await otc_inp.send_keys(otp_code)
+                    await safe_send_keys(tab, "input[id='idTxtBx_OTC'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
                     await asyncio.sleep(1)
-                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
-                    if submit_btn:
-                        await submit_btn.click()
-                        await asyncio.sleep(5)
-                        
-                        # Cập nhật thông tin email khôi phục mới vào note của hòm thư trên server C69
-                        if c69_client and email_id:
-                            try:
-                                note_msg = f"Email khôi phục mới liên kết: {temp_mail_client.email_address}"
-                                logger.info(f"Đã lưu thông tin email khôi phục mới vào note.")
-                            except Exception as e_up:
-                                pass
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await asyncio.sleep(5)
+                    
+                    # Cập nhật thông tin email khôi phục mới vào note của hòm thư trên server C69
+                    if c69_client and email_id:
+                        try:
+                            note_msg = f"Email khôi phục mới liên kết: {temp_mail_client.email_address}"
+                            logger.info(f"Đã lưu thông tin email khôi phục mới vào note.")
+                        except Exception as e_up:
+                            pass
                     continue
                 else:
                     logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
@@ -1940,30 +1964,22 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             # C. Nếu bắt xác minh email khôi phục cũ (Verify your identity)
             if "verify your identity" in body_text_lower or "khôi phục" in body_text_lower:
                 # Tìm option "Email ....." (thường chứa các ký tự ẩn như ab***@xyz.com)
-                email_proof_options = await tab.select_all("[id*='Proof'], [class*='proof'], [data-value*='@']")
-                if email_proof_options:
-                    await email_proof_options[0].click()
-                    await asyncio.sleep(2)
+                await safe_click(tab, "[id*='Proof'], [class*='proof'], [data-value*='@']")
+                await asyncio.sleep(2)
                     
                 # Nhập email khôi phục đầy đủ
                 proof_input = await tab.select("input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm']")
                 if proof_input and recovery_email:
                     logger.info(f"Đang tự động điền email khôi phục: {recovery_email}")
-                    await proof_input.send_keys(recovery_email)
+                    await safe_send_keys(tab, "input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm']", recovery_email)
                     await asyncio.sleep(1)
-                    submit_proof = await tab.select("input[type='submit'], input#idSIButton9")
-                    if submit_proof:
-                        await submit_proof.click()
-                        await asyncio.sleep(4)
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await asyncio.sleep(4)
                 continue
                         
             # D. Bấm qua các màn hình khác như "Stay signed in?", "Break free from passwords"
-            submit_btn = await tab.select("input[type='submit'], input#idSIButton9, button[type='submit']")
-            if submit_btn:
-                await submit_btn.click()
-                await asyncio.sleep(3)
-            else:
-                await asyncio.sleep(1)
+            await safe_click(tab, "input[type='submit'], input#idSIButton9, button[type='submit'], #idSIButton9")
+            await asyncio.sleep(3)
                 
         # 4. Hướng tới URL ủy quyền OAuth
         redirect_uri = "https://login.microsoftonline.com/common/oauth2/nativeclient"
@@ -2011,12 +2027,10 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                         temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
                 if temp_mail_client.email_address:
                     logger.info(f"🔑 [OAuth Step] Phát hiện yêu cầu email bảo mật. Đang điền: {temp_mail_client.email_address}")
-                    await alt_email_inp.send_keys(temp_mail_client.email_address)
+                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']", temp_mail_client.email_address)
                     await asyncio.sleep(1)
-                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
-                    if submit_btn:
-                        await submit_btn.click()
-                        await asyncio.sleep(5)
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await asyncio.sleep(5)
                     continue
 
             # B. Màn hình nhập OTP (nếu xuất hiện sau khi click Accept)
@@ -2026,12 +2040,10 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 otp_code = await temp_mail_client.get_microsoft_otp()
                 if otp_code:
                     logger.info(f"🔑 [OAuth Step] Đang điền mã OTP email bảo mật: {otp_code}")
-                    await otc_inp.send_keys(otp_code)
+                    await safe_send_keys(tab, "input[id='idTxtBx_OTC'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
                     await asyncio.sleep(1)
-                    submit_btn = await tab.select("input[type='submit'], input#idSIButton9")
-                    if submit_btn:
-                        await submit_btn.click()
-                        await asyncio.sleep(5)
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await asyncio.sleep(5)
                     continue
                 else:
                     logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
@@ -2040,7 +2052,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
                 if accept_btn:
                     logger.info("Click Accept đồng ý cấp quyền...")
-                    await accept_btn.click()
+                    await safe_click(tab, "input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9, #idSIButton9")
                     has_clicked_accept = True
                     await asyncio.sleep(6)
                     continue
