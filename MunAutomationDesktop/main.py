@@ -1162,18 +1162,17 @@ class BrowserWorker(QThread):
 
 
 class MicrosoftTokenWorker(QThread):
-    """QThread wrapper to run Microsoft OAuth login flow local."""
+    """QThread wrapper to run Microsoft OAuth login flow local (supports bulk)."""
     log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str) # success, message
+    email_completed_signal = pyqtSignal(int, bool) # email_id, success
 
-    def __init__(self, bridge, email_id, email, password, note, parent=None):
+    def __init__(self, bridge, email_list, parent=None):
         super().__init__(parent)
         self.bridge = bridge
-        self.email_id = email_id
-        self.email = email
-        self.password = password
-        self.note = note
+        self.email_list = email_list # list of dicts: {"id", "email", "password", "note"}
         self.manager = None
+        self._stop_flag = False
 
     def run(self):
         if not MUN_ANTI_BROWSER_AVAILABLE:
@@ -1184,50 +1183,73 @@ class MicrosoftTokenWorker(QThread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._run_token_fetch())
+            loop.run_until_complete(self._run_token_fetch_bulk())
         except Exception as e:
             self.log_signal.emit(f"❌ Microsoft OAuth Error: {str(e)}")
             self.finished_signal.emit(False, str(e))
         finally:
             loop.close()
 
-    async def _run_token_fetch(self):
+    async def _run_token_fetch_bulk(self):
         self.manager = NodriverBrowserManager()
-        self.log_signal.emit(f"🔑 Đang khởi chạy Anti-Detect Browser để đăng nhập {self.email}...")
-        try:
-            profile = self.manager.profile_manager.create_random_profile()
-            browser, tab = await self.manager.start(profile)
-            if not tab:
-                self.log_signal.emit("❌ Lỗi: Không thể khởi chạy trình duyệt.")
-                self.finished_signal.emit(False, "tab is None")
-                return
+        total = len(self.email_list)
+        success_count = 0
+        
+        from tiktok_reg_automation import auto_login_microsoft_and_get_token, C69Client
+        
+        for idx, item in enumerate(self.email_list):
+            if self._stop_flag:
+                break
+                
+            email_id = item.get("id")
+            email = item.get("email")
+            password = item.get("password")
+            note = item.get("note", "")
+            
+            self.log_signal.emit(f"🔑 [{idx+1}/{total}] Đang xử lý email: {email}...")
+            
+            try:
+                profile = self.manager.profile_manager.create_random_profile()
+                browser, tab = await self.manager.start(profile)
+                if not tab:
+                    self.log_signal.emit(f"❌ Lỗi [{email}]: Không thể khởi chạy trình duyệt.")
+                    self.email_completed_signal.emit(email_id, False)
+                    continue
 
-            from tiktok_reg_automation import auto_login_microsoft_and_get_token, C69Client
-            c69 = C69Client(C69_BASE_URL)
-            c69.session = self.bridge.get_requests_session()
-            c69.logged_in = True
+                c69 = C69Client(C69_BASE_URL)
+                c69.session = self.bridge.get_requests_session()
+                c69.logged_in = True
 
-            success = await auto_login_microsoft_and_get_token(
-                browser=browser,
-                email=self.email,
-                password=self.password,
-                note_field=self.note,
-                client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753",
-                email_id=self.email_id,
-                c69_client=c69
-            )
-            if success:
-                self.log_signal.emit("🎉 Tự động cấp lại token và cập nhật thành công!")
-                self.finished_signal.emit(True, "Cập nhật Token thành công!")
-            else:
-                self.log_signal.emit("❌ Tự động cấp lại token thất bại.")
-                self.finished_signal.emit(False, "Lấy token thất bại.")
-        except Exception as e:
-            self.log_signal.emit(f"❌ Lỗi quy trình: {str(e)}")
-            self.finished_signal.emit(False, str(e))
-        finally:
-            if self.manager and self.manager.is_running:
-                await self.manager.close()
+                success = await auto_login_microsoft_and_get_token(
+                    browser=browser,
+                    email=email,
+                    password=password,
+                    note_field=note,
+                    client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                    email_id=email_id,
+                    c69_client=c69
+                )
+                if success:
+                    self.log_signal.emit(f"✅ [{email}] Lấy token thành công!")
+                    success_count += 1
+                    self.email_completed_signal.emit(email_id, True)
+                else:
+                    self.log_signal.emit(f"❌ [{email}] Lấy token thất bại.")
+                    self.email_completed_signal.emit(email_id, False)
+            except Exception as e:
+                self.log_signal.emit(f"❌ Lỗi [{email}]: {str(e)}")
+                self.email_completed_signal.emit(email_id, False)
+            finally:
+                if self.manager and self.manager.is_running:
+                    await self.manager.close()
+            
+            if idx < total - 1 and not self._stop_flag:
+                await asyncio.sleep(2)
+                
+        self.finished_signal.emit(True, f"Đã hoàn thành. Thành công: {success_count}/{total} email.")
+
+    def stop(self):
+        self._stop_flag = True
 
 
 class RequestWorker(QThread):
@@ -3664,17 +3686,38 @@ class MunAutomationBridge(QObject):
 
     @pyqtSlot(int, str, str, str, result=str)
     def getMicrosoftToken(self, email_id, email, password, note):
-        """Kích hoạt luồng chạy lấy Token Microsoft OAuth từ frontend Web"""
+        payload = [{"id": email_id, "email": email, "password": password, "note": note}]
+        return self.getMicrosoftTokenBulk(json.dumps(payload))
+
+    @pyqtSlot(str, result=str)
+    def getMicrosoftTokenBulk(self, payload_json):
+        """Kích hoạt luồng chạy lấy Token Microsoft OAuth từ frontend Web (hỗ trợ bulk)"""
         if getattr(self, "microsoft_token_worker", None) and self.microsoft_token_worker.isRunning():
             return json.dumps({"success": False, "message": "Đang có luồng lấy token chạy song song."})
             
-        self.microsoft_token_worker = MicrosoftTokenWorker(self, email_id, email, password, note)
+        try:
+            email_list = json.loads(payload_json)
+        except Exception as e:
+            return json.dumps({"success": False, "message": f"Dữ liệu payload không hợp lệ: {e}"})
+            
+        if not email_list:
+            return json.dumps({"success": False, "message": "Danh sách email trống."})
+            
+        self.microsoft_token_worker = MicrosoftTokenWorker(self, email_list)
         self.microsoft_token_worker.log_signal.connect(lambda msg: self.statusMessage.emit(f"📧 {msg}"))
+        self.microsoft_token_worker.email_completed_signal.connect(self._on_email_completed)
         self.microsoft_token_worker.finished_signal.connect(self._on_microsoft_token_finished)
         self.microsoft_token_worker.start()
         
-        return json.dumps({"success": True, "message": "Đang khởi chạy luồng lấy token Microsoft..."})
+        return json.dumps({"success": True, "message": f"Đang khởi chạy luồng lấy token cho {len(email_list)} email..."})
         
+    def _on_email_completed(self, email_id, success):
+        try:
+            js_code = f"if (window.onMicrosoftEmailCompleted) {{ window.onMicrosoftEmailCompleted({email_id}, {json.dumps(success)}); }}"
+            self.main_window.browser.page().runJavaScript(js_code)
+        except Exception as e:
+            print(f"[MunAutomation] Lỗi khi gọi javascript callback onMicrosoftEmailCompleted: {e}")
+
     def _on_microsoft_token_finished(self, success, message):
         if success:
             self.statusMessage.emit(f"✅ {message}")
