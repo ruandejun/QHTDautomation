@@ -2397,10 +2397,11 @@ class MunAutomationBridge(QObject):
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @pyqtSlot(str, str, str, str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, str, result=str)
     @pyqtSlot(str, str, str, str, result=str)
-    def startTikTokRegLoop(self, reg_method, captcha_mode, proxy_list_raw="", proxy_type="socks5", c69_url="https://c69.us", email_list_raw=""):
+    def startTikTokRegLoop(self, reg_method, captcha_mode, proxy_list_raw="", proxy_type="socks5", c69_url="https://c69.us", email_list_raw="", replacement_email_list_raw=""):
         """Khởi chạy vòng lặp tuần tự tạo tài khoản TikTok 24/7"""
         try:
             if getattr(self, 'tiktok_reg_running', False):
@@ -2424,6 +2425,14 @@ class MunAutomationBridge(QObject):
                         emails_selected = json.loads(email_list_raw)
                     except Exception as e:
                         print(f"[Parse Emails Error] {e}")
+                        
+                # Parse danh sách email thay thế thủ công
+                emails_replacement_selected = []
+                if replacement_email_list_raw:
+                    try:
+                        emails_replacement_selected = json.loads(replacement_email_list_raw)
+                    except Exception as e:
+                        print(f"[Parse Replacement Emails Error] {e}")
                 
                 email_idx = 0
                 
@@ -2441,10 +2450,13 @@ class MunAutomationBridge(QObject):
                         
                     # Email hiện tại (nếu chọn thủ công)
                     current_email = None
+                    current_replacement_email = None
                     if emails_selected:
                         current_email = emails_selected[email_idx]
                         email_idx += 1
                         self.statusMessage.emit(f"🔄 Lượt {email_idx}: Đăng ký cho email: {current_email.get('email')}")
+                        if emails_replacement_selected and email_idx - 1 < len(emails_replacement_selected):
+                            current_replacement_email = emails_replacement_selected[email_idx - 1]
                     else:
                         self.statusMessage.emit("🔄 Bắt đầu lượt đăng ký mới với email tự động trên C69.")
                         
@@ -2466,6 +2478,11 @@ class MunAutomationBridge(QObject):
                             args["email"] = current_email.get("email")
                             args["email_id"] = current_email.get("id")
                             args["email_password"] = current_email.get("password")
+                            
+                        if current_replacement_email:
+                            args["replacement_email"] = current_replacement_email.get("email")
+                            args["replacement_email_id"] = current_replacement_email.get("id")
+                            args["replacement_email_password"] = current_replacement_email.get("password")
                         
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
@@ -2619,6 +2636,7 @@ class MunAutomationBridge(QObject):
                     import asyncio as _asyncio
                     vid_cfg = VideoCreatorConfig(
                         gemini_api_key=settings.get("gemini_api_key", ""),
+                        pexels_api_key=settings.get("pexels_api_key", ""),
                         niche=settings.get("video_niche", "trending"),
                         tts_language=settings.get("video_language", "vi"),
                     )
@@ -2832,6 +2850,7 @@ class MunAutomationBridge(QObject):
         try:
             topic_text, language, niche = "", "vi", "trending"
             gemini_key = os.environ.get("GEMINI_API_KEY", "")
+            pexels_key = os.environ.get("PEXELS_API_KEY", "")
             if topic:
                 try:
                     parsed = json.loads(topic)
@@ -2842,6 +2861,7 @@ class MunAutomationBridge(QObject):
                     language = parsed.get("language") or language
                     niche = parsed.get("niche") or niche
                     gemini_key = parsed.get("gemini_api_key") or gemini_key
+                    pexels_key = parsed.get("pexels_api_key") or pexels_key
                 else:
                     topic_text = topic
 
@@ -2853,6 +2873,7 @@ class MunAutomationBridge(QObject):
                     from ai_video_creator import AIVideoCreator, VideoCreatorConfig
                     vid_cfg = VideoCreatorConfig(
                         gemini_api_key=gemini_key,
+                        pexels_api_key=pexels_key,
                         niche=niche,
                         tts_language=language,
                     )
