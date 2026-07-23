@@ -2348,18 +2348,59 @@ class MunAutomationBridge(QObject):
     def activateDevice(self, serial):
         try:
             print(f"[QHTD] Activating device: {serial}")
-            time.sleep(1)
+            if not PYMOBILEDEVICE3_AVAILABLE:
+                return json.dumps({"error": "pymobiledevice3 is not available on this system."})
+            
+            from pymobiledevice3.services.mobile_activation import MobileActivationService
+            
+            async def do_activate():
+                lockdown = await create_using_usbmux(serial=serial)
+                activation_service = MobileActivationService(lockdown)
+                state = await activation_service.state()
+                if state != "Activated":
+                    try:
+                        await activation_service.wait_for_activation_session()
+                    except Exception:
+                        pass
+                    await activation_service.activate()
+                # Set en_US settings, locale and timezone as legacy
+                try:
+                    await lockdown.set_language("en")
+                except Exception:
+                    pass
+                try:
+                    await lockdown.set_locale("en_US")
+                except Exception:
+                    pass
+                try:
+                    await lockdown.set_timezone("America/New_York")
+                except Exception:
+                    pass
+                
+            asyncio.run(do_activate())
+            print(f"[QHTD] Device {serial} activated successfully.")
             return json.dumps({"success": True})
         except Exception as e:
+            print(f"[QHTD] Error activating device {serial}: {e}")
             return json.dumps({"error": str(e)})
 
     @pyqtSlot(str, result=str)
     def eraseDevice(self, serial):
         try:
             print(f"[QHTD] Erasing device: {serial}")
-            time.sleep(1)
+            if not PYMOBILEDEVICE3_AVAILABLE:
+                return json.dumps({"error": "pymobiledevice3 is not available on this system."})
+            
+            async def do_erase():
+                lockdown = await create_using_usbmux(serial=serial)
+                service = MobileConfigService(lockdown=lockdown)
+                await service.erase_device(preserve_data_plan=False, disallow_proximity_setup=False)
+                
+            asyncio.run(do_erase())
+            print(f"[QHTD] Device {serial} erase command sent successfully.")
             return json.dumps({"success": True})
         except Exception as e:
+            print(f"[QHTD] Error erasing device {serial}: {e}")
             return json.dumps({"error": str(e)})
 
     @pyqtSlot(str, str, result=str)
