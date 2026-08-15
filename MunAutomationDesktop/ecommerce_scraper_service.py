@@ -12,11 +12,13 @@ import asyncio
 import os
 import sys
 import json
+import time
+import asyncio
 import logging
-from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, Query, HTTPException, Request
+from typing import Optional, Dict, Any, List
+import httpx
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import uvicorn
 
 os.environ["DISPLAY"] = ":99"
@@ -29,9 +31,41 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MunAntiBrowser TMAPI Full-Spec Microservice")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-# Giới hạn số Tab mở đồng thời (đảm bảo độ ổn định CPU/RAM)
+from pydantic import BaseModel
+
+WEBSHARE_PROXY_API = "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824"
 MAX_CONCURRENT_TABS = 3
 TAB_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_TABS)
+
+class ProxyPoolManager:
+    """Quản lý và luân chuyển Proxy SOCKS5 từ WebShare API."""
+    def __init__(self):
+        self.proxies: List[str] = []
+        self.current_idx = 0
+        self.last_fetch = 0
+
+    async def get_next_proxy(self) -> Optional[str]:
+        now = time.time()
+        if not self.proxies or (now - self.last_fetch > 3600):
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    r = await client.get(WEBSHARE_PROXY_API)
+                    lines = [p.strip() for p in r.text.strip().split("\n") if p.strip()]
+                    if lines:
+                        self.proxies = lines
+                        self.last_fetch = now
+                        logger.info(f"[+] Loaded {len(self.proxies)} SOCKS5 proxies from WebShare API.")
+            except Exception as e:
+                logger.error(f"[-] Failed to fetch WebShare proxies: {e}")
+
+        if not self.proxies:
+            return None
+
+        proxy = self.proxies[self.current_idx % len(self.proxies)]
+        self.current_idx += 1
+        return proxy
+
+proxy_pool = ProxyPoolManager()
 
 class BrowserTabPool:
     def __init__(self):
@@ -58,8 +92,19 @@ class BrowserTabPool:
                 if not prof:
                     prof = pm.create_random_profile(os_type="Window")
 
+                # Lấy Proxy xoay từ WebShare pool nếu có
+                proxy_str = await proxy_pool.get_next_proxy()
+                if proxy_str:
+                    prof["profile_socks5_details"] = proxy_str
+                    logger.info(f"[*] Khởi chạy Browser với SOCKS5 WebShare Proxy: {proxy_str.split(':')[0]}")
+
                 self.manager = NodriverBrowserManager()
-                self.browser, self.main_tab = await self.manager.start(profile_config=prof, headless=False)
+                self.browser, self.main_tab = await self.manager.start(
+                    profile_config=prof,
+                    proxy_string=proxy_str or "",
+                    proxy_type="socks5" if proxy_str else "http",
+                    headless=False
+                )
                 self.is_ready = True
                 logger.info("[+] Browser Instance sẵn sàng phục vụ Multi-Tab!")
             return self.browser
