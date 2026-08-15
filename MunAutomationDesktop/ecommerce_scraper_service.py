@@ -186,6 +186,19 @@ EXTRACT_SCRIPT = """
 
 async def extract_tab_data(tab, url: str, plat: str, item_id: str) -> Dict[str, Any]:
     await asyncio.sleep(2.0)
+    
+    # 1. Tự động kiểm tra và giải Taobao/Alibaba SECSDK Slider nếu bị kích hoạt
+    try:
+        from sadcaptcha_solver import SadCaptchaSolver
+        solver = SadCaptchaSolver()
+        is_punish = await tab.evaluate("!!document.querySelector('#nc_1_wrapper, .nc_wrapper, #baxia-punish, .btn_slide')")
+        if is_punish:
+            logger.info(f"[*] Phát hiện Captcha trên tab {item_id}, đang tự động giải...")
+            await solver.solve_taobao_slider(tab)
+            await asyncio.sleep(2.0)
+    except Exception as e:
+        logger.warning(f"[-] Auto-solve slider warning: {e}")
+
     try:
         data = await asyncio.wait_for(tab.evaluate(EXTRACT_SCRIPT), timeout=8.0)
     except Exception as e:

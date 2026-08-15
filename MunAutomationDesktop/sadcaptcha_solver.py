@@ -56,7 +56,7 @@ def get_api_key() -> str:
 
 
 class SadCaptchaSolver:
-    """Engine giải Captcha TikTok qua SadCaptcha API và CDP mouse events."""
+    """Engine giải Captcha (TikTok, Taobao / Alibaba SECSDK Slider, Geetest) qua SadCaptcha API và CDP mouse events."""
 
     BASE_URL = "https://www.sadcaptcha.com/api/v1"
 
@@ -71,6 +71,56 @@ class SadCaptchaSolver:
 
     def is_configured(self) -> bool:
         return bool(self.api_key and len(self.api_key.strip()) > 5)
+
+    async def solve_taobao_slider(self, tab) -> bool:
+        """Tự động phát hiện và giải thanh trượt Taobao / Alibaba SECSDK NC Slider."""
+        try:
+            # 1. Kiểm tra sự tồn tại của slider
+            slider_info = await tab.evaluate("""
+                (() => {
+                    const btn = document.querySelector('#nc_1_n1z, .btn_slide, .nc_iconfont.btn_slide');
+                    const track = document.querySelector('#nc_1_n1t, .nc_scale, .nc_wrapper');
+                    if (!btn || !track) return null;
+                    const btnRect = btn.getBoundingClientRect();
+                    const trackRect = track.getBoundingClientRect();
+                    return JSON.stringify({
+                        x: btnRect.x + btnRect.width / 2,
+                        y: btnRect.y + btnRect.height / 2,
+                        distance: trackRect.width - btnRect.width + 10
+                    });
+                })()
+            """)
+            if not slider_info:
+                return False
+
+            data = json.loads(slider_info) if isinstance(slider_info, str) else slider_info
+            start_x = float(data.get("x", 0))
+            start_y = float(data.get("y", 0))
+            distance = float(data.get("distance", 260))
+
+            if start_x <= 0 or distance <= 0:
+                return False
+
+            logger.info(f"[*] Phát hiện Taobao SECSDK Slider tại ({start_x}, {start_y}), cự ly kéo: {distance}px")
+
+            # 2. Điều khiển CDP kéo mượt mà theo đường cong sinh học
+            await self.human_bezier_drag(tab, start_x, start_y, distance)
+            await asyncio.sleep(2.5)
+
+            # 3. Kiểm tra kết quả vượt slider
+            passed = await tab.evaluate("""
+                (() => {
+                    const successText = document.querySelector('.nc-lang-cnt, .scale_text');
+                    if (successText && (successText.innerText.includes('验证通过') || successText.innerText.includes('Verified') || successText.innerText.includes('通过'))) {
+                        return true;
+                    }
+                    return !document.querySelector('#nc_1_wrapper, .nc_wrapper, #baxia-punish');
+                })()
+            """)
+            return bool(passed)
+        except Exception as e:
+            logger.error(f"[-] Lỗi giải Taobao slider: {e}")
+            return False
 
     async def extract_captcha_images(self, tab) -> Optional[Dict[str, str]]:
         """Trích xuất ảnh nền và mảnh ghép từ DOM TikTok Captcha."""

@@ -258,6 +258,9 @@ class ScriptLoader:
         # 14. Ping block (always)
         parts.append(self.load_script("ping"))
 
+        # 15. Alibaba SECSDK & Baxia bypass (always)
+        parts.append(self.load_script("alibaba_secsdk_bypass"))
+
         combined = "\n\n".join(parts)
         cleanup_js = """
 // Cleanup internal helper functions from global window to avoid detection
