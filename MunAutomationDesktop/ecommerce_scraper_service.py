@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="MunAntiBrowser TMAPI Full-Spec Microservice")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-MAX_CONCURRENT_TABS = 10
+# Giới hạn số Tab mở đồng thời (đảm bảo độ ổn định CPU/RAM)
+MAX_CONCURRENT_TABS = 3
 TAB_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_TABS)
 
 class BrowserTabPool:
@@ -185,8 +185,12 @@ EXTRACT_SCRIPT = """
 """
 
 async def extract_tab_data(tab, url: str, plat: str, item_id: str) -> Dict[str, Any]:
-    await asyncio.sleep(2.5)
-    data = await tab.evaluate(EXTRACT_SCRIPT)
+    await asyncio.sleep(2.0)
+    try:
+        data = await asyncio.wait_for(tab.evaluate(EXTRACT_SCRIPT), timeout=8.0)
+    except Exception as e:
+        logger.error(f"[-] Tab evaluate timeout or error: {e}")
+        data = {}
 
     # Normalize response from evaluate
     res_dict = {}
@@ -201,6 +205,22 @@ async def extract_tab_data(tab, url: str, plat: str, item_id: str) -> Dict[str, 
                     res_dict[k] = v
     elif isinstance(data, dict):
         res_dict = data
+
+    def unwrap_nodriver(val):
+        if isinstance(val, dict):
+            if "type" in val and "value" in val:
+                return unwrap_nodriver(val["value"])
+            return {k: unwrap_nodriver(v) for k, v in val.items()}
+        elif isinstance(val, list):
+            # Check if list of pairs [key, val]
+            if len(val) > 0 and all(isinstance(x, (list, tuple)) and len(x) == 2 and isinstance(x[0], str) for x in val):
+                return {x[0]: unwrap_nodriver(x[1]) for x in val}
+            return [unwrap_nodriver(x) for x in val]
+        return val
+
+    res_dict = unwrap_nodriver(res_dict)
+    if not isinstance(res_dict, dict):
+        res_dict = {}
 
     min_p = float(res_dict.get("min_price", 0) or 0)
     max_p = float(res_dict.get("max_price", 0) or min_p)
@@ -324,4 +344,4 @@ def health():
     return {"status": "ok", "service": "MunAntiBrowser TMAPI Multi-Tab Pool Engine (TMAPI Spec 100% Match)", "max_concurrent_tabs": MAX_CONCURRENT_TABS}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8889, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8889, log_level="warning")
