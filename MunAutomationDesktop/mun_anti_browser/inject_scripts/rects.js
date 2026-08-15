@@ -78,7 +78,6 @@
             }
             return val;
           };
-          wrappedGetter._isWrapped = true;
 
           // Define the name of the function properly
           try {

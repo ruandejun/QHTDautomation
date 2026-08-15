@@ -692,14 +692,15 @@
     //    Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins').get.call(navigator)
     var origGetOwnPropDesc = Object.getOwnPropertyDescriptor;
     var gopdProxy = function(obj, prop) {
-      if ((obj === Navigator.prototype || obj === navigator) &&
-          (prop === 'plugins' || prop === 'mimeTypes')) {
-        return {
-          get: prop === 'plugins' ? pluginsGetter : mimeTypesGetter,
-          set: undefined,
-          enumerable: true,
-          configurable: true
-        };
+      if (obj === Navigator.prototype || obj === navigator) {
+        if (prop === 'plugins' || prop === 'mimeTypes') {
+          return {
+            get: prop === 'plugins' ? pluginsGetter : mimeTypesGetter,
+            set: undefined,
+            enumerable: true,
+            configurable: true
+          };
+        }
       }
       return origGetOwnPropDesc.call(Object, obj, prop);
     };

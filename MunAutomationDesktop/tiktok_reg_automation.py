@@ -58,9 +58,9 @@ def generate_random_string(length: int = 12, only_letters: bool = False) -> str:
 # ============================================================================
 
 class C69Client:
-    """Client giao tiếp với hệ thống C69 backend (https://c69.us)"""
-    
-    def __init__(self, base_url: str = "https://c69.us"):
+    """Client giao tiếp với hệ thống C69 backend (https://cu.c69.us)"""
+
+    def __init__(self, base_url: str = "https://cu.c69.us"):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.logged_in = False

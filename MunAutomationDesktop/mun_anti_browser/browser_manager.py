@@ -76,6 +76,7 @@ class NodriverBrowserManager:
         headless: bool = False,
         start_url: str = "",
         extra_args: Optional[list] = None,
+        extensions: Optional[list] = None,
     ) -> Tuple[nodriver.Browser, Any]:
         """
         Start a new anti-detect browser instance.
@@ -134,10 +135,19 @@ class NodriverBrowserManager:
 
         # Start browser via nodriver
         config = nodriver.Config()
-        config.sandbox = True   # Enable sandbox (removes --no-sandbox)
+        # In Linux/root environment, allow no_sandbox fallback if sandbox fails
+        if os.geteuid() == 0:
+            config.sandbox = False
+        else:
+            config.sandbox = True
         for arg in chrome_args:
             config.add_argument(arg)
         config.user_data_dir = profile_dir
+
+        # Add extensions if specified
+        if extensions:
+            for ext_path in extensions:
+                config.add_extension(ext_path)
 
         if self.chrome_path:
             config.browser_executable_path = self.chrome_path
@@ -388,6 +398,13 @@ class NodriverBrowserManager:
         """Close the browser and clean up."""
         if self.browser:
             try:
+                # Force terminate child chrome process if available
+                proc = getattr(self.browser, 'process', None)
+                if proc and hasattr(proc, 'kill'):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                 self.browser.stop()
                 logger.info("Browser closed")
             except Exception as e:

@@ -143,13 +143,13 @@ class C69ProfileAPI:
     Base URL: {api_url}/dashboard/api/profiles/
     """
 
-    def __init__(self, api_url: str, api_token: str):
+    def __init__(self, api_url: str = "https://cu.c69.us", api_token: str = ""):
         """
         Args:
-            api_url: Base server URL (e.g., 'https://c69.us').
+            api_url: Base server URL (e.g., 'https://cu.c69.us').
             api_token: Auth token from storagon login.
         """
-        self.api_url = api_url.rstrip("/")
+        self.api_url = (api_url or "https://cu.c69.us").rstrip("/")
         self.api_token = api_token
         self.base_url = f"{self.api_url}/dashboard/api/profiles/"
         self.timeout = 15

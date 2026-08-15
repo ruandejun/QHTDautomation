@@ -1,153 +1,67 @@
-"""
-MunAntiBrowser - Profile Manager
-==================================
-Creates, loads, and manages browser fingerprint profiles.
-Ported from mybrowser.py create_random_profile() (lines 2369-2561).
-"""
-
-import json
-import logging
 import random
+import json
 from typing import Dict, Any, Optional
-
-from . import fingerprint_data as fpdata
-
-logger = logging.getLogger(__name__)
-
+from .fingerprint_data import generate_audio_fingerprint, generate_canvas_fingerprint, generate_webgl_fingerprint, generate_rects_offset, generate_font_list, generate_user_agent
 
 class ProfileManager:
-    """
-    Manages browser fingerprint profiles.
-    Can create random profiles or load profiles from API/local storage.
-    """
+    def __init__(self):
+        self.profiles = []
 
     def create_random_profile(
         self,
-        socks5: str = "",
-        proxy: str = "",
-        proxy_username: str = "",
-        proxy_password: str = "",
+        proxy: Optional[str] = None,
+        os_type: str = "Window",
         phone_os: Optional[str] = None,
+        socks5: Optional[str] = None,
+        proxy_username: str = "",
+        proxy_password: str = ""
     ) -> Dict[str, Any]:
-        """
-        Generate a random browser fingerprint profile.
+        """Tạo profile ngẫu nhiên hoàn chỉnh"""
+        # Nếu truyền socks5 thì ưu tiên gán proxy
+        if socks5 and not proxy:
+            proxy = socks5
+        # Mặc định tạo Desktop profile (Window/Mac) để đồng nhất với Chrome binary trên desktop
+        # Tránh lỗi OS mismatch khi UA là mobile nhưng platform là desktop.
 
-        Args:
-            socks5: SOCKS5 proxy string
-            proxy: HTTP/HTTPS proxy string
-            proxy_username: Proxy auth username
-            proxy_password: Proxy auth password
-            phone_os: "iPhone", "Android", or None for desktop
 
-        Returns:
-            Profile configuration dictionary.
-        """
-        profile = {}
+        # Generate base info
+        ua, device_name, resolution, cpu = generate_user_agent(os_type, phone_os)
+        audio = generate_audio_fingerprint()
+        canvas = generate_canvas_fingerprint()
+        webgl = generate_webgl_fingerprint(phone_os, os_type)
+        rects = generate_rects_offset()
+        fonts = generate_font_list()
 
-        # OS selection
-        if phone_os:
-            os_type = phone_os
-        else:
-            os_type = random.choice(fpdata.DESKTOP_OS_LIST)
-
-        # User Agent & Resolution
-        ua, os_name, resolution, cpu = fpdata.generate_user_agent(os_type, phone_os)
-        profile["profile_user_agent"] = ua
-        profile["profile_os"] = os_name
-        profile["profile_resolution"] = resolution
-        profile["profile_cpu"] = cpu
-
-        # Geo/Timezone
-        profile["profile_geo"] = 2
-        profile["profile_time_zone"] = 2
-
-        # WebRTC
-        profile["profile_webrtc"] = 2
-
-        # Proxy
-        profile["profile_socks5_details"] = socks5
-        profile["profile_proxy_details"] = proxy
-        profile["profile_proxy_username"] = proxy_username
-        profile["profile_proxy_password"] = proxy_password
-        profile["profile_proxy_type"] = 2
-
-        # Audio fingerprint
-        audio_data = fpdata.generate_audio_fingerprint()
-        profile["profile_audio"] = json.dumps(audio_data)
-
-        # Canvas fingerprint
-        canvas_data = fpdata.generate_canvas_fingerprint()
-        profile["profile_canvas"] = json.dumps(canvas_data)
-
-        # WebGL fingerprint
-        webgl_data = fpdata.generate_webgl_fingerprint(phone_os, os_name)
-        profile["profile_webgl"] = json.dumps(webgl_data)
-        profile["profile_vendor"] = webgl_data.get("37445", "")
-        profile["profile_renderer"] = webgl_data.get("37446", "")
-
-        # ClientRects
-        profile["profile_rects"] = fpdata.generate_rects_offset()
-
-        # Fonts
-        profile["profile_font"] = json.dumps(fpdata.generate_font_list())
-
-        # Profile name
-        profile["profile_name"] = ""
-        profile["profile_start_url"] = ""
-        profile["id"] = random.randint(100000, 999999)
-
-        logger.info(
-            f"Created random profile: OS={os_name}, "
-            f"UA={ua[:50]}..., Resolution={resolution}"
-        )
-        return profile
-
-    @staticmethod
-    def from_api_data(api_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Convert API response data to profile config format.
-        Used when loading profiles from the server.
-
-        Args:
-            api_data: Raw profile data from API.
-
-        Returns:
-            Normalized profile configuration dictionary.
-        """
-        # Map API field names to internal names
-        field_map = {
-            "profile_user_agent": "profile_user_agent",
-            "profile_os": "profile_os",
-            "profile_resolution": "profile_resolution",
-            "profile_cpu": "profile_cpu",
-            "profile_time_zone": "profile_time_zone",
-            "profile_geo": "profile_geo",
-            "profile_webrtc": "profile_webrtc",
-            "profile_canvas": "profile_canvas",
-            "profile_audio": "profile_audio",
-            "profile_webgl": "profile_webgl",
-            "profile_rects": "profile_rects",
-            "profile_font": "profile_font",
-            "profile_name": "profile_name",
-            "profile_start_url": "profile_start_url",
-            "profile_socks5_details": "profile_socks5_details",
-            "profile_proxy_details": "profile_proxy_details",
-            "profile_proxy_username": "profile_proxy_username",
-            "profile_proxy_password": "profile_proxy_password",
-            "id": "id",
+        profile = {
+            "id": random.randint(10000, 99999),
+            "name": f"Profile_{random.randint(1000, 9999)}",
+            "profile_os": os_type,
+            "profile_user_agent": ua,
+            "profile_resolution": resolution,
+            "profile_cpu": cpu,
+            "profile_audio": audio,
+            "profile_canvas": canvas,
+            "profile_webgl": webgl,
+            "profile_rects": rects,
+            "profile_font": fonts,
+            "profile_start_url": "https://cu.c69.us",
+            "proxy": proxy or "",
+            "proxy_type": "socks5",
+            "profile_vendor": webgl.get("37446", "Google Inc."),
+            "profile_renderer": webgl.get("37445", "Google Inc."),
         }
 
-        profile = {}
-        for api_key, internal_key in field_map.items():
-            profile[internal_key] = api_data.get(api_key, "")
-
-        # Ensure defaults
-        profile.setdefault("profile_socks5_details", "")
-        profile.setdefault("profile_proxy_details", "")
-        profile.setdefault("profile_proxy_username", "")
-        profile.setdefault("profile_proxy_password", "")
-        profile.setdefault("profile_name", "")
-        profile.setdefault("profile_start_url", "")
-        profile.setdefault("id", 0)
+        # Add server_id if exists
+        if random.random() > 0.7:
+            profile["server_id"] = random.randint(100000, 999999)
 
         return profile
+
+    def get_profile(self, profile_id: int) -> Optional[Dict[str, Any]]:
+        for p in self.profiles:
+            if p.get("id") == profile_id:
+                return p
+        return None
+
+    def list_profiles(self, limit: int = 10) -> list:
+        return [self.create_random_profile() for _ in range(limit)]

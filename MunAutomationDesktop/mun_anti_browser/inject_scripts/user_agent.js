@@ -21,6 +21,22 @@
   // 1. navigator.userAgent
   _safelyOverrideGetter(Navigator.prototype, 'userAgent', ua);
 
+  // 1b. navigator.platform
+  var plat = 'Win32';
+  if (ua.indexOf('Mac OS X') !== -1 || ua.indexOf('Macintosh') !== -1) plat = 'MacIntel';
+  else if (ua.indexOf('Linux') !== -1 && ua.indexOf('Android') === -1) plat = 'Linux x86_64';
+  else if (ua.indexOf('iPhone') !== -1 || ua.indexOf('iPad') !== -1) plat = 'iPhone';
+  else if (ua.indexOf('Android') !== -1) plat = 'Linux armv8l';
+
+  var platformGetter = function() { return plat; };
+  if (window._makeNative) { window._makeNative(platformGetter, 'get platform'); }
+  Object.defineProperty(Navigator.prototype, 'platform', {
+    get: platformGetter,
+    configurable: true,
+    enumerable: true
+  });
+
+
   // 2. navigator.appVersion (derived from UA)
   var appVer = ua.indexOf('Mozilla/') === 0 ? ua.substring(8) : ua;
   _safelyOverrideGetter(Navigator.prototype, 'appVersion', appVer);
@@ -71,9 +87,9 @@
         model: '',
         uaFullVersion: chromeVer + '.0.0.0',
         fullVersionList: [
-          {brand: 'Chromium', version: chromeVer + '.0.5414.75'},
-          {brand: 'Google Chrome', version: chromeVer + '.0.5414.75'},
-          {brand: 'Not-A.Brand', version: '24.0.0.0'}
+          {brand: 'Chromium', version: chromeVer + '.0.0.0'},
+          {brand: 'Google Chrome', version: chromeVer + '.0.0.0'},
+          {brand: 'Not(A:Brand', version: '99.0.0.0'}
         ],
         wow64: false
       });
@@ -97,7 +113,7 @@
       brands: [
         {brand: 'Chromium', version: chromeVer},
         {brand: 'Google Chrome', version: chromeVer},
-        {brand: 'Not-A.Brand', version: '24'}
+        {brand: 'Not(A:Brand', version: '99'}
       ],
       mobile: isMobile,
       platform: platform,

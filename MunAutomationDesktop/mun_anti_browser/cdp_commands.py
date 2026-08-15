@@ -113,21 +113,23 @@ async def set_user_agent(
     try:
         version_first = browser_version.split(".")[0] if browser_version else "109"
 
-        # Build user agent metadata
+        # Build user agent metadata matching modern Chromium Client Hints
         metadata = emulation.UserAgentMetadata(
             platform=platform,
-            platform_version=platform,
+            platform_version="15.0.0" if platform == "Win32" or platform == "Windows" else "14.7.1" if "Mac" in platform else "6.8.0",
             architecture="" if is_mobile else "x86",
             model="",
             mobile=is_mobile,
-            full_version=browser_version or version_first,
+            full_version=browser_version if browser_version and "." in browser_version else f"{version_first}.0.0.0",
             full_version_list=[
-                emulation.UserAgentBrandVersion(brand="Chrome", version=version_first),
+                emulation.UserAgentBrandVersion(brand="Chromium", version=f"{version_first}.0.0.0"),
+                emulation.UserAgentBrandVersion(brand="Google Chrome", version=f"{version_first}.0.0.0"),
+                emulation.UserAgentBrandVersion(brand="Not(A:Brand", version="99.0.0.0"),
             ],
             brands=[
-                emulation.UserAgentBrandVersion(brand="Chrome", version=version_first),
                 emulation.UserAgentBrandVersion(brand="Chromium", version=version_first),
-                emulation.UserAgentBrandVersion(brand="Not A;Brand", version="24"),
+                emulation.UserAgentBrandVersion(brand="Google Chrome", version=version_first),
+                emulation.UserAgentBrandVersion(brand="Not(A:Brand", version="99"),
             ],
         )
 
