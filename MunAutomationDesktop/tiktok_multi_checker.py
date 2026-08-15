@@ -48,7 +48,24 @@ class TikTokMultiChecker:
         self.unknown_count = 0
         self.start_time = None
 
+    def fetch_webshare_proxies(self, url: Optional[str] = None) -> List[str]:
+        """Tự động tải danh sách SOCKS5 từ WebShare API."""
+        import requests
+        target_url = url or "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824"
+        try:
+            r = requests.get(target_url, timeout=10)
+            if r.status_code == 200:
+                lines = [p.strip() for p in r.text.strip().split("\n") if p.strip()]
+                self.proxy_list = lines
+                logger.info(f"[+] Đã tải {len(lines)} SOCKS5 Proxy từ WebShare.")
+                return lines
+        except Exception as e:
+            logger.error(f"[-] Lỗi tải WebShare proxy: {e}")
+        return []
+
     def _get_random_proxy(self) -> Tuple[str, str, str, str]:
+        if not self.proxy_list:
+            self.fetch_webshare_proxies()
         if not self.proxy_list:
             return "", "", "", ""
         raw_p = random.choice(self.proxy_list)

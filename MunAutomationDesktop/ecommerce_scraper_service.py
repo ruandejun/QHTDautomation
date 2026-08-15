@@ -92,17 +92,11 @@ class BrowserTabPool:
                 if not prof:
                     prof = pm.create_random_profile(os_type="Window")
 
-                # Lấy Proxy xoay từ WebShare pool nếu có
-                proxy_str = await proxy_pool.get_next_proxy()
-                if proxy_str:
-                    prof["profile_socks5_details"] = proxy_str
-                    logger.info(f"[*] Khởi chạy Browser với SOCKS5 WebShare Proxy: {proxy_str.split(':')[0]}")
-
+                # Không dùng proxy ngoại (US) để tránh bị Taobao khóa tài khoản do nhảy IP
                 self.manager = NodriverBrowserManager()
                 self.browser, self.main_tab = await self.manager.start(
                     profile_config=prof,
-                    proxy_string=proxy_str or "",
-                    proxy_type="socks5" if proxy_str else "http",
+                    proxy_string="",
                     headless=False
                 )
                 self.is_ready = True

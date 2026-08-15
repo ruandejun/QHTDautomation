@@ -104,8 +104,8 @@ class TikTokChecker:
                 # Submit
                 await tab.evaluate("(() => { const b = document.querySelector('button[type=\"submit\"]'); if (b) b.click(); })()")
 
-                # Đợi response (tối đa 4s)
-                await asyncio.sleep(4)
+                # Đợi response
+                await asyncio.sleep(8)
 
                 check_data = await tab.evaluate("""
                     (() => {
@@ -116,25 +116,28 @@ class TikTokChecker:
                         let errorMsg = '';
                         const errNodes = document.querySelectorAll('[class*="error"], [class*="Error"], [role="alert"], [class*="DivError"], span, p, div');
                         for (let el of errNodes) {
-                            if (el.children.length > 0) continue; // Chỉ lấy leaf text node
                             const txt = el.innerText ? el.innerText.trim() : '';
-                            if (txt && (txt.includes("doesn't exist") || txt.includes("Incorrect") || txt.includes("wrong password") || txt.includes("Maximum") || txt.includes("Invalid") || txt.includes("not registered"))) {
+                            if (txt && (txt.includes("doesn't exist") || txt.includes("Incorrect") || txt.includes("wrong password") || txt.includes("Maximum") || txt.includes("Invalid") || txt.includes("not registered") || txt.includes("Try again later"))) {
                                 errorMsg = txt;
                                 break;
                             }
                         }
 
-                        return {
+                        return JSON.stringify({
                             url: url,
                             has_session: hasSession,
                             has_captcha: !!captchaEl,
                             error: errorMsg
-                        };
+                        });
                     })()
                 """)
 
-                # evaluate() trong Nodriver trả về kiểu Dict hoặc list tuple tùy engine, cần normalize
-                if isinstance(check_data, list):
+                if isinstance(check_data, str):
+                    try:
+                        check_data = json.loads(check_data)
+                    except Exception:
+                        check_data = {}
+                elif isinstance(check_data, list):
                     check_data = {k: (v.get('value') if isinstance(v, dict) else v) for k, v in check_data}
                 elif not isinstance(check_data, dict):
                     check_data = {}
@@ -186,11 +189,14 @@ class TikTokChecker:
                     }
 
                 if check_data.get("error"):
+                    err_msg = str(check_data.get("error") or "")
+                    if len(err_msg) > 100:
+                        err_msg = "Maximum number of attempts reached. Try again later." if "Maximum" in err_msg else "Sai thông tin tài khoản hoặc mật khẩu"
                     return {
                         "status": "INVALID",
                         "username": username,
                         "password": password,
-                        "message": check_data.get("error"),
+                        "message": err_msg,
                         "retries": attempts,
                     }
 
