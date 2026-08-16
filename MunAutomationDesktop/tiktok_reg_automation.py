@@ -1898,15 +1898,30 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
         # 2. Điền Password (Chờ tối đa 15s cho form password hiển thị sau khi click Next)
         pass_inps = []
         for _ in range(15):
-            pass_inps = await tab.select_all("input[type='password'], input[name='passwd']")
+            # Nếu gặp màn hình Passwordless/OTP -> Tự động click 'Use your password'
+            await tab.evaluate("""
+            (() => {
+                const spans = Array.from(document.querySelectorAll('span, a, button, [role="button"]'));
+                const link = spans.find(el => el.children.length === 0 && (el.innerText || el.textContent || '').trim() === 'Use your password');
+                if (link) {
+                    const opts = { bubbles: true, cancelable: true, view: window };
+                    link.dispatchEvent(new PointerEvent('pointerdown', opts));
+                    link.dispatchEvent(new MouseEvent('mousedown', opts));
+                    link.dispatchEvent(new PointerEvent('pointerup', opts));
+                    link.dispatchEvent(new MouseEvent('mouseup', opts));
+                    link.dispatchEvent(new MouseEvent('click', opts));
+                }
+            })()
+            """)
+            pass_inps = await tab.select_all("input[type='password'], input[name='passwd'], input[id*='Password'], #i0118")
             if pass_inps:
                 break
             await asyncio.sleep(1)
             
         if pass_inps:
-            await safe_send_keys(tab, "input[type='password'], input[name='passwd']", password)
+            await safe_send_keys(tab, "input[type='password'], input[name='passwd'], input[id*='Password'], #i0118", password)
             await asyncio.sleep(1)
-            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
+            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit'], button.fui-Button")
             await asyncio.sleep(4)
                 
         # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập, Protect your account)
