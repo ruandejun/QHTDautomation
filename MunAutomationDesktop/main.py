@@ -1209,8 +1209,30 @@ class MicrosoftTokenWorker(QThread):
             self.log_signal.emit(f"🔑 [{idx+1}/{total}] Đang xử lý email: {email}...")
             
             try:
-                profile = self.manager.profile_manager.create_random_profile()
-                browser, tab = await self.manager.start(profile)
+                # Gán SOCKS5 Proxy từ WebShare Pool để tránh bị Microsoft block IP VPS
+                from sadcaptcha_solver import load_settings
+                cfg = load_settings()
+                proxy_pool_url = cfg.get("proxy_pool_url") or "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824"
+                
+                proxy_str = ""
+                try:
+                    import requests
+                    r_p = requests.get(proxy_pool_url, timeout=5)
+                    if r_p.status_code == 200:
+                        lines = [p.strip() for p in r_p.text.strip().split("\n") if p.strip()]
+                        if lines:
+                            import random
+                            proxy_str = random.choice(lines)
+                except Exception:
+                    pass
+
+                profile = self.manager.profile_manager.create_random_profile(os_type="Window", socks5=proxy_str)
+                browser, tab = await self.manager.start(
+                    profile_config=profile,
+                    proxy_string=proxy_str,
+                    proxy_type="socks5" if proxy_str else "http",
+                    headless=False
+                )
                 if not tab:
                     self.log_signal.emit(f"❌ Lỗi [{email}]: Không thể khởi chạy trình duyệt.")
                     self.email_completed_signal.emit(email_id, False)
