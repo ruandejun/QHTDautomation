@@ -3767,12 +3767,20 @@ class MunAutomationBridge(QObject):
             return json.dumps({"success": False, "message": "Danh sách email trống."})
             
         self.microsoft_token_worker = MicrosoftTokenWorker(self, email_list)
-        self.microsoft_token_worker.log_signal.connect(lambda msg: self.statusMessage.emit(f"📧 {msg}"))
+        self.microsoft_token_worker.log_signal.connect(self._on_microsoft_token_log)
         self.microsoft_token_worker.email_completed_signal.connect(self._on_email_completed)
         self.microsoft_token_worker.finished_signal.connect(self._on_microsoft_token_finished)
         self.microsoft_token_worker.start()
         
         return json.dumps({"success": True, "message": f"Đang khởi chạy luồng lấy token cho {len(email_list)} email..."})
+
+    def _on_microsoft_token_log(self, msg):
+        self.statusMessage.emit(f"📧 {msg}")
+        try:
+            js_code = f"if (window.onMicrosoftTokenLog) {{ window.onMicrosoftTokenLog({json.dumps(msg)}); }}"
+            self.main_window.web_view.page().runJavaScript(js_code)
+        except Exception:
+            pass
         
     def _on_email_completed(self, email_id, success):
         try:
