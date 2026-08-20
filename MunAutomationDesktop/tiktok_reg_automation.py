@@ -110,7 +110,57 @@ class C69Client:
             logger.error(f"Lỗi kết nối API C69: {e}")
         return None
 
-    def update_account_2fa(self, account_id: int, two_factor_key: str) -> bool:
+    def get_random_valid_recovery_mailbox(self, exclude_email: str = "") -> Optional[Dict[str, Any]]:
+        """Lấy ngẫu nhiên 1 email Microsoft đang có token sống từ pool 3.783 email trên C69 để làm email khôi phục"""
+        if not self.logged_in:
+            return None
+        # Lấy trang ngẫu nhiên từ danh sách email có status = 0
+        rand_page = random.randint(1, 35)
+        url = f"{self.base_url}/dashboard/api/emails/?status=0&page={rand_page}&page_size=20"
+        try:
+            r = self.session.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                results = data.get("results", [])
+                # Lọc các email Microsoft khác với email đang xử lý và có token
+                valid_candidates = [
+                    item for item in results
+                    if item.get("email") and item.get("email") != exclude_email
+                    and item.get("refresh_token")
+                    and any(item.get("email", "").lower().endswith(d) for d in ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com'])
+                ]
+                if valid_candidates:
+                    chosen = random.choice(valid_candidates)
+                    logger.info(f"🎲 Đã chọn ngẫu nhiên hòm thư khôi phục từ C69 Pool: {chosen.get('email')} (ID: {chosen.get('id')})")
+                    return chosen
+        except Exception as e:
+            logger.error(f"Lỗi khi lấy random recovery mailbox từ C69: {e}")
+        return None
+
+    def update_email_recovery_and_token(self, email_id: int, refresh_token: str, recovery_email: str = "") -> bool:
+        """Cập nhật đồng thời refresh_token, recovery_email và status = 0"""
+        if not self.logged_in:
+            return False
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/"
+        payload: Dict[str, Any] = {"status": 0}
+        if refresh_token:
+            payload["refresh_token"] = refresh_token
+        if recovery_email:
+            payload["recovery_email"] = recovery_email
+            
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+            
+        try:
+            r = self.session.patch(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201, 204):
+                logger.info(f"✅ Đã lưu refresh_token & recovery_email ({recovery_email}) cho email ID {email_id} trên C69 thành công!")
+                return True
+        except Exception as e:
+            logger.error(f"Lỗi update recovery email: {e}")
+        return False
         """Cập nhật khóa 2FA cho tài khoản đang tồn tại trên C69"""
         if not self.logged_in:
             logger.error("Chưa đăng nhập C69. Không thể cập nhật.")
@@ -2125,13 +2175,14 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             await safe_click(tab, "input[type='submit'], input#idSIButton9, button[type='submit'], #idSIButton9")
             await asyncio.sleep(3)
                 
-        # 4. Hướng tới URL ủy quyền OAuth
-        redirect_uri = "https://login.microsoftonline.com/common/oauth2/nativeclient"
-        auth_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize" \
-                   f"?client_id={client_id}" \
+        # 4. Điều hướng tới OAuth URL để xin cấp quyền lấy Authorization Code
+        redirect_uri = "https://login.live.com/oauth20_desktop.srf"
+        auth_url = f"https://login.live.com/oauth20_authorize.srf?" \
+                   f"client_id={client_id}" \
                    f"&response_type=code" \
                    f"&redirect_uri={redirect_uri}" \
-                   f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access"
+                   f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access" \
+                   f"&state=c69_auto_token"
                    
         logger.info("Chuyển hướng trình duyệt tới URL xin quyền OAuth...")
         try:
