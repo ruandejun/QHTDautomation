@@ -98,7 +98,7 @@ async def test_fast_refresh(email_item):
     return False, None
 
 async def run_checker():
-    logger.info("🚀 Khởi chạy MunBot Email Token Checker với Realtime Telegram Updates...")
+    logger.info("🚀 Khởi chạy MunBot Email Token Checker Continuous Subprocess với Realtime Telegram Updates...")
     
     # 1. Đăng nhập C69
     c69 = C69Client("https://cu.c69.us")
@@ -106,10 +106,10 @@ async def run_checker():
         logger.error("Không thể đăng nhập C69!")
         return
 
-    # Lấy batch 25 emails
-    url_emails = "https://cu.c69.us/dashboard/api/emails/?limit=25&ordering=modified"
+    # Lấy toàn bộ danh sách email cần check
+    url_emails = "https://cu.c69.us/dashboard/api/emails/?limit=1000&ordering=modified"
     try:
-        r = c69.session.get(url_emails, timeout=10)
+        r = c69.session.get(url_emails, timeout=15)
         if r.status_code != 200:
             return
         data = r.json()
@@ -138,8 +138,8 @@ async def run_checker():
         valid=0,
         invalid=0,
         error=0,
-        current_mail="Bắt đầu batch mới",
-        current_status="Đang nạp danh sách..."
+        current_mail="Bắt đầu tiến trình",
+        current_status="Đang nạp danh sách email từ C69..."
     )
     tg_msg_id = send_telegram_message(msg_card)
 
@@ -173,6 +173,19 @@ async def run_checker():
             valid_count += 1
             checked_count += 1
             logger.info(f"✅ [VALID] {email}")
+            edit_telegram_message(
+                tg_msg_id,
+                create_checker_card_html(
+                    total=total_count,
+                    checked=checked_count,
+                    left=batch_total - checked_count,
+                    valid=valid_count,
+                    invalid=invalid_count,
+                    error=error_count,
+                    current_mail=email,
+                    current_status="✅ Token hợp lệ (Fast Refreshed)"
+                )
+            )
             continue
 
         # B. Không có password -> Báo Error / Cần xử lý tay
@@ -181,6 +194,19 @@ async def run_checker():
             checked_count += 1
             c69.update_email_status(email_id, 3)
             logger.warning(f"⚠️ [NO PASS] {email} -> Status 3")
+            edit_telegram_message(
+                tg_msg_id,
+                create_checker_card_html(
+                    total=total_count,
+                    checked=checked_count,
+                    left=batch_total - checked_count,
+                    valid=valid_count,
+                    invalid=invalid_count,
+                    error=error_count,
+                    current_mail=email,
+                    current_status="⚠️ Không có pass (Gán status=3)"
+                )
+            )
             continue
 
         # C. Token chết -> Đang thử cấp lại
@@ -257,7 +283,7 @@ async def run_checker():
                 invalid=invalid_count,
                 error=error_count,
                 current_mail=email,
-                current_status="Đã hoàn tất email này."
+                current_status="Đã xong lượt kiểm tra email này."
             )
         )
         await asyncio.sleep(2)
