@@ -137,7 +137,24 @@ class C69Client:
             logger.error(f"Lỗi khi lấy random recovery mailbox từ C69: {e}")
         return None
 
-    def update_email_recovery_and_token(self, email_id: int, refresh_token: str, recovery_email: str = "") -> bool:
+    def update_recovery_email_only(self, email_id: int, recovery_email: str) -> bool:
+        """Lưu ngay email khôi phục lên C69 DB ngay khi xác thực / điền form thành công mà không cần chờ đến bước OAuth cuối"""
+        if not self.logged_in or not email_id or not recovery_email:
+            return False
+        url = f"{self.base_url}/dashboard/api/emails/{email_id}/"
+        payload: Dict[str, Any] = {"recovery_email": recovery_email}
+        csrftoken = self.session.cookies.get('csrftoken')
+        headers = {"Content-Type": "application/json"}
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+        try:
+            r = self.session.patch(url, json=payload, headers=headers, timeout=15)
+            if r.status_code in (200, 201, 204):
+                logger.info(f"💾 [AUTO-SAVE] Đã lưu ngay email khôi phục ({recovery_email}) vào DB C69 cho email ID {email_id}!")
+                return True
+        except Exception as e:
+            logger.error(f"Lỗi auto-save recovery email: {e}")
+        return False
         """Cập nhật đồng thời refresh_token, recovery_email và status = 0"""
         if not self.logged_in:
             return False
@@ -2106,13 +2123,13 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                     await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
                     await asyncio.sleep(5)
                     
-                    # Cập nhật thông tin email khôi phục mới vào note của hòm thư trên server C69
-                    if c69_client and email_id:
+                    # Cập nhật ngay tức thì recovery_email lên DB C69 ngay khi xác minh OTP thành công
+                    if c69_client and email_id and getattr(temp_mail_client, 'email_address', None):
                         try:
-                            note_msg = f"Email khôi phục mới liên kết: {temp_mail_client.email_address}"
-                            logger.info(f"Đã lưu thông tin email khôi phục mới vào note.")
+                            _loop = asyncio.get_event_loop()
+                            await _loop.run_in_executor(None, c69_client.update_recovery_email_only, email_id, temp_mail_client.email_address)
                         except Exception as e_up:
-                            pass
+                            logger.error(f"Lỗi auto-save recovery email: {e_up}")
                     continue
                 else:
                     logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
