@@ -288,7 +288,7 @@ async def run_checker():
                         email_id=email_id,
                         c69_client=c69
                     ),
-                    timeout=90
+                    timeout=180
                 )
                 if res_token:
                     valid_count += 1
