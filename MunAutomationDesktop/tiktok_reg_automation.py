@@ -2085,15 +2085,21 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 expected_fvia_email = f"{clean_prefix}@fviainboxes.com".lower()
                 
                 target_rec_email = None
-                if is_fvia_hint or (hint_str and ("fviainboxes" in hint_str or hint_str.startswith(clean_prefix[:2].lower()))):
+                if is_fvia_hint:
                     target_rec_email = expected_fvia_email
                     if not temp_mail_client:
                         temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
-                elif recovery_email:
+                elif recovery_email and "fviainboxes" in recovery_email.lower():
                     target_rec_email = recovery_email
-                    if "fviainboxes" in recovery_email.lower() and not temp_mail_client:
+                    if not temp_mail_client:
                         rec_user = recovery_email.split("@")[0]
                         temp_mail_client = TempMailFviainboxes(username=rec_user, domain="fviainboxes.com")
+                elif recovery_email:
+                    # Có email khôi phục cụ thể trong note (ví dụ từ trước)
+                    target_rec_email = recovery_email
+                else:
+                    # Gợi ý là domain ngoài (gmail.com, yahoo.com...) mà không có trong note -> Bỏ qua ngay
+                    target_rec_email = None
                 
                 if target_rec_email:
                     logger.info(f"🔑 Nhận diện email khôi phục tạm thời hợp lệ: {target_rec_email}. Đang tiến hành xác minh...")
