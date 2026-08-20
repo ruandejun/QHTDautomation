@@ -528,17 +528,27 @@ class TempMailFviainboxes:
                             msg_url = f"https://fviainboxes.com/message?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}&id={msg_id}"
                             r_detail = await loop.run_in_executor(None, lambda: requests.get(msg_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
                             if r_detail.status_code == 200:
-                                detail_json = r_detail.json()
-                                body_data = detail_json.get("data", {})
-                                html_body = body_data.get("html", "") or body_data.get("text", "") or ""
-                                text_content = f"{msg.get('subject', '')}\n{html_body}"
+                                raw_body = ""
+                                try:
+                                    detail_json = r_detail.json()
+                                    if isinstance(detail_json, dict):
+                                        body_data = detail_json.get("data", {})
+                                        raw_body = body_data.get("html", "") or body_data.get("text", "") or ""
+                                    elif isinstance(detail_json, str):
+                                        raw_body = detail_json
+                                except Exception:
+                                    raw_body = r_detail.text
                                 
-                                # Tìm mã OTP Microsoft
-                                otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                text_content = f"{msg.get('subject', '')}\n{raw_body}"
+                                
+                                # Tìm mã OTP Microsoft chính xác
+                                otp_match = re.search(r'Security\s+code:\s*<[^>]+>\s*(\d{6})\s*<', text_content, re.IGNORECASE)
                                 if not otp_match:
-                                    otp_match = re.search(r'(?:code|mã)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                    otp_match = re.search(r'Security\s+code:\s*(\d{6})', text_content, re.IGNORECASE)
                                 if not otp_match:
-                                    otp_match = re.search(r'\b\d{6,8}\b', text_content)
+                                    otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6})', text_content, re.IGNORECASE)
+                                if not otp_match:
+                                    otp_match = re.search(r'\b\d{6}\b', text_content)
                                     
                                 if otp_match:
                                     code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
