@@ -1884,14 +1884,20 @@ async def _verify_signup_success(tab: Any, timeout_secs: int = 30) -> bool:
 async def safe_send_keys(tab, selector, text, retries=3):
     for i in range(retries):
         try:
-            # 1. Thử điền bằng JS DOM trực tiếp (nhanh và tránh lỗi node id CDP)
+            # 1. Thử điền bằng JS DOM trực tiếp (chuẩn xác cho cả React/Fluent UI và tránh lỗi -32000 CDP)
             filled = await tab.evaluate(f"""
             (() => {{
                 const sel = `{selector}`;
                 const el = document.querySelector(sel);
                 if (el) {{
                     el.focus();
-                    el.value = `{text}`;
+                    const proto = Object.getPrototypeOf(el);
+                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) {{
+                        setter.call(el, `{text}`);
+                    }} else {{
+                        el.value = `{text}`;
+                    }}
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
@@ -1902,11 +1908,14 @@ async def safe_send_keys(tab, selector, text, retries=3):
             if filled:
                 return True
                 
-            # 2. Thử select qua CDP
-            el = await tab.select(selector)
-            if el:
-                await el.send_keys(text)
-                return True
+            # 2. Fallback CDP select nếu DOM chưa render
+            try:
+                el = await tab.select(selector)
+                if el:
+                    await el.send_keys(text)
+                    return True
+            except Exception:
+                pass
         except Exception as e:
             if i == retries - 1:
                 logger.debug(f"[safe_send_keys] Không tìm thấy hoặc lỗi điền {selector}: {e}")
@@ -1923,6 +1932,7 @@ async def safe_click(tab, selector, retries=3):
                 const sel = `{selector}`;
                 const btn = document.querySelector(sel);
                 if (btn) {{
+                    btn.focus();
                     btn.click();
                     return true;
                 }}
@@ -1941,10 +1951,13 @@ async def safe_click(tab, selector, retries=3):
             if clicked:
                 return True
                 
-            el = await tab.select(selector)
-            if el:
-                await el.click()
-                return True
+            try:
+                el = await tab.select(selector)
+                if el:
+                    await el.click()
+                    return True
+            except Exception:
+                pass
         except Exception as e:
             if i == retries - 1:
                 logger.debug(f"[safe_click] Không tìm thấy phần tử {selector}: {e}")
@@ -1979,26 +1992,22 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
         await asyncio.sleep(2)
         
         # 1. Điền Email
-        inp_email = await tab.select("input[type='email'], input[name='loginfmt'], input[id*='username']")
-        if inp_email:
-            await inp_email.send_keys(email)
-            await asyncio.sleep(1)
-            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
-            await asyncio.sleep(3)
+        await safe_send_keys(tab, "input[type='email'], input[name='loginfmt'], input[id*='username']", email)
+        await asyncio.sleep(1)
+        await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
+        await asyncio.sleep(3)
             
         # 2. Điền Password
-        inp_pass = await tab.select("input[type='password'], input[name='passwd'], #i0118, input[id*='Password']")
-        if not inp_pass:
+        has_pass = await safe_send_keys(tab, "input[type='password'], input[name='passwd'], #i0118, input[id*='Password']", password)
+        if not has_pass:
             # Click 'Use your password' nếu có
             await safe_click(tab, "a:has-text('Use your password'), button:has-text('Use your password'), span:has-text('Use your password')")
             await asyncio.sleep(2)
-            inp_pass = await tab.select("input[type='password'], input[name='passwd'], #i0118, input[id*='Password']")
+            await safe_send_keys(tab, "input[type='password'], input[name='passwd'], #i0118, input[id*='Password']", password)
             
-        if inp_pass:
-            await inp_pass.send_keys(password)
-            await asyncio.sleep(1)
-            await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit'], button.fui-Button")
-            await asyncio.sleep(4)
+        await asyncio.sleep(1)
+        await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit'], button.fui-Button")
+        await asyncio.sleep(4)
                 
         # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập, Protect your account)
         temp_mail_client = None
@@ -2017,7 +2026,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 break
             
             # A. Nhận diện màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
-            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']")
+            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']")
             if alt_email_inp:
                 if not temp_mail_client:
                     # Lấy phần username đứng trước @ của email chính (ví dụ: abc@hotmail.com -> abc)
@@ -2027,24 +2036,12 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                     temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
                     logger.info(f"Đã khởi tạo email khôi phục Fviainboxes: {temp_mail_client.email_address}")
                     
-                    # Fallback nếu fviainboxes gặp trục trặc
-                    if not temp_mail_client.email_address:
-                        temp_mail_client = TempMail1SecMail()
-                        temp_mail_client.generate_email()
-                        if not temp_mail_client.email_address:
-                            class C69FallbackMailbox:
-                                def __init__(self, c69, email_id, email):
-                                    self.email_address = email
-                                    self.mailbox = C69MailBox(c69, email_id, email)
-                                async def get_microsoft_otp(self):
-                                    return await self.mailbox.get_microsoft_otp_code()
-                            temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
-                if temp_mail_client.email_address:
+                if temp_mail_client and temp_mail_client.email_address:
                     logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
-                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']", temp_mail_client.email_address)
+                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']", temp_mail_client.email_address)
                     await asyncio.sleep(1)
-                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit'], input[value='Next'], button:has-text('Next')")
-                    await asyncio.sleep(5)
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, button[type='submit'], button:has-text('Next')")
+                    await asyncio.sleep(4)
                     continue
 
             # B. Nhận diện màn hình nhập mã OTP của Email bảo mật mới bằng Selector OTC
