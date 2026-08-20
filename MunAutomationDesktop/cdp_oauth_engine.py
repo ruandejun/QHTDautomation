@@ -60,7 +60,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
         await asyncio.sleep(5)
         
         # Kiểm tra pass sai / khóa tài khoản
-        body_after_pass = await tab.evaluate("document.body.innerText") or ""
+        body_eval = await tab.evaluate("document.body.innerText")
+        body_after_pass = body_eval if isinstance(body_eval, str) else ""
         body_lower = body_after_pass.lower()
         if "that password is incorrect" in body_lower or "password is incorrect" in body_lower:
             logger.warning(f"[{email}] Mật khẩu không chính xác.")
@@ -126,7 +127,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                             return new_ref
                 break
                 
-            body_step = await tab.evaluate("document.body.innerText") or ""
+            body_eval_step = await tab.evaluate("document.body.innerText")
+            body_step = body_eval_step if isinstance(body_eval_step, str) else ""
             body_step_lower = body_step.lower()
             
             # B. Nếu bắt thiết lập email khôi phục mới (Let's protect your account / proofs/Add)
