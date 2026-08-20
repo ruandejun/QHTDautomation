@@ -163,6 +163,8 @@ print(json.dumps(items))
         browser = None
         tab = None
         try:
+            # Khởi tạo manager riêng cho mỗi session để tránh leak tab / zombie browser
+            manager = NodriverBrowserManager()
             browser, tab = await manager.start(
                 profile_config=profile,
                 proxy_string=proxy_str,
@@ -175,16 +177,23 @@ print(json.dumps(items))
                 update_progress(total, processed, success, failed, skipped, email, "Lỗi mở trình duyệt")
                 continue
 
-            # Chạy luồng tự động đăng nhập và lấy mã Token
-            res_token = await auto_login_microsoft_and_get_token(
-                browser=browser,
-                email=email,
-                password=password,
-                note_field=note,
-                client_id=client_id,
-                email_id=email_id,
-                c69_client=c69
-            )
+            # Chạy luồng tự động đăng nhập và lấy mã Token với timeout tối đa 90s
+            try:
+                res_token = await asyncio.wait_for(
+                    auto_login_microsoft_and_get_token(
+                        browser=browser,
+                        email=email,
+                        password=password,
+                        note_field=note,
+                        client_id=client_id,
+                        email_id=email_id,
+                        c69_client=c69
+                    ),
+                    timeout=90
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"⏳ Quá thời gian chờ (90s) khi xử lý {email}")
+                res_token = False
 
             if res_token:
                 logger.info(f"🎉 Tự động cấp Token mới thành công cho {email}!")
@@ -201,7 +210,7 @@ print(json.dumps(items))
             failed += 1
             update_progress(total, processed, success, failed, skipped, email, f"Lỗi: {e_proc}")
         finally:
-            if browser:
+            if manager:
                 try:
                     await manager.close()
                 except Exception:
