@@ -289,7 +289,7 @@ async def run_checker():
                         c69_client=c69,
                         update_step_callback=update_telegram_live
                     ),
-                    timeout=180
+                    timeout=240
                 )
                 if res_token:
                     valid_count += 1

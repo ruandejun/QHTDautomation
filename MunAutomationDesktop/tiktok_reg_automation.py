@@ -503,30 +503,39 @@ class TempMailFviainboxes:
     """Xử lý email tạm thời qua dịch vụ Fviainboxes.com (API free /messages)"""
     
     def __init__(self, username: str, domain: str = "fviainboxes.com"):
-        self.username = username
+        self.username = username.strip().lower()
         self.domain = domain
-        self.email_address = f"{username}@{domain}"
+        self.email_address = f"{self.username}@{domain}"
         
-    async def get_microsoft_otp(self, timeout_secs: int = 120) -> Optional[str]:
-        """Polling hộp thư fviainboxes.com để tìm mã OTP xác minh từ Microsoft."""
+    async def get_microsoft_otp(self, timeout_secs: int = 150) -> Optional[str]:
+        """Polling hộp thư fviainboxes.com để tìm mã OTP xác minh từ Microsoft với cơ chế retry và timeout linh hoạt."""
         logger.info(f"Đang chờ mã OTP Microsoft gửi đến {self.email_address} qua fviainboxes.com (Timeout: {timeout_secs}s)...")
         start_time = asyncio.get_event_loop().time()
+        
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*"
+        })
         
         while asyncio.get_event_loop().time() - start_time < timeout_secs:
             url = f"https://fviainboxes.com/messages?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}"
             try:
                 loop = asyncio.get_event_loop()
-                r = await loop.run_in_executor(None, lambda: requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
+                r = await loop.run_in_executor(None, lambda: session.get(url, timeout=15))
                 if r.status_code == 200:
                     data = r.json()
                     messages = data.get("result", [])
+                    # Sắp xếp tin nhắn mới nhất lên đầu nếu có createdAt
+                    messages = sorted(messages, key=lambda m: m.get("createdAt", 0), reverse=True)
+                    
                     for msg in messages:
                         subject = str(msg.get("subject", "")).lower()
                         sender = str(msg.get("from", "")).lower()
-                        if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject or "security" in subject:
+                        if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject or "security" in subject or "unusual" in subject:
                             msg_id = msg.get("id")
                             msg_url = f"https://fviainboxes.com/message?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}&id={msg_id}"
-                            r_detail = await loop.run_in_executor(None, lambda: requests.get(msg_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
+                            r_detail = await loop.run_in_executor(None, lambda: session.get(msg_url, timeout=15))
                             if r_detail.status_code == 200:
                                 raw_text = r_detail.text
                                 try:
@@ -546,11 +555,11 @@ class TempMailFviainboxes:
                                     logger.info(f"🎉 Tìm thấy mã OTP Microsoft chuẩn xác từ fviainboxes.com: {code}")
                                     return code
             except Exception as e:
-                logger.debug(f"Đang kiểm tra mail fviainboxes.com (lỗi: {e})...")
+                logger.debug(f"Đang polling fviainboxes.com (thử lại sau 3s, lỗi: {e})...")
                 
-            await asyncio.sleep(4)
+            await asyncio.sleep(3)
             
-        logger.warning("Không tìm thấy mã OTP Microsoft trên fviainboxes.com trong thời gian chờ.")
+        logger.warning(f"Không tìm thấy mã OTP Microsoft trên fviainboxes.com ({self.email_address}) sau {timeout_secs}s.")
         return None
 
 

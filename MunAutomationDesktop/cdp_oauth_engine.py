@@ -185,10 +185,10 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
                     await asyncio.sleep(5)
                     
-                    # Chờ lấy OTP từ Fviainboxes.com
+                    # Chờ lấy OTP từ Fviainboxes.com với timeout 120s
                     await report_step(f"Đang chờ mã OTP từ fviainboxes ({email_prefix})...")
                     fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
-                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=60)
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=120)
                     if otp_code:
                         logger.info(f"[{email}] 🎉 Nhập OTP từ fviainboxes.com: {otp_code}")
                         await report_step(f"Đã có mã OTP ({otp_code})! Đang điền & xác nhận...")
