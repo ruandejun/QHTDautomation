@@ -1937,7 +1937,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             body_text_lower = body_text.lower()
             
             # A. Nhận diện màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
-            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']")
+            alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']")
             if alt_email_inp:
                 if not temp_mail_client:
                     temp_mail_client = TempMail1SecMail()
@@ -1955,9 +1955,9 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                         temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
                 if temp_mail_client.email_address:
                     logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
-                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']", temp_mail_client.email_address)
+                    await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']", temp_mail_client.email_address)
                     await asyncio.sleep(1)
-                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
+                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit'], input[value='Next'], button:has-text('Next')")
                     await asyncio.sleep(5)
                     continue
 
