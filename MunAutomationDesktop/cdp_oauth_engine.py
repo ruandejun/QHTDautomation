@@ -220,15 +220,14 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 await report_step("Đang ở màn hình nhập OTP...")
                 otp_code = None
                 
-                # 1. Nếu trước đó đã dùng fviainboxes.com
-                if "fviainboxes" in (tab.url or "") or any("fviainboxes" in str(x) for x in [body_step_lower]):
-                    email_prefix = email.split('@')[0].strip()
-                    await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix})...")
-                    fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
-                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=60)
-                    if otp_code:
-                        expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
-                        c69_client.update_recovery_email_only(email_id, expected_fvia_email)
+                # 1. Ưu tiên kiểm tra Fviainboxes OTP
+                email_prefix = email.split('@')[0].strip()
+                await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix})...")
+                fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
+                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=60)
+                if otp_code:
+                    expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
+                    c69_client.update_recovery_email_only(email_id, expected_fvia_email)
                 
                 # 2. Nếu trước đó dùng C69 Recovery Box
                 elif recovery_box_used:
