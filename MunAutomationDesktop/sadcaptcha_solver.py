@@ -33,7 +33,7 @@ def load_settings() -> Dict[str, Any]:
     return {
         "sadcaptcha_api_key": "",
         "max_threads": 5,
-        "proxy_pool_url": "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824",
+        "proxy_pool_url": "https://cu.c69.us/500",
         "solve_captcha_enabled": True
     }
 

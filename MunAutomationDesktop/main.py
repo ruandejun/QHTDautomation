@@ -1212,7 +1212,7 @@ class MicrosoftTokenWorker(QThread):
                 # Gán SOCKS5 Proxy từ WebShare Pool để tránh bị Microsoft block IP VPS
                 from sadcaptcha_solver import load_settings
                 cfg = load_settings()
-                proxy_pool_url = cfg.get("proxy_pool_url") or "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824"
+                proxy_pool_url = cfg.get("proxy_pool_url") or "https://cu.c69.us/500"
                 
                 proxy_str = ""
                 try:
