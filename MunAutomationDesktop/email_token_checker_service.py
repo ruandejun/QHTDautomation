@@ -227,7 +227,7 @@ async def run_checker():
             if not password:
                 error_count += 1
                 checked_count += 1
-                c69.update_email_status(email_id, 3)
+                c69.update_email_status(email_id, 3, "Không có password trong DB")
                 logger.warning(f"⚠️ [NO PASS] {email} -> Status 3")
                 update_telegram_live(email, "⚠️ Không có pass (Gán status=3)")
                 continue
@@ -273,19 +273,19 @@ async def run_checker():
                 else:
                     error_count += 1
                     invalid_count -= 1
-                    c69.update_email_status(email_id, 3)
+                    c69.update_email_status(email_id, 3, "Không hoàn tất cấp Token qua Browser")
                     logger.warning(f"⚠️ [CẦN CHECK TAY] {email}")
                     update_telegram_live(email, "⚠️ Cần check tay (Gán status=3)")
             except asyncio.TimeoutError:
                 error_count += 1
                 invalid_count -= 1
-                c69.update_email_status(email_id, 3)
+                c69.update_email_status(email_id, 3, "Quá thời gian chờ (Timeout 90s)")
                 logger.warning(f"⏳ [TIMEOUT 90s] {email} -> Status 3")
                 update_telegram_live(email, "⏳ Quá hạn 90s (Gán status=3)")
             except Exception as e_proc:
                 error_count += 1
                 invalid_count -= 1
-                c69.update_email_status(email_id, 3)
+                c69.update_email_status(email_id, 3, f"Lỗi exception: {str(e_proc)[:100]}")
                 logger.error(f"❌ [LỖI] {email}: {e_proc}")
                 update_telegram_live(email, f"❌ Lỗi: {e_proc} (Gán status=3)")
             finally:

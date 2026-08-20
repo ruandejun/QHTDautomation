@@ -248,13 +248,15 @@ class C69Client:
             logger.error(f"Lỗi kết nối API C69 save-mailbox-results: {e}")
         return False
 
-    def update_email_status(self, email_id: int, status: int) -> bool:
-        """Cập nhật trạng thái (status) cho email trong DB C69 (ví dụ: status=5 là lỗi)"""
+    def update_email_status(self, email_id: int, status: int, note_reason: str = "") -> bool:
+        """Cập nhật trạng thái (status) và lý do chi tiết (note) cho email trong DB C69"""
         if not self.logged_in:
             logger.error("Chưa đăng nhập C69. Không thể cập nhật trạng thái email.")
             return False
         url = f"{self.base_url}/dashboard/api/emails/{email_id}/"
-        payload = {"status": status}
+        payload: Dict[str, Any] = {"status": status}
+        if note_reason:
+            payload["note"] = note_reason
         
         csrftoken = self.session.cookies.get('csrftoken')
         headers = {"Content-Type": "application/json"}
@@ -264,7 +266,7 @@ class C69Client:
         try:
             r = self.session.patch(url, json=payload, headers=headers, timeout=15)
             if r.status_code in (200, 201, 204):
-                logger.info(f"Đã cập nhật trạng thái email ID {email_id} thành {status} thành công!")
+                logger.info(f"Đã cập nhật email ID {email_id} -> Status {status} (Lý do: {note_reason or 'None'}) thành công!")
                 return True
             else:
                 logger.error(f"Lỗi cập nhật trạng thái email trên C69 (Status {r.status_code}): {r.text}")
@@ -2096,12 +2098,26 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate']")
             if alt_email_inp:
                 if not temp_mail_client:
-                    # Lấy phần username đứng trước @ của email chính (ví dụ: abc@hotmail.com -> abc)
-                    email_prefix = email.split("@")[0].strip() if "@" in email else email.strip()
-                    # Làm sạch ký tự không hợp lệ cho fviainboxes
-                    clean_prefix = re.sub(r'[^a-zA-Z0-9._-]', '', email_prefix) or "recovery"
-                    temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
-                    logger.info(f"Đã khởi tạo email khôi phục Fviainboxes: {temp_mail_client.email_address}")
+                    # Lấy ngẫu nhiên 1 hòm thư Microsoft đang sống từ C69 Pool
+                    rand_c69_box = None
+                    if c69_client:
+                        rand_c69_box = c69_client.get_random_valid_recovery_mailbox(exclude_email=email)
+                    
+                    if rand_c69_box and rand_c69_box.get("id") and rand_c69_box.get("email"):
+                        rec_id = rand_c69_box["id"]
+                        rec_mail = rand_c69_box["email"]
+                        class C69ActiveMailbox:
+                            def __init__(self, c69_c, m_id, m_email):
+                                self.email_address = m_email
+                                self.mailbox = C69MailBox(c69_c, m_id, m_email)
+                            async def get_microsoft_otp(self):
+                                return await self.mailbox.get_microsoft_otp_code()
+                        temp_mail_client = C69ActiveMailbox(c69_client, rec_id, rec_mail)
+                        logger.info(f"🎲 Chọn hòm thư khôi phục C69 sống: {rec_mail} (ID: {rec_id})")
+                    else:
+                        email_prefix = email.split("@")[0].strip() if "@" in email else email.strip()
+                        clean_prefix = re.sub(r'[^a-zA-Z0-9._-]', '', email_prefix) or "recovery"
+                        temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
                     
                 if temp_mail_client and temp_mail_client.email_address:
                     logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
@@ -2183,7 +2199,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                     logger.warning(f"⚠️ Email {email} yêu cầu xác minh qua email khôi phục lạ ({hint_str or 'Unknown'}). Bỏ qua và cập nhật trạng thái lên C69.")
                     if c69_client and email_id:
                         try:
-                            c69_client.update_email_status(email_id, 3) # 3: Temporary / Cần kiểm tra lại
+                            c69_client.update_email_status(email_id, 3, f"Bắt OTP email khôi phục lạ ({hint_str})") # 3: Temporary / Cần kiểm tra lại
                         except Exception as e_st:
                             pass
                     return False
