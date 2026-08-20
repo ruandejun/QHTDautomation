@@ -154,7 +154,34 @@ async def run_checker():
         current_mail="Bắt đầu tiến trình",
         current_status="Đang nạp danh sách email từ C69..."
     )
+    # Quản lý gửi tin nhắn mới định kỳ mỗi 60s để tránh bị trôi tin nhắn
+    last_send_new_msg_time = time.time()
     tg_msg_id = send_telegram_message(msg_card)
+
+    def update_telegram_live(curr_mail, curr_status):
+        nonlocal tg_msg_id, last_send_new_msg_time
+        now = time.time()
+        card_content = create_checker_card_html(
+            total=total_count,
+            checked=checked_count,
+            left=batch_total - checked_count,
+            valid=valid_count,
+            invalid=invalid_count,
+            error=error_count,
+            current_mail=curr_mail,
+            current_status=curr_status
+        )
+        
+        # Nếu đã qua 60 giây kể từ lần gửi tin nhắn mới -> Gửi tin nhắn Card mới để nổi lên đầu
+        if now - last_send_new_msg_time >= 60:
+            new_id = send_telegram_message(card_content)
+            if new_id:
+                tg_msg_id = new_id
+                last_send_new_msg_time = now
+        else:
+            # Ngược lại edit cập nhật trực tiếp tin nhắn hiện tại
+            if tg_msg_id:
+                edit_telegram_message(tg_msg_id, card_content)
 
     for item in candidates:
         email = item.get('email')
@@ -164,19 +191,7 @@ async def run_checker():
         client_id = item.get('client_id') or "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 
         # Cập nhật telegram đang check mail này
-        edit_telegram_message(
-            tg_msg_id,
-            create_checker_card_html(
-                total=total_count,
-                checked=checked_count,
-                left=batch_total - checked_count,
-                valid=valid_count,
-                invalid=invalid_count,
-                error=error_count,
-                current_mail=email,
-                current_status="Đang test Fast Refresh Token..."
-            )
-        )
+        update_telegram_live(email, "Đang test Fast Refresh Token...")
 
         # A. Test Fast Refresh
         fast_ok, new_ref = await test_fast_refresh(item)
@@ -186,19 +201,7 @@ async def run_checker():
             valid_count += 1
             checked_count += 1
             logger.info(f"✅ [VALID] {email}")
-            edit_telegram_message(
-                tg_msg_id,
-                create_checker_card_html(
-                    total=total_count,
-                    checked=checked_count,
-                    left=batch_total - checked_count,
-                    valid=valid_count,
-                    invalid=invalid_count,
-                    error=error_count,
-                    current_mail=email,
-                    current_status="✅ Token hợp lệ (Fast Refreshed)"
-                )
-            )
+            update_telegram_live(email, "✅ Token hợp lệ (Fast Refreshed)")
             continue
 
         # B. Không có password -> Báo Error / Cần xử lý tay
@@ -207,36 +210,12 @@ async def run_checker():
             checked_count += 1
             c69.update_email_status(email_id, 3)
             logger.warning(f"⚠️ [NO PASS] {email} -> Status 3")
-            edit_telegram_message(
-                tg_msg_id,
-                create_checker_card_html(
-                    total=total_count,
-                    checked=checked_count,
-                    left=batch_total - checked_count,
-                    valid=valid_count,
-                    invalid=invalid_count,
-                    error=error_count,
-                    current_mail=email,
-                    current_status="⚠️ Không có pass (Gán status=3)"
-                )
-            )
+            update_telegram_live(email, "⚠️ Không có pass (Gán status=3)")
             continue
 
         # C. Token chết -> Đang thử cấp lại
         invalid_count += 1
-        edit_telegram_message(
-            tg_msg_id,
-            create_checker_card_html(
-                total=total_count,
-                checked=checked_count,
-                left=batch_total - checked_count,
-                valid=valid_count,
-                invalid=invalid_count,
-                error=error_count,
-                current_mail=email,
-                current_status="Token chết! Đang mở browser auto-login & cấp token..."
-            )
-        )
+        update_telegram_live(email, "Token chết! Đang mở browser auto-login & cấp token...")
 
         try:
             r_p = requests.get("https://cu.c69.us/500", timeout=8)
@@ -286,19 +265,7 @@ async def run_checker():
                 pass
 
         # Cập nhật kết quả sau mỗi email
-        edit_telegram_message(
-            tg_msg_id,
-            create_checker_card_html(
-                total=total_count,
-                checked=checked_count,
-                left=batch_total - checked_count,
-                valid=valid_count,
-                invalid=invalid_count,
-                error=error_count,
-                current_mail=email,
-                current_status="Đã xong lượt kiểm tra email này."
-            )
-        )
+        update_telegram_live(email, "Đã xong lượt kiểm tra email này.")
         await asyncio.sleep(2)
 
     # Tổng kết cuối batch
