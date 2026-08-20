@@ -26,22 +26,36 @@ async def cdp_type_text(tab, selector, text):
     return False
 
 async def cdp_click_btn_by_text(tab, keywords=["next", "sign in", "yes", "ok", "got it", "continue", "use your password", "other ways to sign in"]):
-    """Click tọa độ thật của nút / link / thẻ có text tương ứng qua CDP"""
+    """Click tọa độ thật của phần tử lá (leaf node) hoặc nút có text tương ứng qua CDP"""
     kw_json = json.dumps([k.lower() for k in keywords])
     res = await tab.evaluate(f"""
     (() => {{
         const kws = {kw_json};
-        const allElements = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button'], a, span, div.fui-Button, [role='button']"));
-        const targetBtn = allElements.find(b => {{
-            const t = (b.innerText || b.value || b.textContent || "").trim().toLowerCase();
-            return kws.some(k => t.includes(k)) || b.id === "idSIButton9" || b.id === "idBtn_Accept" || b.id === "idA_PWD_SwitchToPassword";
+        const allElements = Array.from(document.querySelectorAll("*"));
+        
+        // 1. Ưu tiên tìm Leaf Node có text khớp chính xác 100% với keyword
+        let target = allElements.find(e => {{
+            const t = (e.innerText || e.textContent || e.value || "").trim().toLowerCase();
+            if (!kws.includes(t)) return false;
+            // Đảm bảo là leaf node (không có con nào cũng có text đó)
+            return !Array.from(e.children).some(c => kws.includes((c.innerText || c.textContent || "").trim().toLowerCase()));
         }});
-        if (targetBtn) {{
-            targetBtn.focus();
-            targetBtn.click(); // Click native DOM trước
-            const rect = targetBtn.getBoundingClientRect();
+        
+        // 2. Nếu không có leaf node khớp chính xác, tìm theo includes hoặc selector chuẩn
+        if (!target) {{
+            target = allElements.find(b => {{
+                const t = (b.innerText || b.value || b.textContent || "").trim().toLowerCase();
+                return kws.some(k => t === k || (k.length > 5 && t.includes(k))) || b.id === "idSIButton9" || b.id === "idBtn_Accept" || b.id === "idA_PWD_SwitchToPassword";
+            }});
+        }}
+        
+        if (target) {{
+            target.scrollIntoView();
+            target.focus();
+            try {{ target.click(); }} catch(e) {{}}
+            const rect = target.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {{
-                return JSON.stringify({{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: targetBtn.innerText }});
+                return JSON.stringify({{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: target.innerText || target.textContent }});
             }}
             return JSON.stringify({{ x: -1, y: -1 }});
         }}
