@@ -1884,28 +1884,71 @@ async def _verify_signup_success(tab: Any, timeout_secs: int = 30) -> bool:
 async def safe_send_keys(tab, selector, text, retries=3):
     for i in range(retries):
         try:
+            # 1. Thử điền bằng JS DOM trực tiếp (nhanh và tránh lỗi node id CDP)
+            filled = await tab.evaluate(f"""
+            (() => {{
+                const sel = `{selector}`;
+                const el = document.querySelector(sel);
+                if (el) {{
+                    el.focus();
+                    el.value = `{text}`;
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return true;
+                }}
+                return false;
+            }})()
+            """)
+            if filled:
+                return True
+                
+            # 2. Thử select qua CDP
             el = await tab.select(selector)
             if el:
                 await el.send_keys(text)
                 return True
         except Exception as e:
             if i == retries - 1:
-                raise e
-            logger.warning(f"[CDP Retry] Gặp lỗi khi gõ vào {selector} ({e}), đang thử lại lần {i+1}...")
+                logger.debug(f"[safe_send_keys] Không tìm thấy hoặc lỗi điền {selector}: {e}")
+                return False
             await asyncio.sleep(1)
     return False
 
 async def safe_click(tab, selector, retries=3):
     for i in range(retries):
         try:
+            # Ưu tiên evaluate click trực tiếp bằng JS DOM để tránh lỗi CDP query selector
+            clicked = await tab.evaluate(f"""
+            (() => {{
+                const sel = `{selector}`;
+                const btn = document.querySelector(sel);
+                if (btn) {{
+                    btn.click();
+                    return true;
+                }}
+                // Tìm theo text content nếu có
+                const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"], a'));
+                for (const b of buttons) {{
+                    const t = (b.innerText || b.value || b.textContent || '').trim().toLowerCase();
+                    if (t === 'next' || t === 'tiếp theo' || t === 'send code' || t === 'gửi mã' || t === 'yes' || t === 'có' || t === 'accept' || t === 'chấp nhận') {{
+                        b.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }})()
+            """)
+            if clicked:
+                return True
+                
             el = await tab.select(selector)
             if el:
                 await el.click()
                 return True
         except Exception as e:
             if i == retries - 1:
-                raise e
-            logger.warning(f"[CDP Retry] Gặp lỗi khi click vào {selector} ({e}), đang thử lại lần {i+1}...")
+                logger.debug(f"[safe_click] Không tìm thấy phần tử {selector}: {e}")
+                return False
             await asyncio.sleep(1)
     return False
 
@@ -1935,60 +1978,43 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             logger.info("Chờ load trang live.com timeout, tiếp tục...")
         await asyncio.sleep(2)
         
-        # 1. Điền Email (Chờ tối đa 15s cho form email hiển thị)
-        email_inps = []
-        for _ in range(15):
-            email_inps = await tab.select_all("input[type='email'], input[name='loginfmt']")
-            if email_inps:
-                break
-            await asyncio.sleep(1)
-            
-        if email_inps:
-            await safe_send_keys(tab, "input[type='email'], input[name='loginfmt']", email)
+        # 1. Điền Email
+        inp_email = await tab.select("input[type='email'], input[name='loginfmt'], input[id*='username']")
+        if inp_email:
+            await inp_email.send_keys(email)
             await asyncio.sleep(1)
             await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit']")
-            await asyncio.sleep(1)
-                
-        # 2. Điền Password (Chờ tối đa 15s cho form password hiển thị sau khi click Next)
-        pass_inps = []
-        for _ in range(15):
-            # Nếu gặp màn hình Passwordless/OTP -> Tự động click 'Use your password'
-            await tab.evaluate("""
-            (() => {
-                const spans = Array.from(document.querySelectorAll('span, a, button, [role="button"]'));
-                const link = spans.find(el => el.children.length === 0 && (el.innerText || el.textContent || '').trim() === 'Use your password');
-                if (link) {
-                    const opts = { bubbles: true, cancelable: true, view: window };
-                    link.dispatchEvent(new PointerEvent('pointerdown', opts));
-                    link.dispatchEvent(new MouseEvent('mousedown', opts));
-                    link.dispatchEvent(new PointerEvent('pointerup', opts));
-                    link.dispatchEvent(new MouseEvent('mouseup', opts));
-                    link.dispatchEvent(new MouseEvent('click', opts));
-                }
-            })()
-            """)
-            pass_inps = await tab.select_all("input[type='password'], input[name='passwd'], input[id*='Password'], #i0118")
-            if pass_inps:
-                break
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
             
-        if pass_inps:
-            await safe_send_keys(tab, "input[type='password'], input[name='passwd'], input[id*='Password'], #i0118", password)
+        # 2. Điền Password
+        inp_pass = await tab.select("input[type='password'], input[name='passwd'], #i0118, input[id*='Password']")
+        if not inp_pass:
+            # Click 'Use your password' nếu có
+            await safe_click(tab, "a:has-text('Use your password'), button:has-text('Use your password'), span:has-text('Use your password')")
+            await asyncio.sleep(2)
+            inp_pass = await tab.select("input[type='password'], input[name='passwd'], #i0118, input[id*='Password']")
+            
+        if inp_pass:
+            await inp_pass.send_keys(password)
             await asyncio.sleep(1)
             await safe_click(tab, "#idSIButton9, input[type='submit'], button[type='submit'], button.fui-Button")
             await asyncio.sleep(4)
                 
         # 3. Xử lý các màn hình trung gian (Xác minh khôi phục, Nhắc nhở bảo mật, Duy trì đăng nhập, Protect your account)
         temp_mail_client = None
-        for _ in range(8):
-            current_url = tab.url
-            if "login.live.com" not in current_url:
-                break
-                
+        for step_idx in range(8):
+            current_url = await tab.evaluate("window.location.href") or tab.url or ""
+            logger.info(f"🔄 Đang ở bước trung gian {step_idx+1}/8 (URL: {current_url[:60]}...)")
+            
             body_text = await tab.evaluate("document.body.textContent")
             if not isinstance(body_text, str):
                 body_text = ""
             body_text_lower = body_text.lower()
+            
+            # Nếu đã vào màn hình chính tài khoản / account.live / portal -> thoát sớm sang OAuth
+            if "account.live.com" in current_url and "proofs" not in current_url and "identity" not in current_url:
+                logger.info("Đã vào trang tài khoản Microsoft thành công!")
+                break
             
             # A. Nhận diện màn hình Protect your account (Cấu hình email khôi phục mới) bằng Selector
             alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']")
@@ -2164,22 +2190,26 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                     logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
                         
             if not has_clicked_accept:
-                accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9")
+                accept_btn = await tab.select("input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9, button[type='submit']")
                 if accept_btn:
                     logger.info("Click Accept đồng ý cấp quyền...")
-                    await safe_click(tab, "input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9, #idSIButton9")
+                    await safe_click(tab, "input#idBtn_Accept, button#idBtn_Accept, input[type='submit'], input#idSIButton9, button[type='submit'], #idSIButton9")
                     has_clicked_accept = True
-                    await asyncio.sleep(6)
+                    await asyncio.sleep(3)
                     continue
             await asyncio.sleep(2)
                 
         # 5. Lấy code từ redirect url
-        current_url = tab.url
+        current_url = await tab.evaluate("window.location.href")
+        if not isinstance(current_url, str):
+            current_url = tab.url or ""
+            
+        logger.info(f"URL sau khi cấp quyền OAuth: {current_url}")
         if "code=" in current_url:
             parsed = urllib.parse.urlparse(current_url)
             code = urllib.parse.parse_qs(parsed.query).get("code", [None])[0]
             if code:
-                logger.info(f"Đã lấy được code: {code[:10]}...")
+                logger.info(f"🎉 Đã lấy được Authorization Code: {code[:12]}...")
                 # Gửi request POST đổi code lấy token
                 token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
                 payload = {
@@ -2198,7 +2228,7 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                         # Lưu lên C69
                         saved = await loop.run_in_executor(None, c69_client.save_mailbox_results, email_id, new_ref_token)
                         if saved:
-                            logger.info("🎉 Tự động làm mới và cập nhật thành công Token OAuth!")
+                            logger.info(f"🎉 Tự động làm mới và cập nhật thành công Token OAuth cho {email}!")
                             return True
                     else:
                         logger.error(f"Response Microsoft không có refresh_token: {res.text}")
