@@ -528,31 +528,22 @@ class TempMailFviainboxes:
                             msg_url = f"https://fviainboxes.com/message?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}&id={msg_id}"
                             r_detail = await loop.run_in_executor(None, lambda: requests.get(msg_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
                             if r_detail.status_code == 200:
-                                raw_body = ""
+                                raw_text = r_detail.text
                                 try:
-                                    detail_json = r_detail.json()
-                                    if isinstance(detail_json, dict):
-                                        body_data = detail_json.get("data", {})
-                                        raw_body = body_data.get("html", "") or body_data.get("text", "") or ""
-                                    elif isinstance(detail_json, str):
-                                        raw_body = detail_json
+                                    cleaned_text = json.loads(raw_text)
                                 except Exception:
-                                    raw_body = r_detail.text
+                                    cleaned_text = raw_text.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\"', '"')
                                 
-                                text_content = f"{msg.get('subject', '')}\n{raw_body}"
-                                
-                                # Tìm mã OTP Microsoft chính xác
-                                otp_match = re.search(r'Security\s+code:\s*<[^>]+>\s*(\d{6})\s*<', text_content, re.IGNORECASE)
+                                # Tìm mã OTP 6 số thực sự nằm sau "Security code:" (bỏ qua mã màu CSS như #707070)
+                                otp_match = re.search(r'Security\s+code:.*?(\b\d{6}\b)', cleaned_text, re.IGNORECASE | re.DOTALL)
                                 if not otp_match:
-                                    otp_match = re.search(r'Security\s+code:\s*(\d{6})', text_content, re.IGNORECASE)
+                                    otp_match = re.search(r'Security\s+code:\s*<[^>]+>\s*(\d{6})\s*<', cleaned_text, re.IGNORECASE)
                                 if not otp_match:
-                                    otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6})', text_content, re.IGNORECASE)
-                                if not otp_match:
-                                    otp_match = re.search(r'\b\d{6}\b', text_content)
+                                    otp_match = re.search(r'(?:mã\s+bảo\s+mật|security\s+code|code)[:\s]*<[^>]*>*\s*(\d{6})', cleaned_text, re.IGNORECASE)
                                     
                                 if otp_match:
                                     code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
-                                    logger.info(f"🎉 Tìm thấy mã OTP Microsoft từ fviainboxes.com: {code}")
+                                    logger.info(f"🎉 Tìm thấy mã OTP Microsoft chuẩn xác từ fviainboxes.com: {code}")
                                     return code
             except Exception as e:
                 logger.debug(f"Đang kiểm tra mail fviainboxes.com (lỗi: {e})...")
