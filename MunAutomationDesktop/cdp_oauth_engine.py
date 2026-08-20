@@ -1,4 +1,5 @@
 import os, sys, asyncio, logging, json, requests, random, time, re, urllib.parse
+import nodriver.cdp.network as cdp_net
 sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
 
 from mun_anti_browser.browser_manager import NodriverBrowserManager
@@ -10,6 +11,12 @@ logger = logging.getLogger(__name__)
 async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_field, client_id, email_id, c69_client):
     tab = browser.main_tab
     try:
+        # Xóa cookie / session cũ trước khi nạp trang mới
+        try:
+            await tab.send(cdp_net.clear_browser_cookies())
+        except Exception:
+            pass
+            
         await tab.get("https://login.live.com/")
         await asyncio.sleep(4)
         
@@ -131,19 +138,21 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await cdp_click_btn_by_text(tab, ["next", "submit"])
                     await asyncio.sleep(5)
                     
-                    # Chờ lấy OTP từ hòm thư khôi phục
+            # Màn hình nhập mã xác thực OTP
+            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower:
+                if recovery_box_used:
+                    rec_email = recovery_box_used.get("email")
+                    rec_id = recovery_box_used.get("id")
                     rec_mb = C69MailBox(c69_client, rec_id, rec_email)
                     otp_code = await rec_mb.get_microsoft_otp_code(timeout_secs=60)
                     if otp_code:
                         logger.info(f"[{email}] Nhập OTP khôi phục: {otp_code}")
-                        await cdp_type_text(tab, "input[id='idTxtBx_OTC'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
+                        await cdp_type_text(tab, "input[id='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
                         await asyncio.sleep(0.5)
-                        await cdp_click_btn_by_text(tab, ["next", "submit"])
+                        await cdp_click_btn_by_text(tab, ["next", "submit", "verify"])
                         # Lưu ngay recovery_email lên DB C69
                         c69_client.update_recovery_email_only(email_id, rec_email)
                         await asyncio.sleep(5)
-                    else:
-                        logger.warning(f"[{email}] Không nhận được OTP từ hòm thư {rec_email}")
                 continue
                 
             # C. Nếu bắt OTP từ email lạ ngoài hệ thống

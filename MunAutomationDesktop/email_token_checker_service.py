@@ -240,17 +240,36 @@ async def run_checker():
             try:
                 r_p = requests.get("https://cu.c69.us/500", timeout=8)
                 proxies = [p.strip() for p in r_p.text.strip().split("\n") if p.strip()]
-                proxy_str = random.choice(proxies) if proxies else ""
+                proxy_raw = random.choice(proxies) if proxies else ""
             except Exception:
-                proxy_str = ""
+                proxy_raw = ""
+
+            proxy_str = ""
+            proxy_u = ""
+            proxy_p = ""
+            if proxy_raw:
+                parts = proxy_raw.split(":")
+                if len(parts) >= 4:
+                    proxy_str = f"{parts[0]}:{parts[1]}"
+                    proxy_u = parts[2]
+                    proxy_p = parts[3]
+                else:
+                    proxy_str = proxy_raw
 
             manager = NodriverBrowserManager()
-            profile = manager.profile_manager.create_random_profile(os_type="Window", socks5=proxy_str)
+            profile = manager.profile_manager.create_random_profile(
+                os_type="Window", 
+                socks5=proxy_str,
+                proxy_username=proxy_u,
+                proxy_password=proxy_p
+            )
             try:
                 browser, tab = await manager.start(
                     profile_config=profile,
                     proxy_string=proxy_str,
                     proxy_type="socks5" if proxy_str else "http",
+                    proxy_username=proxy_u,
+                    proxy_password=proxy_p,
                     headless=False
                 )
                 res_token = await asyncio.wait_for(

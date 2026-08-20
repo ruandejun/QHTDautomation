@@ -111,11 +111,11 @@ class C69Client:
         return None
 
     def get_random_valid_recovery_mailbox(self, exclude_email: str = "") -> Optional[Dict[str, Any]]:
-        """Lấy ngẫu nhiên 1 email Microsoft đang có token sống từ pool 3.783 email trên C69 để làm email khôi phục"""
+        """Lấy ngẫu nhiên 1 email Microsoft đang có token sống từ pool trên C69 để làm email khôi phục"""
         if not self.logged_in:
             return None
         # Lấy trang ngẫu nhiên từ danh sách email có status = 0
-        rand_page = random.randint(1, 35)
+        rand_page = random.randint(1, 20)
         url = f"{self.base_url}/dashboard/api/emails/?status=0&page={rand_page}&page_size=20"
         try:
             r = self.session.get(url, timeout=10)
@@ -130,9 +130,24 @@ class C69Client:
                     and any(item.get("email", "").lower().endswith(d) for d in ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com'])
                 ]
                 if valid_candidates:
-                    chosen = random.choice(valid_candidates)
-                    logger.info(f"🎲 Đã chọn ngẫu nhiên hòm thư khôi phục từ C69 Pool: {chosen.get('email')} (ID: {chosen.get('id')})")
-                    return chosen
+                    # Test thử nhanh 1 candidate xem token có đọc được mail qua Graph API không
+                    random.shuffle(valid_candidates)
+                    for cand in valid_candidates:
+                        # Test refresh token
+                        c_tok = cand.get("refresh_token")
+                        c_cid = cand.get("client_id") or "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+                        try:
+                            r_t = requests.post("https://login.live.com/oauth20_token.srf", data={
+                                "client_id": c_cid,
+                                "grant_type": "refresh_token",
+                                "refresh_token": c_tok,
+                                "scope": "https://graph.microsoft.com/Mail.Read offline_access"
+                            }, timeout=5)
+                            if r_t.status_code == 200 and "access_token" in r_t.json():
+                                logger.info(f"🎲 Đã chọn và xác thực hòm thư khôi phục C69 sống 100%: {cand.get('email')} (ID: {cand.get('id')})")
+                                return cand
+                        except Exception:
+                            continue
         except Exception as e:
             logger.error(f"Lỗi khi lấy random recovery mailbox từ C69: {e}")
         return None
@@ -764,17 +779,20 @@ class C69MailBox:
                 for msg in result.get("emails", []):
                     subject = (msg.get("subject") or "").lower()
                     sender = (msg.get("from") or "").lower()
-                    if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject:
+                    if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject or "security" in subject:
                         text = f"{msg.get('subject', '')} {msg.get('body', '')}"
-                        otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6,8})', text, re.IGNORECASE)
+                        # Bắt chính xác mã OTP Microsoft 6 số từ HTML Body
+                        otp_match = re.search(r'Security\s+code:\s*<[^>]+>\s*(\d{6})\s*<', text, re.IGNORECASE)
                         if not otp_match:
-                            otp_match = re.search(r'(?:code|mã)[:\s]+(\d{6,8})', text, re.IGNORECASE)
+                            otp_match = re.search(r'Security\s+code:\s*(\d{6})', text, re.IGNORECASE)
                         if not otp_match:
-                            otp_match = re.search(r'\b\d{6,8}\b', text)
+                            otp_match = re.search(r'(?:mã\s+bảo\s+mật|mã\s+xác\s+nhận)[:\s]*(\d{6})', text, re.IGNORECASE)
+                        if not otp_match:
+                            otp_match = re.search(r'\b\d{6}\b', text)
                             
                         if otp_match:
                             code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
-                            logger.info(f"Tìm thấy mã OTP Microsoft qua C69: {code}")
+                            logger.info(f"🎉 Tìm thấy mã OTP Microsoft chuẩn xác qua C69: {code}")
                             return code
                 # Fallback: latest_code
                 email_data = result.get("email_data") or {}
