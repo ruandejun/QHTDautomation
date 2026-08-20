@@ -4,7 +4,8 @@ from datetime import datetime
 sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
 
 from mun_anti_browser.browser_manager import NodriverBrowserManager
-from tiktok_reg_automation import auto_login_microsoft_and_get_token, C69Client, TempMailFviainboxes
+from cdp_oauth_engine import auto_login_microsoft_and_get_token_cdp
+from tiktok_reg_automation import C69Client, TempMailFviainboxes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -253,7 +254,7 @@ async def run_checker():
                     headless=True
                 )
                 res_token = await asyncio.wait_for(
-                    auto_login_microsoft_and_get_token(
+                    auto_login_microsoft_and_get_token_cdp(
                         browser=browser,
                         email=email,
                         password=password,
