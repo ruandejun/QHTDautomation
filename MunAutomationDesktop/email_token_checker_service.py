@@ -183,7 +183,8 @@ async def run_checker():
     page_size = 100
 
     while True:
-        url_emails = f"https://cu.c69.us/dashboard/api/emails/?page={page}&page_size={page_size}&ordering=modified"
+        # Lấy các email có status=0 (hoặc chưa đánh dấu cần check tay status=3) để quét
+        url_emails = f"https://cu.c69.us/dashboard/api/emails/?page={page}&page_size={page_size}&status=0&ordering=modified"
         try:
             r = c69.session.get(url_emails, timeout=15)
             if r.status_code != 200:
