@@ -194,21 +194,40 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                         c69_client.update_email_status(email_id, 3, f"Bắt OTP email khôi phục lạ ({hint})")
                     return None
                     
-            # Màn hình nhập mã xác thực OTP
-            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower:
-                if recovery_box_used:
+            # Màn hình nhập mã xác thực OTP (Hỗ trợ cả Fviainboxes lẫn C69 Recovery Mail)
+            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "check your email" in body_step_lower:
+                otp_code = None
+                
+                # 1. Nếu trước đó đã dùng fviainboxes.com
+                if "fviainboxes" in (tab.url or "") or any("fviainboxes" in str(x) for x in [body_step_lower]):
+                    email_prefix = email.split('@')[0].strip()
+                    fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=60)
+                    if otp_code:
+                        expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
+                        c69_client.update_recovery_email_only(email_id, expected_fvia_email)
+                
+                # 2. Nếu trước đó dùng C69 Recovery Box
+                elif recovery_box_used:
                     rec_email = recovery_box_used.get("email")
                     rec_id = recovery_box_used.get("id")
                     rec_mb = C69MailBox(c69_client, rec_id, rec_email)
                     otp_code = await rec_mb.get_microsoft_otp_code(timeout_secs=60)
                     if otp_code:
-                        logger.info(f"[{email}] Nhập OTP khôi phục: {otp_code}")
-                        await cdp_type_text(tab, "input[id='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
-                        await asyncio.sleep(0.5)
-                        await cdp_click_btn_by_text(tab, ["next", "submit", "verify"])
-                        # Lưu ngay recovery_email lên DB C69
                         c69_client.update_recovery_email_only(email_id, rec_email)
-                        await asyncio.sleep(5)
+                
+                # 3. Fallback: Nếu không rõ nguồn, thử kiểm tra cả fviainboxes.com
+                if not otp_code:
+                    email_prefix = email.split('@')[0].strip()
+                    fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=30)
+                
+                if otp_code:
+                    logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
+                    await cdp_type_text(tab, "input[id='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
+                    await asyncio.sleep(0.5)
+                    await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in"])
+                    await asyncio.sleep(5)
                 continue
                 
             # C. Nếu bắt OTP từ email lạ ngoài hệ thống
