@@ -415,6 +415,60 @@ class C69Client:
 # ============================================================================
 
 
+class TempMailFviainboxes:
+    """Xử lý email tạm thời qua dịch vụ Fviainboxes.com (API free /messages)"""
+    
+    def __init__(self, username: str, domain: str = "fviainboxes.com"):
+        self.username = username
+        self.domain = domain
+        self.email_address = f"{username}@{domain}"
+        
+    async def get_microsoft_otp(self, timeout_secs: int = 120) -> Optional[str]:
+        """Polling hộp thư fviainboxes.com để tìm mã OTP xác minh từ Microsoft."""
+        logger.info(f"Đang chờ mã OTP Microsoft gửi đến {self.email_address} qua fviainboxes.com (Timeout: {timeout_secs}s)...")
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout_secs:
+            url = f"https://fviainboxes.com/messages?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}"
+            try:
+                loop = asyncio.get_event_loop()
+                r = await loop.run_in_executor(None, lambda: requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
+                if r.status_code == 200:
+                    data = r.json()
+                    messages = data.get("result", [])
+                    for msg in messages:
+                        subject = str(msg.get("subject", "")).lower()
+                        sender = str(msg.get("from", "")).lower()
+                        if "microsoft" in subject or "microsoft" in sender or "code" in subject or "verification" in subject or "security" in subject:
+                            msg_id = msg.get("id")
+                            msg_url = f"https://fviainboxes.com/message?username={urllib.parse.quote(self.username)}&domain={urllib.parse.quote(self.domain)}&id={msg_id}"
+                            r_detail = await loop.run_in_executor(None, lambda: requests.get(msg_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10))
+                            if r_detail.status_code == 200:
+                                detail_json = r_detail.json()
+                                body_data = detail_json.get("data", {})
+                                html_body = body_data.get("html", "") or body_data.get("text", "") or ""
+                                text_content = f"{msg.get('subject', '')}\n{html_body}"
+                                
+                                # Tìm mã OTP Microsoft
+                                otp_match = re.search(r'(?:security\s+code|securitycode|mã\s+bảo\s+mật)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                if not otp_match:
+                                    otp_match = re.search(r'(?:code|mã)[:\s]+(\d{6,8})', text_content, re.IGNORECASE)
+                                if not otp_match:
+                                    otp_match = re.search(r'\b\d{6,8}\b', text_content)
+                                    
+                                if otp_match:
+                                    code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
+                                    logger.info(f"🎉 Tìm thấy mã OTP Microsoft từ fviainboxes.com: {code}")
+                                    return code
+            except Exception as e:
+                logger.debug(f"Đang kiểm tra mail fviainboxes.com (lỗi: {e})...")
+                
+            await asyncio.sleep(4)
+            
+        logger.warning("Không tìm thấy mã OTP Microsoft trên fviainboxes.com trong thời gian chờ.")
+        return None
+
+
 class TempMail1SecMail:
     """Xử lý email tạm thời qua API miễn phí 1secmail.com"""
     
@@ -1940,19 +1994,25 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
             alt_email_inp = await tab.select("input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']")
             if alt_email_inp:
                 if not temp_mail_client:
-                    temp_mail_client = TempMail1SecMail()
-                    temp_mail_client.generate_email()
-                    # Fallback nếu 1secmail bị block/403
+                    # Lấy phần username đứng trước @ của email chính (ví dụ: abc@hotmail.com -> abc)
+                    email_prefix = email.split("@")[0].strip() if "@" in email else email.strip()
+                    # Làm sạch ký tự không hợp lệ cho fviainboxes
+                    clean_prefix = re.sub(r'[^a-zA-Z0-9._-]', '', email_prefix) or "recovery"
+                    temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
+                    logger.info(f"Đã khởi tạo email khôi phục Fviainboxes: {temp_mail_client.email_address}")
+                    
+                    # Fallback nếu fviainboxes gặp trục trặc
                     if not temp_mail_client.email_address:
-                        logger.warning("⚠️ 1secmail bị lỗi/block. Sử dụng email bảo mật dự phòng hệ thống...")
-                        class C69FallbackMailbox:
-                            def __init__(self, c69, email_id, email):
-                                self.email_address = email
-                                self.mailbox = C69MailBox(c69, email_id, email)
-                            async def get_microsoft_otp(self):
-                                return await self.mailbox.get_microsoft_otp_code()
-                        # Dùng email active ID 1074 làm email khôi phục dự phòng
-                        temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
+                        temp_mail_client = TempMail1SecMail()
+                        temp_mail_client.generate_email()
+                        if not temp_mail_client.email_address:
+                            class C69FallbackMailbox:
+                                def __init__(self, c69, email_id, email):
+                                    self.email_address = email
+                                    self.mailbox = C69MailBox(c69, email_id, email)
+                                async def get_microsoft_otp(self):
+                                    return await self.mailbox.get_microsoft_otp_code()
+                            temp_mail_client = C69FallbackMailbox(c69_client, 1074, "uyentungphamtun081960@hotmail.com")
                 if temp_mail_client.email_address:
                     logger.info(f"🔑 Phát hiện màn hình yêu cầu Email bảo mật mới. Đang điền: {temp_mail_client.email_address}")
                     await safe_send_keys(tab, "input[name='iAltEmail'], input[name='EmailAddress'], input[name='iProofInput'], input[id*='AltEmail'], input[id*='iAlternate'], input[id*='Alternate'], input[type='email']", temp_mail_client.email_address)
