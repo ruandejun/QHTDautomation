@@ -30,21 +30,17 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 c69_client.update_email_status(email_id, 3, "Tài khoản Microsoft không tồn tại")
             return None
             
-        # 2. Điền Password (có xử lý nút "Use your password" hoặc các phương thức đăng nhập khác)
-        await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password"])
-        await asyncio.sleep(2)
-        
-        typed_pass = await cdp_type_text(tab, "input[name='passwd'], input[type='password'], #passwordEntry, input[id*='Password']", password)
-        if not typed_pass:
-            # Thử lại bấm "Use your password" hoặc click trực tiếp vào chữ "Use your password"
-            await tab.evaluate("""
-            (() => {
-                const el = Array.from(document.querySelectorAll("a, button, span, div")).find(e => (e.innerText || "").toLowerCase().includes("use your password") || (e.innerText || "").toLowerCase().includes("password"));
-                if (el) el.click();
-            })()
-            """)
-            await asyncio.sleep(3)
+        # 2. Điền Password (có vòng lặp click "Use your password" / "Other ways to sign in")
+        typed_pass = False
+        for _ in range(3):
             typed_pass = await cdp_type_text(tab, "input[name='passwd'], input[type='password'], #passwordEntry, input[id*='Password']", password)
+            if typed_pass:
+                break
+            
+            # Click vào "Use your password" hoặc "Other ways to sign in"
+            logger.info(f"[{email}] Đang tìm và click vào 'Use your password'...")
+            await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
+            await asyncio.sleep(2.5)
             
         if not typed_pass:
             logger.warning(f"[{email}] Không tìm thấy ô nhập password.")
