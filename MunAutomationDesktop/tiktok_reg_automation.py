@@ -2044,21 +2044,53 @@ async def auto_login_microsoft_and_get_token(browser, email, password, note_fiel
                 else:
                     logger.warning("Không lấy được OTP từ email bảo mật tạm thời.")
 
-            # C. Nếu bắt xác minh email khôi phục cũ (Verify your identity)
-            if "verify your identity" in body_text_lower or "khôi phục" in body_text_lower:
-                # Tìm option "Email ....." (thường chứa các ký tự ẩn như ab***@xyz.com)
-                await safe_click(tab, "[id*='Proof'], [class*='proof'], [data-value*='@']")
-                await asyncio.sleep(2)
+            # C. Nếu bắt xác minh email khôi phục cũ (Verify your identity / Verify your email)
+            if "verify your identity" in body_text_lower or "verify your email" in body_text_lower or "khôi phục" in body_text_lower:
+                # 1. Trích xuất gợi ý hint email (ví dụ: ng*****@gmail.com hoặc ng*****@fviainboxes.com)
+                email_hint_match = re.search(r'[\w\.*-]+@[\w\.-]+\.\w+', body_text)
+                hint_str = email_hint_match.group(0).lower() if email_hint_match else ""
+                
+                # 2. Kiểm tra xem email khôi phục có nằm trong hệ thống mail tạm fviainboxes.com hay note liên kết không
+                is_fvia_hint = "fviainboxes" in hint_str or (recovery_email and "fviainboxes" in recovery_email.lower())
+                
+                # Lấy tiền tố username của email chính
+                email_prefix = email.split("@")[0].strip() if "@" in email else email.strip()
+                clean_prefix = re.sub(r'[^a-zA-Z0-9._-]', '', email_prefix)
+                expected_fvia_email = f"{clean_prefix}@fviainboxes.com".lower()
+                
+                target_rec_email = None
+                if is_fvia_hint or (hint_str and ("fviainboxes" in hint_str or hint_str.startswith(clean_prefix[:2].lower()))):
+                    target_rec_email = expected_fvia_email
+                    if not temp_mail_client:
+                        temp_mail_client = TempMailFviainboxes(username=clean_prefix, domain="fviainboxes.com")
+                elif recovery_email:
+                    target_rec_email = recovery_email
+                    if "fviainboxes" in recovery_email.lower() and not temp_mail_client:
+                        rec_user = recovery_email.split("@")[0]
+                        temp_mail_client = TempMailFviainboxes(username=rec_user, domain="fviainboxes.com")
+                
+                if target_rec_email:
+                    logger.info(f"🔑 Nhận diện email khôi phục tạm thời hợp lệ: {target_rec_email}. Đang tiến hành xác minh...")
+                    # Tìm option "Email ....."
+                    await safe_click(tab, "[id*='Proof'], [class*='proof'], [data-value*='@']")
+                    await asyncio.sleep(2)
                     
-                # Nhập email khôi phục đầy đủ
-                proof_input = await tab.select("input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm']")
-                if proof_input and recovery_email:
-                    logger.info(f"Đang tự động điền email khôi phục: {recovery_email}")
-                    await safe_send_keys(tab, "input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm']", recovery_email)
-                    await asyncio.sleep(1)
-                    await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit']")
-                    await asyncio.sleep(4)
-                continue
+                    proof_input = await tab.select("input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm'], input[name='EmailAddress'], input[name='iProofInput']")
+                    if proof_input:
+                        await safe_send_keys(tab, "input[type='email'], input[name='ProofConfirm'], input[id*='ProofConfirm'], input[name='EmailAddress'], input[name='iProofInput']", target_rec_email)
+                        await asyncio.sleep(1)
+                        await safe_click(tab, "input[type='submit'], input#idSIButton9, #idSIButton9, button[type='submit'], button:has-text('Send code')")
+                        await asyncio.sleep(4)
+                        continue
+                else:
+                    # Email khôi phục ở domain ngoài khác (Gmail, Yahoo, Mail cá nhân lạ...) không thuộc mail tạm -> Bỏ qua và cập nhật status=3 (Tạm thời/Cần check lại) lên C69
+                    logger.warning(f"⚠️ Email {email} yêu cầu xác minh qua email khôi phục lạ ({hint_str or 'Unknown'}). Bỏ qua và cập nhật trạng thái lên C69.")
+                    if c69_client and email_id:
+                        try:
+                            c69_client.update_email_status(email_id, 3) # 3: Temporary / Cần kiểm tra lại
+                        except Exception as e_st:
+                            pass
+                    return False
                         
             # D. Bấm qua các màn hình khác như "Stay signed in?", "Break free from passwords"
             await safe_click(tab, "input[type='submit'], input#idSIButton9, button[type='submit'], #idSIButton9")
