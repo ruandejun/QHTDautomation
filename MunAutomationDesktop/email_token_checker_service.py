@@ -286,7 +286,8 @@ async def run_checker():
                         note_field=note,
                         client_id=client_id,
                         email_id=email_id,
-                        c69_client=c69
+                        c69_client=c69,
+                        update_step_callback=update_telegram_live
                     ),
                     timeout=180
                 )
