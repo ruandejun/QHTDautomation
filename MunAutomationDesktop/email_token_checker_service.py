@@ -213,16 +213,21 @@ async def run_checker():
 
             update_telegram_live(email, "Đang test Fast Refresh Token...")
 
-            # A. Test Fast Refresh
-            fast_ok, new_ref = await test_fast_refresh(item)
-            if fast_ok:
-                c69.save_mailbox_results(email_id, new_ref)
-                c69.update_email_status(email_id, 0)
-                valid_count += 1
-                checked_count += 1
-                logger.info(f"✅ [VALID] {email}")
-                update_telegram_live(email, "✅ Token hợp lệ (Fast Refreshed)")
-                continue
+            # A. Test Fast Refresh: Nếu token còn sống -> Update và bỏ qua không mở browser
+            if item.get('refresh_token'):
+                fast_ok, new_ref = await test_fast_refresh(item)
+                if fast_ok:
+                    c69.save_mailbox_results(email_id, new_ref)
+                    c69.update_email_status(email_id, 0)
+                    valid_count += 1
+                    checked_count += 1
+                    logger.info(f"✅ [VALID - ĐÃ CÓ TOKEN SỐNG] {email}")
+                    update_telegram_live(email, "✅ Đã có Token sống (Bỏ qua)")
+                    continue
+                else:
+                    logger.info(f"🔄 [TOKEN HẾT HẠN] {email} -> Cần cấp lại qua trình duyệt")
+            else:
+                logger.info(f"⚠️ [CHƯA CÓ TOKEN] {email} -> Cần cấp mới qua trình duyệt")
 
             # B. Không có password -> Báo Error / Cần xử lý tay
             if not password:
