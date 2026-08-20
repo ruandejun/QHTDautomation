@@ -251,7 +251,7 @@ async def run_checker():
                     profile_config=profile,
                     proxy_string=proxy_str,
                     proxy_type="socks5" if proxy_str else "http",
-                    headless=True
+                    headless=False
                 )
                 res_token = await asyncio.wait_for(
                     auto_login_microsoft_and_get_token_cdp(
