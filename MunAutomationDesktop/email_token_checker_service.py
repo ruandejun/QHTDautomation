@@ -1,4 +1,4 @@
-import os, sys, asyncio, logging, json, requests, random, time
+import os, sys, asyncio, logging, json, requests, random, time, re
 from datetime import datetime
 
 sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
@@ -10,8 +10,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # Telegram Bot Token và Chat ID của Tony
-TELEGRAM_BOT_TOKEN = "2115090413:***" # C69 Checker Telegram Bot Token
-TELEGRAM_CHAT_ID = "8229878462"       # Tony Telegram ID
+def get_telegram_bot_token():
+    # 1. Thử lấy từ /root/.hermes/.env (Token bot chính đang chat)
+    try:
+        if os.path.exists('/root/.hermes/.env'):
+            with open('/root/.hermes/.env') as f:
+                content = f.read()
+            m = re.search(r'TELEGRAM_BOT_TOKEN=([^\s\r\n]+)', content)
+            if m:
+                return m.group(1).strip()
+    except Exception:
+        pass
+    return "8723774645:AAFqKsqLg4_eY_v6sV0e4c6W7-Ei4mFUg"
+
+TELEGRAM_BOT_TOKEN = get_telegram_bot_token()
+TELEGRAM_CHAT_ID = "8229878462"  # Tony
 
 def send_telegram_message(text: str, reply_markup=None):
     """Gửi tin nhắn mới lên Telegram và trả về message_id để edit realtime"""
