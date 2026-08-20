@@ -2,11 +2,12 @@ import os, sys, asyncio, logging, json, requests, random, time
 import nodriver.cdp.input_ as cdp_in
 
 async def cdp_type_text(tab, selector, text):
-    """Click trực tiếp vào tọa độ thật của phần tử và gõ từng phím qua CDP"""
+    """Click trực tiếp vào tọa độ thật của phần tử, xóa sạch text cũ (Ctrl+A -> Backspace) và gõ từng phím qua CDP"""
     res = await tab.evaluate(f"""
     (() => {{
         const el = document.querySelector("{selector}");
         if (el) {{
+            el.focus();
             const rect = el.getBoundingClientRect();
             return JSON.stringify({{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }});
         }}
@@ -17,7 +18,29 @@ async def cdp_type_text(tab, selector, text):
         box = json.loads(res)
         await tab.send(cdp_in.dispatch_mouse_event(type_="mousePressed", x=box['x'], y=box['y'], button=cdp_in.MouseButton.LEFT, click_count=1))
         await tab.send(cdp_in.dispatch_mouse_event(type_="mouseReleased", x=box['x'], y=box['y'], button=cdp_in.MouseButton.LEFT, click_count=1))
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2)
+        
+        # Xóa sạch nội dung cũ trước khi gõ bằng Ctrl+A -> Backspace
+        await tab.send(cdp_in.dispatch_key_event(type_="keyDown", modifiers=2, text="a", key="a", windows_virtual_key_code=65))
+        await tab.send(cdp_in.dispatch_key_event(type_="keyUp", modifiers=2, text="a", key="a", windows_virtual_key_code=65))
+        await asyncio.sleep(0.05)
+        await tab.send(cdp_in.dispatch_key_event(type_="keyDown", key="Backspace", windows_virtual_key_code=8))
+        await tab.send(cdp_in.dispatch_key_event(type_="keyUp", key="Backspace", windows_virtual_key_code=8))
+        await asyncio.sleep(0.1)
+
+        # Xóa bằng JS DOM value để chắc chắn 100% rỗng
+        await tab.evaluate(f"""
+        (() => {{
+            const el = document.querySelector("{selector}");
+            if (el) {{
+                el.value = "";
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            }}
+        }})()
+        """)
+        await asyncio.sleep(0.1)
+
         for char in text:
             await tab.send(cdp_in.dispatch_key_event(type_="keyDown", text=char, key=char))
             await tab.send(cdp_in.dispatch_key_event(type_="keyUp", key=char))
