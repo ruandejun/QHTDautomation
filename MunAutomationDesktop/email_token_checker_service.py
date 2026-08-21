@@ -222,11 +222,19 @@ async def run_checker():
             update_telegram_live(email, "Token chết! Đang mở browser auto-login & cấp token...")
 
             try:
-                r_p = requests.get("https://cu.c69.us/500", timeout=8)
+                webshare_url = "https://proxy.webshare.io/api/v2/proxy/list/download/lfdlebxwolvropzxpyuiwqbqyngnvfhkpsmjesxe/-/any/username/direct/-/?plan_id=13766824"
+                r_p = requests.get(webshare_url, timeout=10)
+                if r_p.status_code != 200:
+                    r_p = requests.get("https://cu.c69.us/500", timeout=8)
                 proxies = [p.strip() for p in r_p.text.strip().split("\n") if p.strip()]
                 proxy_raw = random.choice(proxies) if proxies else ""
             except Exception:
-                proxy_raw = ""
+                try:
+                    r_p = requests.get("https://cu.c69.us/500", timeout=8)
+                    proxies = [p.strip() for p in r_p.text.strip().split("\n") if p.strip()]
+                    proxy_raw = random.choice(proxies) if proxies else ""
+                except Exception:
+                    proxy_raw = ""
 
             proxy_str = ""
             proxy_u = ""
