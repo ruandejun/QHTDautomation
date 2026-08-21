@@ -72,8 +72,9 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
             otp_code = None
             for attempt in range(1, 4):
+                send_time = int(time.time()) - 5
                 await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
-                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45)
+                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45, min_created_at=send_time)
                 if otp_code:
                     break
                 if attempt < 3:

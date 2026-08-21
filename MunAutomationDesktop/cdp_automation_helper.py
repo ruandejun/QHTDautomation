@@ -27,21 +27,40 @@ async def cdp_type_code_6digits(tab, code_str: str):
     if info.get("mode") == "single":
         return await cdp_type_text(tab, "#iOttText, input[id='iOttText'], input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", code_str)
     else:
-        # Gõ lần lượt vào 6 ô codeEntry-0 tới codeEntry-5
         for i in range(6):
             digit = code_str[i]
-            await tab.evaluate(f"""
+            # Focus và dispatch phím native CDP để kích hoạt auto-submit của React input
+            res_box = await tab.evaluate(f"""
             (() => {{
                 const el = document.querySelector("#codeEntry-{i}");
                 if (el) {{
                     el.focus();
-                    el.value = "{digit}";
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    const rect = el.getBoundingClientRect();
+                    return JSON.stringify({{ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }});
                 }}
+                return null;
             }})()
             """)
-            await asyncio.sleep(0.05)
+            if res_box:
+                box = json.loads(res_box)
+                await tab.send(cdp_in.dispatch_mouse_event(type_="mousePressed", x=box['x'], y=box['y'], button=cdp_in.MouseButton.LEFT, click_count=1))
+                await tab.send(cdp_in.dispatch_mouse_event(type_="mouseReleased", x=box['x'], y=box['y'], button=cdp_in.MouseButton.LEFT, click_count=1))
+                await asyncio.sleep(0.05)
+                await tab.send(cdp_in.dispatch_key_event(type_="keyDown", text=digit, key=digit))
+                await tab.send(cdp_in.dispatch_key_event(type_="keyUp", key=digit))
+            else:
+                await tab.evaluate(f"""
+                (() => {{
+                    const el = document.querySelector("#codeEntry-{i}");
+                    if (el) {{
+                        el.focus();
+                        el.value = "{digit}";
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    }}
+                }})()
+                """)
+            await asyncio.sleep(0.1)
         return True
 
 async def cdp_type_text(tab, selector, text):

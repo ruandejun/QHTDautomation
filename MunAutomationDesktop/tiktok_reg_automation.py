@@ -5,6 +5,8 @@ import random
 import string
 import re
 import json
+import time
+import requests
 import logging
 import urllib.request
 import imaplib
@@ -516,9 +518,12 @@ class TempMailFviainboxes:
         self.domain = domain
         self.email_address = f"{self.username}@{self.domain}"
         
-    async def get_microsoft_otp(self, timeout_secs: int = 150) -> Optional[str]:
+    async def get_microsoft_otp(self, timeout_secs: int = 150, min_created_at: int = 0) -> Optional[str]:
         """Polling hộp thư fviainboxes.com để tìm mã OTP xác minh từ Microsoft với cơ chế retry và timeout linh hoạt."""
-        logger.info(f"Đang chờ mã OTP Microsoft gửi đến {self.email_address} qua fviainboxes.com (Timeout: {timeout_secs}s)...")
+        if min_created_at <= 0:
+            min_created_at = int(time.time()) - 10 # Chỉ nhận mail sinh ra từ 10s trước trở lại đây
+
+        logger.info(f"Đang chờ mã OTP Microsoft gửi đến {self.email_address} qua fviainboxes.com (Timeout: {timeout_secs}s, MinTime: {min_created_at})...")
         start_time = asyncio.get_event_loop().time()
         
         session = requests.Session()
@@ -535,7 +540,9 @@ class TempMailFviainboxes:
                 if r.status_code == 200:
                     data = r.json()
                     messages = data.get("result", [])
-                    # Sắp xếp tin nhắn mới nhất lên đầu nếu có createdAt
+                    # Lọc bỏ tin nhắn cũ trước thời điểm gửi mã
+                    messages = [m for m in messages if m.get("createdAt", 0) >= min_created_at]
+                    # Sắp xếp tin nhắn mới nhất lên đầu
                     messages = sorted(messages, key=lambda m: m.get("createdAt", 0), reverse=True)
                     
                     for msg in messages:
