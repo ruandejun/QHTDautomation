@@ -155,7 +155,15 @@ class NodriverBrowserManager:
         if headless:
             config.headless = True
 
-        self.browser = await nodriver.start(config=config)
+        for attempt in range(3):
+            try:
+                self.browser = await nodriver.start(config=config)
+                break
+            except Exception as e:
+                if attempt == 2:
+                    raise e
+                logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, thử lại sau 2s: {e}")
+                await asyncio.sleep(2)
 
         # Get the initial tab
         self.main_tab = self.browser.main_tab
