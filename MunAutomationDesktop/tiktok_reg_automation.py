@@ -170,6 +170,7 @@ class C69Client:
         except Exception as e:
             logger.error(f"Lỗi auto-save recovery email: {e}")
         return False
+    def update_recovery_email_and_token(self, email_id: int, refresh_token: Optional[str] = None, recovery_email: Optional[str] = None) -> bool:
         """Cập nhật đồng thời refresh_token, recovery_email và status = 0"""
         if not self.logged_in:
             return False
@@ -193,6 +194,8 @@ class C69Client:
         except Exception as e:
             logger.error(f"Lỗi update recovery email: {e}")
         return False
+
+    def update_2fa_key(self, account_id: int, two_factor_key: str) -> bool:
         """Cập nhật khóa 2FA cho tài khoản đang tồn tại trên C69"""
         if not self.logged_in:
             logger.error("Chưa đăng nhập C69. Không thể cập nhật.")

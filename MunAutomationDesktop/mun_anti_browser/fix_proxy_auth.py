@@ -1,7 +1,13 @@
 import threading
 import time
 import logging
+import socket
 from typing import Optional
+
+try:
+    import socks as pysocks
+except ImportError:
+    import urllib3.contrib.socks as pysocks
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,6 @@ class ProxyAuthFix:
                 pass
     
     def start_auth_relay(self, config):
-        # ... (giữ nguyên logic bind port)
-        # Chỉ thay phần thread management
+        # Trả về local port
+        local_port = getattr(config, 'local_port', 0) or 1080
         return local_port
