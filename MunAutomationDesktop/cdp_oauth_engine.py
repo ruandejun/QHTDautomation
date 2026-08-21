@@ -163,57 +163,21 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
             if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
                 await report_step("Đang kiểm tra phương thức xác thực danh tính...")
-                # 1. Nếu màn hình yêu cầu xác nhận email có đuôi @fviainboxes.com (ví dụ: mauwecoslow@hotmail.com -> ma*****@fviainboxes.com)
+                # 1. Nếu màn hình yêu cầu xác nhận email có đuôi @fviainboxes.com
                 if "fviainboxes" in body_step_lower or "@fviainboxes.com" in body_step_lower:
-                    # Lấy username prefix từ chính email đăng nhập: mauwecoslow@hotmail.com -> mauwecoslow
                     email_prefix = email.split('@')[0].strip()
                     expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
                     
                     logger.info(f"[{email}] 🛡️ Phát hiện màn hình xác minh fviainboxes.com! Điền chính xác email: {expected_fvia_email}")
                     await report_step(f"Đang điền email bảo mật {expected_fvia_email}...")
                     
-                    # Điền toàn bộ email expected_fvia_email hoặc prefix (tùy theo ô input yêu cầu)
-                    # Một số màn hình có sẵn đuôi @fviainboxes.com cố định bên cạnh ô input, một số ô bắt nhập cả email
-                    is_suffix_present = await tab.evaluate("Boolean(document.body.innerText.includes('@fviainboxes.com') && document.querySelector(\"input[type='text'], input[type='email'], input[name*='Proof']\"))")
-                    
-                    # Xóa và điền đúng expected_fvia_email
                     await cdp_type_text(tab, "input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email'], #iProofEmail", expected_fvia_email)
                     await asyncio.sleep(1)
                     
-                    # Bấm Send code hoặc Next
                     await report_step(f"Đang bấm Gửi mã tới {expected_fvia_email}...")
                     await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
                     await asyncio.sleep(5)
-                    
-                    # Chờ lấy OTP từ Fviainboxes.com với timeout 120s
-                    await report_step(f"Đang chờ mã OTP từ fviainboxes ({email_prefix})...")
-                    fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
-                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=120)
-                    if otp_code:
-                        logger.info(f"[{email}] 🎉 Nhập OTP từ fviainboxes.com: {otp_code}")
-                        await report_step(f"Đã có mã OTP ({otp_code})! Đang điền & xác nhận...")
-                        await cdp_type_text(tab, "input[id='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
-                        await asyncio.sleep(0.5)
-                        await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in"])
-                        # Lưu recovery_email fviainboxes lên DB C69
-                        c69_client.update_recovery_email_only(email_id, expected_fvia_email)
-                        await asyncio.sleep(5)
-                        continue
-                    else:
-                        logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com ({expected_fvia_email})")
-                        await report_step("Hết hạn chờ OTP fviainboxes.com!")
-                        if c69_client and email_id:
-                            c69_client.update_email_status(email_id, 3, "Không lấy được OTP từ fviainboxes.com")
-                        return None
-                        
-                else:
-                    # Gợi ý email khác lạ ngoài hệ thống
-                    email_hint_match = re.search(r'[\w\.*-]+@[\w\.-]+\.\w+', body_step)
-                    hint = email_hint_match.group(0) if email_hint_match else "Email lạ"
-                    logger.warning(f"[{email}] Bắt xác minh qua email khôi phục lạ: {hint}")
-                    if c69_client and email_id:
-                        c69_client.update_email_status(email_id, 3, f"Bắt OTP email khôi phục lạ ({hint})")
-                    return None
+                    continue
                     
             # Màn hình nhập mã xác thực OTP (Hỗ trợ cả Fviainboxes lẫn C69 Recovery Mail)
             if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "check your email" in body_step_lower:
