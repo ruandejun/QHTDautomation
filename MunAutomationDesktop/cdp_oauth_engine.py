@@ -57,12 +57,12 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             return None
 
         # ⚡ TỐI ƯU HÓA: Nếu Microsoft hiển thị ngay màn hình Verify your email (@fviainboxes.com) -> Điền email & Gửi mã OTP luôn, KHÔNG cần bấm Use your password
-        if "@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower:
+        if "@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower or "verify your email" in body_after_email_lower:
             email_prefix = email.split('@')[0].strip()
             expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
             logger.info(f"[{email}] ⚡ Bắt được màn hình xác minh fviainboxes.com ngay bước đầu! Điền luôn: {expected_fvia_email}")
             await report_step(f"⚡ Điền email fviainboxes ({expected_fvia_email}) & Gửi mã...")
-            await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email']", expected_fvia_email)
+            await cdp_type_text(tab, "#proof-confirmation-email-input, input[id='proof-confirmation-email-input'], #iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text']", expected_fvia_email)
             await asyncio.sleep(1)
             await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
             await asyncio.sleep(4)
