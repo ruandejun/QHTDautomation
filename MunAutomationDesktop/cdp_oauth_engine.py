@@ -160,27 +160,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await cdp_click_btn_by_text(tab, ["next", "submit"])
                     await asyncio.sleep(5)
                     
-            # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
-            if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
-                await report_step("Đang kiểm tra phương thức xác thực danh tính...")
-                # 1. Nếu màn hình yêu cầu xác nhận email có đuôi @fviainboxes.com
-                if "fviainboxes" in body_step_lower or "@fviainboxes.com" in body_step_lower:
-                    email_prefix = email.split('@')[0].strip()
-                    expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
-                    
-                    logger.info(f"[{email}] 🛡️ Phát hiện màn hình xác minh fviainboxes.com! Điền chính xác email: {expected_fvia_email}")
-                    await report_step(f"Đang điền email bảo mật {expected_fvia_email}...")
-                    
-                    await cdp_type_text(tab, "input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email'], #iProofEmail", expected_fvia_email)
-                    await asyncio.sleep(1)
-                    
-                    await report_step(f"Đang bấm Gửi mã tới {expected_fvia_email}...")
-                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
-                    await asyncio.sleep(5)
-                    continue
-                    
             # Màn hình nhập mã xác thực OTP (Hỗ trợ cả Fviainboxes lẫn C69 Recovery Mail)
-            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "check your email" in body_step_lower:
+            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "check your email" in body_step_lower or "enter your security code" in body_step_lower:
                 await report_step("Đang ở màn hình nhập OTP...")
                 otp_code = None
                 
@@ -213,11 +194,30 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 if otp_code:
                     logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
                     await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
-                    await cdp_type_text(tab, "input[id='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
+                    await cdp_type_text(tab, "#iOttText, input[id='iOttText'], input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
                     await asyncio.sleep(0.5)
                     await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in"])
                     await asyncio.sleep(5)
                 continue
+
+            # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
+            if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
+                await report_step("Đang kiểm tra phương thức xác thực danh tính...")
+                # 1. Nếu màn hình yêu cầu xác nhận email có đuôi @fviainboxes.com
+                if "fviainboxes" in body_step_lower or "@fviainboxes.com" in body_step_lower:
+                    email_prefix = email.split('@')[0].strip()
+                    expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
+                    
+                    logger.info(f"[{email}] 🛡️ Phát hiện màn hình xác minh fviainboxes.com! Điền chính xác email: {expected_fvia_email}")
+                    await report_step(f"Đang điền email bảo mật {expected_fvia_email}...")
+                    
+                    await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email']", expected_fvia_email)
+                    await asyncio.sleep(1)
+                    
+                    await report_step(f"Đang bấm Gửi mã tới {expected_fvia_email}...")
+                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
+                    await asyncio.sleep(5)
+                    continue
                 
             # C. Nếu bắt OTP từ email lạ ngoài hệ thống
             if "verify your identity" in body_step_lower or "verify your email" in body_step_lower:
