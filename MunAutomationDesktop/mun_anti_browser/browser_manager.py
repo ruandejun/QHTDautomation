@@ -407,13 +407,22 @@ class NodriverBrowserManager:
         if self.browser:
             try:
                 # Force terminate child chrome process if available
-                proc = getattr(self.browser, 'process', None)
+                proc = getattr(self.browser, '_process', None) or getattr(self.browser, 'process', None)
                 if proc and hasattr(proc, 'kill'):
                     try:
                         proc.kill()
                     except Exception:
                         pass
-                self.browser.stop()
+                proc_pid = getattr(self.browser, '_process_pid', None)
+                if proc_pid:
+                    try:
+                        os.kill(proc_pid, 9)
+                    except Exception:
+                        pass
+                try:
+                    self.browser.stop()
+                except Exception:
+                    pass
                 logger.info("Browser closed")
             except Exception as e:
                 logger.warning(f"Error closing browser: {e}")
