@@ -538,17 +538,25 @@ class TempMailFviainboxes:
                             r_detail = await loop.run_in_executor(None, lambda: session.get(msg_url, timeout=15))
                             if r_detail.status_code == 200:
                                 raw_text = r_detail.text
+                                text = raw_text
                                 try:
-                                    cleaned_text = json.loads(raw_text)
+                                    if raw_text.startswith('"') and raw_text.endswith('"'):
+                                        text = json.loads(raw_text)
+                                    elif isinstance(raw_text, dict):
+                                        text = str(raw_text)
                                 except Exception:
-                                    cleaned_text = raw_text.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\"', '"')
+                                    pass
+                                    
+                                text = text.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\"', '"').replace(r'\/', '/')
                                 
-                                # Tìm mã OTP 6 số thực sự nằm sau "Security code:" (bỏ qua mã màu CSS như #707070)
-                                otp_match = re.search(r'Security\s+code:.*?(\b\d{6}\b)', cleaned_text, re.IGNORECASE | re.DOTALL)
+                                # 1. Lọc bỏ toàn bộ thẻ HTML và mã màu CSS Hex (tránh bắt nhầm mã màu như #707070)
+                                clean_no_html = re.sub(r'<[^>]+>', ' ', text)
+                                clean_no_hex = re.sub(r'#[0-9a-fA-F]{6}', ' ', clean_no_html)
+                                
+                                # 2. Tìm chính xác mã OTP 6 số đứng sau "Security code" hoặc "Mã xác nhận"
+                                otp_match = re.search(r'(?:Security\s+code|mã\s+xác\s+nhận|mã\s+bảo\s+mật)[^\d]*(\b\d{6}\b)', clean_no_hex, re.IGNORECASE)
                                 if not otp_match:
-                                    otp_match = re.search(r'Security\s+code:\s*<[^>]+>\s*(\d{6})\s*<', cleaned_text, re.IGNORECASE)
-                                if not otp_match:
-                                    otp_match = re.search(r'(?:mã\s+bảo\s+mật|security\s+code|code)[:\s]*<[^>]*>*\s*(\d{6})', cleaned_text, re.IGNORECASE)
+                                    otp_match = re.search(r'\b\d{6}\b', clean_no_hex)
                                     
                                 if otp_match:
                                     code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
