@@ -181,66 +181,44 @@ async def run_checker():
 
     page = 1
     page_size = 100
+    sem = asyncio.Semaphore(5) # Chạy song song 5 luồng (workers)
+    lock = asyncio.Lock()
 
-    while True:
-        # Lấy các email có status=0 (hoặc chưa đánh dấu cần check tay status=3) để quét
-        url_emails = f"https://cu.c69.us/dashboard/api/emails/?page={page}&page_size={page_size}&status=0&ordering=modified"
-        try:
-            r = c69.session.get(url_emails, timeout=15)
-            if r.status_code != 200:
-                logger.error(f"Fetch page {page} trả về status {r.status_code}. Kết thúc.")
-                break
-            data = r.json()
-            total_count = data.get('count', total_count)
-            results = data.get('results', [])
-            if not results:
-                logger.info(f"Đã duyệt hết các trang (Trang cuối: {page-1}).")
-                break
-        except Exception as e:
-            logger.error(f"Lỗi fetch page {page}: {e}")
-            break
+    async def process_single_candidate(item):
+        nonlocal valid_count, invalid_count, error_count, checked_count
+        email = item.get('email')
+        email_id = item.get('id')
+        password = item.get('password')
+        note = item.get('note')
+        client_id = item.get('client_id') or "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 
-        candidates = [
-            item for item in results 
-            if any(item.get('email', '').lower().endswith(d) for d in ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com'])
-        ]
-
-        for item in candidates:
-            email = item.get('email')
-            email_id = item.get('id')
-            password = item.get('password')
-            note = item.get('note')
-            client_id = item.get('client_id') or "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
-
-            update_telegram_live(email, "Đang test Fast Refresh Token...")
-
-            # A. Test Fast Refresh: Nếu token còn sống -> Update status=0, note="Token sống", và bỏ qua không mở browser
-            if item.get('refresh_token'):
-                fast_ok, new_ref = await test_fast_refresh(item)
-                if fast_ok:
-                    c69.save_mailbox_results(email_id, new_ref)
-                    c69.update_email_status(email_id, 0, "Token sống (Fast Refreshed)")
+        # A. Test Fast Refresh: Nếu token còn sống -> Update status=0, note="Token sống", và bỏ qua không mở browser
+        if item.get('refresh_token'):
+            fast_ok, new_ref = await test_fast_refresh(item)
+            if fast_ok:
+                c69.save_mailbox_results(email_id, new_ref)
+                c69.update_email_status(email_id, 0, "Token sống (Fast Refreshed)")
+                async with lock:
                     valid_count += 1
                     checked_count += 1
-                    logger.info(f"✅ [VALID - ĐÃ CÓ TOKEN SỐNG] {email}")
-                    update_telegram_live(email, "✅ Đã có Token sống (Bỏ qua)")
-                    continue
-                else:
-                    logger.info(f"🔄 [TOKEN HẾT HẠN] {email} -> Cần cấp lại qua trình duyệt")
-            else:
-                logger.info(f"⚠️ [CHƯA CÓ TOKEN] {email} -> Cần cấp mới qua trình duyệt")
+                logger.info(f"✅ [VALID - ĐÃ CÓ TOKEN SỐNG] {email}")
+                update_telegram_live(email, "✅ Đã có Token sống (Bỏ qua)")
+                return
 
-            # B. Không có password -> Báo Error / Cần xử lý tay
-            if not password:
+        # B. Không có password -> Báo Error / Cần xử lý tay
+        if not password:
+            async with lock:
                 error_count += 1
                 checked_count += 1
-                c69.update_email_status(email_id, 3, "Không có password trong DB")
-                logger.warning(f"⚠️ [NO PASS] {email} -> Status 3")
-                update_telegram_live(email, "⚠️ Không có pass (Gán status=3)")
-                continue
+            c69.update_email_status(email_id, 3, "Không có password trong DB")
+            logger.warning(f"⚠️ [NO PASS] {email} -> Status 3")
+            update_telegram_live(email, "⚠️ Không có pass (Gán status=3)")
+            return
 
-            # C. Token chết -> Đang thử cấp lại qua trình duyệt
-            invalid_count += 1
+        # C. Token chết -> Đang thử cấp lại qua trình duyệt (Chạy trong Semaphore 5 luồng)
+        async with sem:
+            async with lock:
+                invalid_count += 1
             update_telegram_live(email, "Token chết! Đang mở browser auto-login & cấp token...")
 
             try:
@@ -291,39 +269,69 @@ async def run_checker():
                     ),
                     timeout=240
                 )
-                if res_token:
-                    valid_count += 1
-                    invalid_count -= 1
-                    c69.update_email_status(email_id, 0)
-                    logger.info(f"🎉 [TOKEN CẤP MỚI THÀNH CÔNG] {email}")
-                    update_telegram_live(email, "🎉 Đã cấp lại Token OAuth2 thành công!")
-                else:
+                async with lock:
+                    if res_token:
+                        valid_count += 1
+                        invalid_count -= 1
+                        c69.update_email_status(email_id, 0)
+                        logger.info(f"🎉 [TOKEN CẤP MỚI THÀNH CÔNG] {email}")
+                        update_telegram_live(email, "🎉 Đã cấp lại Token OAuth2 thành công!")
+                    else:
+                        error_count += 1
+                        invalid_count -= 1
+                        c69.update_email_status(email_id, 3, "Không hoàn tất cấp Token qua Browser")
+                        logger.warning(f"⚠️ [CẦN CHECK TAY] {email}")
+                        update_telegram_live(email, "⚠️ Cần check tay (Gán status=3)")
+            except asyncio.TimeoutError:
+                async with lock:
                     error_count += 1
                     invalid_count -= 1
-                    c69.update_email_status(email_id, 3, "Không hoàn tất cấp Token qua Browser")
-                    logger.warning(f"⚠️ [CẦN CHECK TAY] {email}")
-                    update_telegram_live(email, "⚠️ Cần check tay (Gán status=3)")
-            except asyncio.TimeoutError:
-                error_count += 1
-                invalid_count -= 1
                 c69.update_email_status(email_id, 3, "Quá thời gian chờ (Timeout 90s)")
                 logger.warning(f"⏳ [TIMEOUT 90s] {email} -> Status 3")
                 update_telegram_live(email, "⏳ Quá hạn 90s (Gán status=3)")
             except Exception as e_proc:
-                error_count += 1
-                invalid_count -= 1
+                async with lock:
+                    error_count += 1
+                    invalid_count -= 1
                 c69.update_email_status(email_id, 3, f"Lỗi exception: {str(e_proc)[:100]}")
                 logger.error(f"❌ [LỖI] {email}: {e_proc}")
                 update_telegram_live(email, f"❌ Lỗi: {e_proc} (Gán status=3)")
             finally:
-                checked_count += 1
+                async with lock:
+                    checked_count += 1
                 try:
                     await manager.close()
                 except Exception:
                     pass
 
             update_telegram_live(email, "Đã xong lượt kiểm tra email này.")
-            await asyncio.sleep(1)
+
+    while True:
+        # Lấy các email có status=0 (hoặc chưa đánh dấu cần check tay status=3) để quét
+        url_emails = f"https://cu.c69.us/dashboard/api/emails/?page={page}&page_size={page_size}&status=0&ordering=modified"
+        try:
+            r = c69.session.get(url_emails, timeout=15)
+            if r.status_code != 200:
+                logger.error(f"Fetch page {page} trả về status {r.status_code}. Kết thúc.")
+                break
+            data = r.json()
+            total_count = data.get('count', total_count)
+            results = data.get('results', [])
+            if not results:
+                logger.info(f"Đã duyệt hết các trang (Trang cuối: {page-1}).")
+                break
+        except Exception as e:
+            logger.error(f"Lỗi fetch page {page}: {e}")
+            break
+
+        candidates = [
+            item for item in results 
+            if any(item.get('email', '').lower().endswith(d) for d in ['@hotmail.com', '@outlook.com', '@live.com', '@msn.com'])
+        ]
+
+        # Chạy song song 5 luồng cho toàn bộ danh sách candidate trong page
+        tasks = [process_single_candidate(item) for item in candidates]
+        await asyncio.gather(*tasks)
 
         page += 1
 
