@@ -538,29 +538,36 @@ class TempMailFviainboxes:
                             r_detail = await loop.run_in_executor(None, lambda: session.get(msg_url, timeout=15))
                             if r_detail.status_code == 200:
                                 raw_text = r_detail.text
-                                text = raw_text
+                                text = raw_text.strip()
                                 try:
-                                    if raw_text.startswith('"') and raw_text.endswith('"'):
-                                        text = json.loads(raw_text)
-                                    elif isinstance(raw_text, dict):
-                                        text = str(raw_text)
+                                    if text.startswith('"') and text.endswith('"'):
+                                        text = json.loads(text)
+                                    elif isinstance(text, dict):
+                                        text = str(text)
                                 except Exception:
                                     pass
                                     
                                 text = text.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\"', '"').replace(r'\/', '/')
                                 
-                                # 1. Lọc bỏ toàn bộ thẻ HTML và mã màu CSS Hex (tránh bắt nhầm mã màu như #707070)
+                                # 1. Bóc trực tiếp từ HTML pattern chuẩn của Microsoft: Security code: <span...>XXXXXX</span>
+                                ms_html_match = re.search(r'Security\s+code:[^<]*<span[^>]*>\s*(\d{6,8})\s*</span>', text, re.IGNORECASE)
+                                if ms_html_match:
+                                    code = ms_html_match.group(1)
+                                    logger.info(f"🎉 [FVI-HTML] Tìm thấy mã OTP Microsoft chuẩn xác: {code}")
+                                    return code
+
+                                # 2. Lọc bỏ toàn bộ thẻ HTML và mã màu CSS Hex
                                 clean_no_html = re.sub(r'<[^>]+>', ' ', text)
-                                clean_no_hex = re.sub(r'#[0-9a-fA-F]{6}', ' ', clean_no_html)
+                                clean_no_hex = re.sub(r'#[0-9a-fA-F]{3,8}', ' ', clean_no_html)
                                 
-                                # 2. Tìm chính xác mã OTP 6 số đứng sau "Security code" hoặc "Mã xác nhận"
-                                otp_match = re.search(r'(?:Security\s+code|mã\s+xác\s+nhận|mã\s+bảo\s+mật)[^\d]*(\b\d{6}\b)', clean_no_hex, re.IGNORECASE)
+                                # 3. Tìm chính xác mã OTP 6-8 số đứng sau "Security code" hoặc "Mã xác nhận"
+                                otp_match = re.search(r'(?:Security\s+code|mã\s+xác\s+nhận|mã\s+bảo\s+mật|verification\s+code)[^\d]{1,50}(\b\d{6,8}\b)', clean_no_hex, re.IGNORECASE)
                                 if not otp_match:
-                                    otp_match = re.search(r'\b\d{6}\b', clean_no_hex)
+                                    otp_match = re.search(r'\b\d{6,8}\b', clean_no_hex)
                                     
                                 if otp_match:
                                     code = otp_match.group(1) if len(otp_match.groups()) > 0 else otp_match.group(0)
-                                    logger.info(f"🎉 Tìm thấy mã OTP Microsoft chuẩn xác từ fviainboxes.com: {code}")
+                                    logger.info(f"🎉 [FVI-TEXT] Tìm thấy mã OTP Microsoft chuẩn xác: {code}")
                                     return code
             except Exception as e:
                 logger.debug(f"Đang polling fviainboxes.com (thử lại sau 3s, lỗi: {e})...")
