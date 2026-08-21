@@ -251,8 +251,16 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     c69_client.update_email_status(email_id, 3, f"Bắt OTP email khôi phục lạ ({hint})")
                 return None
                 
-            # D. Click Accept / Yes trên các màn hình xác nhận
-            await cdp_click_btn_by_text(tab, ["yes", "accept", "ok", "next", "continue"])
+            # D. Xử lý màn hình cấp quyền OAuth Consent (Let this app access your info? / Consent/Update)
+            if "consent" in url_step.lower() or "access your info" in body_step_lower or "let this app" in body_step_lower:
+                logger.info(f"[{email}] 🛡️ Phát hiện màn hình OAuth Consent, bấm Accept/Yes...")
+                await report_step("Đang xác nhận cấp quyền ứng dụng (Consent)...")
+                await cdp_click_btn_by_text(tab, ["yes", "accept", "idBtn_Accept", "continue"])
+                await asyncio.sleep(4)
+                continue
+
+            # E. Click Accept / Yes trên các màn hình xác nhận khác
+            await cdp_click_btn_by_text(tab, ["yes", "accept", "ok", "next", "continue", "idBtn_Accept", "idSIButton9"])
             await asyncio.sleep(3)
             
     except Exception as e:
