@@ -196,9 +196,15 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
                     await cdp_type_text(tab, "#iOttText, input[id='iOttText'], input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
                     await asyncio.sleep(0.5)
-                    await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in"])
+                    await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in", "iVerifyCodeAction"])
                     await asyncio.sleep(5)
-                continue
+                    continue
+                else:
+                    logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau khi chờ")
+                    await report_step("❌ Không nhận được OTP fviainboxes!")
+                    if c69_client and email_id:
+                        c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com")
+                    return None
 
             # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
             if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
