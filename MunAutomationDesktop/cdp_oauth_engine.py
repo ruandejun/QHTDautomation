@@ -56,8 +56,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 c69_client.update_email_status(email_id, 3, "Tài khoản Microsoft không tồn tại")
             return None
 
-        # ⚡ TỐI ƯU HÓA: Nếu Microsoft hiển thị ngay màn hình Verify your email (@fviainboxes.com) -> Điền email & Gửi mã OTP luôn, KHÔNG cần bấm Use your password
-        if "@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower or "verify your email" in body_after_email_lower:
+        # ⚡ TỐI ƯU HÓA: Chỉ xử lý Fast-Track nếu màn hình hiển thị chính xác đuôi @fviainboxes.com
+        if "@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower:
             email_prefix = email.split('@')[0].strip()
             expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
             logger.info(f"[{email}] ⚡ Bắt được màn hình xác minh fviainboxes.com ngay bước đầu! Điền luôn: {expected_fvia_email}")
@@ -100,6 +100,12 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 if c69_client and email_id:
                     c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com (3 lần)")
                 return None
+        elif "verify your email" in body_after_email_lower and ("@gmail.com" in body_after_email_lower or "@" in body_after_email_lower):
+            # Nếu bắt xác minh qua Gmail hoặc đuôi mail khác ngoài fviainboxes -> Click "Use your password" để vào nhập pass!
+            logger.info(f"[{email}] 🛡️ Màn hình bắt xác minh qua mail khác, bấm 'Use your password'...")
+            await report_step("Đang bấm 'Use your password'...")
+            await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
+            await asyncio.sleep(3)
         else:
             # 2. Điền Password thông thường nếu màn hình yêu cầu pass
             await report_step("Đang xử lý nhập Password...")
