@@ -238,7 +238,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await asyncio.sleep(1)
                     
                     await report_step(f"Đang bấm Gửi mã tới {expected_fvia_email}...")
-                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
+                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
                     await asyncio.sleep(5)
                     continue
                 
