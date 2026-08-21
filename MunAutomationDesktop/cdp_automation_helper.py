@@ -1,6 +1,49 @@
 import os, sys, asyncio, logging, json, requests, random, time
 import nodriver.cdp.input_ as cdp_in
 
+async def cdp_type_code_6digits(tab, code_str: str):
+    """Điền mã OTP 6 số vào giao diện ô đơn hoặc 6 ô rời (#codeEntry-0..5) của Microsoft"""
+    code_str = str(code_str).strip()
+    if len(code_str) != 6:
+        return False
+        
+    res = await tab.evaluate("""
+    (() => {
+        const singleInput = document.querySelector("#iOttText, input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']");
+        if (singleInput) {
+            return JSON.stringify({ mode: "single", selector: "#iOttText" });
+        }
+        const box0 = document.querySelector("#codeEntry-0");
+        if (box0) {
+            return JSON.stringify({ mode: "boxes" });
+        }
+        return null;
+    })()
+    """)
+    if not res:
+        return False
+        
+    info = json.loads(res)
+    if info.get("mode") == "single":
+        return await cdp_type_text(tab, "#iOttText, input[id='iOttText'], input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", code_str)
+    else:
+        # Gõ lần lượt vào 6 ô codeEntry-0 tới codeEntry-5
+        for i in range(6):
+            digit = code_str[i]
+            await tab.evaluate(f"""
+            (() => {{
+                const el = document.querySelector("#codeEntry-{i}");
+                if (el) {{
+                    el.focus();
+                    el.value = "{digit}";
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }})()
+            """)
+            await asyncio.sleep(0.05)
+        return True
+
 async def cdp_type_text(tab, selector, text):
     """Click trực tiếp vào tọa độ thật của phần tử, xóa sạch text cũ (Ctrl+A -> Backspace) và gõ từng phím qua CDP"""
     res = await tab.evaluate(f"""

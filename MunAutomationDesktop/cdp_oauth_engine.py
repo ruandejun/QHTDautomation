@@ -3,7 +3,7 @@ import nodriver.cdp.network as cdp_net
 sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
 
 from mun_anti_browser.browser_manager import NodriverBrowserManager
-from cdp_automation_helper import cdp_type_text, cdp_click_btn_by_text
+from cdp_automation_helper import cdp_type_text, cdp_click_btn_by_text, cdp_type_code_6digits
 from tiktok_reg_automation import C69MailBox, TempMailFviainboxes
 
 logger = logging.getLogger(__name__)
@@ -190,8 +190,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await cdp_click_btn_by_text(tab, ["next", "submit"])
                     await asyncio.sleep(5)
                     
-            # Màn hình nhập mã xác thực OTP (Hỗ trợ cả Fviainboxes lẫn C69 Recovery Mail)
-            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "check your email" in body_step_lower or "enter your security code" in body_step_lower:
+            # B. Màn hình nhập mã xác thực OTP (Hỗ trợ cả Fviainboxes lẫn C69 Recovery Mail)
+            if "iotttext" in body_step_lower or "otc" in body_step_lower or "enter code" in body_step_lower or "codeentry" in body_step_lower or "enter your code" in body_step_lower or "codeentry-0" in body_step_lower or "enter your security code" in body_step_lower:
                 await report_step("Đang ở màn hình nhập OTP...")
                 otp_code = None
                 
@@ -241,7 +241,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 if otp_code:
                     logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
                     await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
-                    await cdp_type_text(tab, "#iOttText, input[id='iOttText'], input[name='iOttText'], input[name='otc'], input[id*='OTC'], input[type='tel']", otp_code)
+                    await cdp_type_code_6digits(tab, str(otp_code))
                     await asyncio.sleep(0.5)
                     await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in", "iVerifyCodeAction"])
                     await asyncio.sleep(5)
