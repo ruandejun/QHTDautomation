@@ -169,8 +169,8 @@ async def run_checker():
             current_status=curr_status
         )
         
-        # Gửi card mới mỗi 60s để chống trôi tin nhắn
-        if now - last_send_new_msg_time >= 60:
+        # Gửi card mới mỗi 180s (3 phút) để chống trôi tin nhắn
+        if now - last_send_new_msg_time >= 180:
             new_id = send_telegram_message(card_content)
             if new_id:
                 tg_msg_id = new_id
