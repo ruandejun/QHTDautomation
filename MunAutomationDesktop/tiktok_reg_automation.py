@@ -558,19 +558,27 @@ class TempMailFviainboxes:
                                     
                                 text = text.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\"', '"').replace(r'\/', '/')
                                 
-                                # 1. Bóc trực tiếp từ HTML pattern chuẩn của Microsoft: Security code: <span...>XXXXXX</span>
+                                # 1. Bóc từ định dạng text đơn giản mới của Microsoft: Your single-use code is: XXXXXX
+                                text_clean_str = text.replace('\\r', '').replace('\\n', ' ')
+                                single_use_match = re.search(r'single-use\s+code\s+is:\s*(\d{6,8})', text_clean_str, re.IGNORECASE)
+                                if single_use_match:
+                                    code = single_use_match.group(1)
+                                    logger.info(f"🎉 [FVI-SINGLE-USE] Tìm thấy mã OTP Microsoft: {code}")
+                                    return code
+
+                                # 2. Bóc trực tiếp từ HTML pattern chuẩn của Microsoft: Security code: <span...>XXXXXX</span>
                                 ms_html_match = re.search(r'Security\s+code:[^<]*<span[^>]*>\s*(\d{6,8})\s*</span>', text, re.IGNORECASE)
                                 if ms_html_match:
                                     code = ms_html_match.group(1)
                                     logger.info(f"🎉 [FVI-HTML] Tìm thấy mã OTP Microsoft chuẩn xác: {code}")
                                     return code
 
-                                # 2. Lọc bỏ toàn bộ thẻ HTML và mã màu CSS Hex
+                                # 3. Lọc bỏ toàn bộ thẻ HTML và mã màu CSS Hex
                                 clean_no_html = re.sub(r'<[^>]+>', ' ', text)
                                 clean_no_hex = re.sub(r'#[0-9a-fA-F]{3,8}', ' ', clean_no_html)
                                 
-                                # 3. Tìm chính xác mã OTP 6-8 số đứng sau "Security code" hoặc "Mã xác nhận"
-                                otp_match = re.search(r'(?:Security\s+code|mã\s+xác\s+nhận|mã\s+bảo\s+mật|verification\s+code)[^\d]{1,50}(\b\d{6,8}\b)', clean_no_hex, re.IGNORECASE)
+                                # 4. Tìm chính xác mã OTP 6-8 số đứng sau "Security code", "single-use code" hoặc "Mã xác nhận"
+                                otp_match = re.search(r'(?:single-use\s+code|Security\s+code|mã\s+xác\s+nhận|mã\s+bảo\s+mật|verification\s+code)[^\d]{1,50}(\b\d{6,8}\b)', clean_no_hex, re.IGNORECASE)
                                 if not otp_match:
                                     otp_match = re.search(r'\b\d{6,8}\b', clean_no_hex)
                                     

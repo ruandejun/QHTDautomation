@@ -76,15 +76,16 @@ def edit_telegram_message(message_id: int, text: str, reply_markup=None):
         pass
     return None
 
-def create_checker_card_html(total, checked, left, valid, invalid, error, current_mail="", current_status=""):
-    """Format tin nhắn HTML Card phong cách MunBot Checker"""
+def create_checker_card_html(total, checked, left, alive, reissued, invalid, error, current_mail="", current_status=""):
+    """Format tin nhắn HTML Card phong cách MunBot Checker tách riêng Sống & Cấp lại"""
     time_str = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
     html = f"""
 <b>👻 MunBot Email Token Checker AIO 👽</b>
 
 <b>Total:</b> <code>{total}</code> 🛒
 <b>Checked:</b> <code>{checked}</code> | <b>Left:</b> <code>{left}</code>
-<b>Valid (Sống / Đã cấp lại):</b> <code>{valid}</code> 🟢
+<b>Alive (Token sống sẵn):</b> <code>{alive}</code> 🟢
+<b>Reissued (Cấp lại thành công):</b> <code>{reissued}</code> 🔵
 <b>Invalid (Token chết / Đang lấy):</b> <code>{invalid}</code> 🔴
 <b>Error (Lỗi / Cần xử lý tay):</b> <code>{error}</code> ⚠️
 
@@ -135,7 +136,8 @@ async def run_checker():
         logger.error("Không thể đăng nhập C69!")
         return
 
-    valid_count = 0
+    alive_count = 0
+    reissued_count = 0
     invalid_count = 0
     error_count = 0
     checked_count = 0
@@ -146,7 +148,8 @@ async def run_checker():
         total=total_count,
         checked=0,
         left=total_count,
-        valid=0,
+        alive=0,
+        reissued=0,
         invalid=0,
         error=0,
         current_mail="Bắt đầu tiến trình",
@@ -162,7 +165,8 @@ async def run_checker():
             total=total_count,
             checked=checked_count,
             left=total_count - checked_count,
-            valid=valid_count,
+            alive=alive_count,
+            reissued=reissued_count,
             invalid=invalid_count,
             error=error_count,
             current_mail=curr_mail,
@@ -185,7 +189,7 @@ async def run_checker():
     lock = asyncio.Lock()
 
     async def process_single_candidate(item):
-        nonlocal valid_count, invalid_count, error_count, checked_count
+        nonlocal alive_count, reissued_count, invalid_count, error_count, checked_count
         email = item.get('email')
         email_id = item.get('id')
         password = item.get('password')
@@ -199,7 +203,7 @@ async def run_checker():
                 c69.save_mailbox_results(email_id, new_ref)
                 c69.update_email_status(email_id, 0, "Token sống (Fast Refreshed)")
                 async with lock:
-                    valid_count += 1
+                    alive_count += 1
                     checked_count += 1
                 logger.info(f"✅ [VALID - ĐÃ CÓ TOKEN SỐNG] {email}")
                 update_telegram_live(email, "✅ Đã có Token sống (Bỏ qua)")
@@ -277,19 +281,20 @@ async def run_checker():
                     ),
                     timeout=240
                 )
-                async with lock:
-                    if res_token:
-                        valid_count += 1
+                if res_token:
+                    async with lock:
+                        reissued_count += 1
                         invalid_count -= 1
-                        c69.update_email_status(email_id, 0)
-                        logger.info(f"🎉 [TOKEN CẤP MỚI THÀNH CÔNG] {email}")
-                        update_telegram_live(email, "🎉 Đã cấp lại Token OAuth2 thành công!")
-                    else:
+                    c69.update_email_status(email_id, 0)
+                    logger.info(f"🎉 [TOKEN CẤP MỚI THÀNH CÔNG] {email}")
+                    update_telegram_live(email, "🎉 Đã cấp lại Token OAuth2 thành công!")
+                else:
+                    async with lock:
                         error_count += 1
                         invalid_count -= 1
-                        c69.update_email_status(email_id, 3, "Không hoàn tất cấp Token qua Browser")
-                        logger.warning(f"⚠️ [CẦN CHECK TAY] {email}")
-                        update_telegram_live(email, "⚠️ Cần check tay (Gán status=3)")
+                    c69.update_email_status(email_id, 3, "Không hoàn tất cấp Token qua Browser")
+                    logger.warning(f"⚠️ [CẦN CHECK TAY] {email}")
+                    update_telegram_live(email, "⚠️ Cần check tay (Gán status=3)")
             except asyncio.TimeoutError:
                 async with lock:
                     error_count += 1
@@ -348,7 +353,8 @@ async def run_checker():
         total=total_count,
         checked=checked_count,
         left=0,
-        valid=valid_count,
+        alive=alive_count,
+        reissued=reissued_count,
         invalid=invalid_count,
         error=error_count,
         current_mail="---",
