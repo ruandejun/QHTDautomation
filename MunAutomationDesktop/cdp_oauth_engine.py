@@ -171,7 +171,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 
                 for attempt in range(1, 4):
                     await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
-                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=35)
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45)
                     if otp_code:
                         break
                     
@@ -185,7 +185,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                         expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
                         await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email']", expected_fvia_email)
                         await asyncio.sleep(1)
-                        await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
+                        await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
                         await asyncio.sleep(5)
                 if otp_code:
                     expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
