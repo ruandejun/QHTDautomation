@@ -1,0 +1,38 @@
+name: CI Automation & Integrity Checks
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  python-lint-and-syntax:
+    name: Python Lint, Syntax & Diagnostics
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install flake8 pyflakes pytest requests
+
+      - name: Syntax & Fatal Error Check
+        run: |
+          # Dừng build nếu có lỗi cú pháp Python (E9, F63, F7, F82)
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Python Compile Test
+        run: |
+          # Biên dịch toàn bộ file .py để đảm bảo 100% không có SyntaxError
+          python -m compileall -q .
