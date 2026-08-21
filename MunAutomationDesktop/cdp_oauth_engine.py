@@ -165,11 +165,28 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 await report_step("Đang ở màn hình nhập OTP...")
                 otp_code = None
                 
-                # 1. Ưu tiên kiểm tra Fviainboxes OTP
+                # 1. Chờ lấy OTP từ fviainboxes.com (Nếu chưa về sau 35s -> bấm Back/Revert để gửi lại mã tối đa 2 lần)
                 email_prefix = email.split('@')[0].strip()
-                await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix})...")
                 fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
-                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=60)
+                
+                for attempt in range(1, 4):
+                    await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=35)
+                    if otp_code:
+                        break
+                    
+                    if attempt < 3:
+                        logger.warning(f"[{email}] Chưa có OTP sau lần {attempt}, bấm Revert/Back để yêu cầu gửi lại mã...")
+                        await report_step(f"Chưa có OTP, đang bấm gửi lại mã (Lần {attempt+1})...")
+                        # Bấm "Use a different verification option" hoặc Back để quay lại màn hình gửi mã
+                        await cdp_click_btn_by_text(tab, ["use a different verification option", "iVerifyCodeRevert", "back", "cancel"])
+                        await asyncio.sleep(4)
+                        # Gõ lại email và bấm Send code
+                        expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
+                        await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email']", expected_fvia_email)
+                        await asyncio.sleep(1)
+                        await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send"])
+                        await asyncio.sleep(5)
                 if otp_code:
                     expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
                     c69_client.update_recovery_email_only(email_id, expected_fvia_email)
