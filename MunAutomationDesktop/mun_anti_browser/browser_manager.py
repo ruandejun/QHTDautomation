@@ -157,12 +157,16 @@ class NodriverBrowserManager:
 
         for attempt in range(3):
             try:
+                # Dọn sạch port và process rác trước khi khởi động
                 self.browser = await nodriver.start(config=config)
                 break
             except Exception as e:
                 if attempt == 2:
                     raise e
-                logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, thử lại sau 2s: {e}")
+                logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, kill dọn sạch và thử lại sau 2s: {e}")
+                # Kill triệt để các Chrome treo cũ
+                os.system("pkill -9 -f /opt/google/chrome/chrome || true")
+                os.system("pkill -9 -f /bin/google-chrome || true")
                 await asyncio.sleep(2)
 
         # Get the initial tab
