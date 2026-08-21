@@ -133,6 +133,10 @@ class NodriverBrowserManager:
         # Write WebRTC protection prefs BEFORE browser starts
         self._write_webrtc_prefs(profile_dir)
 
+        # Ensure DISPLAY is set in Linux environment
+        if "DISPLAY" not in os.environ and not headless:
+            os.environ["DISPLAY"] = ":1"
+
         # Start browser via nodriver
         config = nodriver.Config()
         # In Linux/root environment, allow no_sandbox fallback if sandbox fails
