@@ -503,9 +503,15 @@ class TempMailFviainboxes:
     """Xử lý email tạm thời qua dịch vụ Fviainboxes.com (API free /messages)"""
     
     def __init__(self, username: str, domain: str = "fviainboxes.com"):
-        self.username = username.strip().lower()
+        clean_user = username.strip().lower()
+        if "@" in clean_user:
+            parts = clean_user.split("@", 1)
+            clean_user = parts[0]
+            if not domain or domain == "fviainboxes.com":
+                domain = parts[1]
+        self.username = clean_user
         self.domain = domain
-        self.email_address = f"{self.username}@{domain}"
+        self.email_address = f"{self.username}@{self.domain}"
         
     async def get_microsoft_otp(self, timeout_secs: int = 150) -> Optional[str]:
         """Polling hộp thư fviainboxes.com để tìm mã OTP xác minh từ Microsoft với cơ chế retry và timeout linh hoạt."""
