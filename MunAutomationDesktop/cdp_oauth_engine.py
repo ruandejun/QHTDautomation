@@ -65,7 +65,40 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             await cdp_type_text(tab, "#proof-confirmation-email-input, input[id='proof-confirmation-email-input'], #iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text']", expected_fvia_email)
             await asyncio.sleep(1)
             await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
-            await asyncio.sleep(4)
+            await asyncio.sleep(5)
+            
+            # XỬ LÝ NHẬP OTP NGAY TẠI BƯỚC NÀY
+            await report_step("Đang chờ mã OTP fviainboxes...")
+            fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
+            otp_code = None
+            for attempt in range(1, 4):
+                await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
+                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45)
+                if otp_code:
+                    break
+                if attempt < 3:
+                    logger.warning(f"[{email}] Chưa có OTP sau lần {attempt}, bấm Revert/Back để yêu cầu gửi lại mã...")
+                    await report_step(f"Chưa có OTP, đang bấm gửi lại mã (Lần {attempt+1})...")
+                    await cdp_click_btn_by_text(tab, ["back-button", "use a different verification option", "iVerifyCodeRevert", "back", "cancel"])
+                    await asyncio.sleep(4)
+                    await cdp_type_text(tab, "#proof-confirmation-email-input, input[id='proof-confirmation-email-input'], #iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text']", expected_fvia_email)
+                    await asyncio.sleep(1)
+                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
+                    await asyncio.sleep(5)
+                    
+            if otp_code:
+                logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
+                await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
+                await cdp_type_code_6digits(tab, str(otp_code))
+                await asyncio.sleep(0.5)
+                await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in", "iVerifyCodeAction"])
+                await asyncio.sleep(5)
+            else:
+                logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau 3 lần thử")
+                await report_step("❌ Không nhận được OTP fviainboxes sau 3 lần!")
+                if c69_client and email_id:
+                    c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com (3 lần)")
+                return None
         else:
             # 2. Điền Password thông thường nếu màn hình yêu cầu pass
             await report_step("Đang xử lý nhập Password...")
