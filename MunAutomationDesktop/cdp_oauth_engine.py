@@ -78,7 +78,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 send_time = int(time.time()) - 5
                 await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
                 # Bớt 5s để bù độ trễ lệch clock giữa server Fvia và VPS
-                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45, min_created_at=send_time - 5)
+                otp_code = await fvia_client.get_microsoft_otp(timeout_secs=65, min_created_at=send_time - 15)
                 if otp_code:
                     break
                 if attempt < 3:
@@ -267,7 +267,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                         send_time = int(time.time()) - 5
                         await report_step(f"Đang chờ mã OTP fviainboxes ({email_prefix}) - Lần {attempt}/3...")
                         # Bớt 5s để bù độ trễ lệch clock giữa server Fvia và VPS
-                        otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45, min_created_at=send_time - 5)
+                        otp_code = await fvia_client.get_microsoft_otp(timeout_secs=65, min_created_at=send_time - 15)
                         if otp_code:
                             break
                         
@@ -339,7 +339,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     
                     # Chờ OTP và nhập mã
                     fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
-                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45, min_created_at=send_time - 5)
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=65, min_created_at=send_time - 15)
                     if otp_code:
                         logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
                         await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
