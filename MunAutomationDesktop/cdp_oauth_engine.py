@@ -217,17 +217,16 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
         
         # 4. Điều hướng tới OAuth URL (nếu chưa ở trang OAuth)
         cur_url = tab.url or await tab.evaluate("window.location.href") or ""
-        redirect_uri = "https://login.live.com/oauth20_desktop.srf"
+        redirect_uri = "https://login.microsoftonline.com/common/oauth2/nativeclient"
         auth_url = f"https://login.live.com/oauth20_authorize.srf?" \
                    f"client_id={client_id}" \
                    f"&response_type=code" \
                    f"&redirect_uri={redirect_uri}" \
-                   f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access" \
+                   f"&scope=https://outlook.office.com/IMAP.AccessAsUser.All%20https://outlook.office.com/POP.AccessAsUser.All%20https://outlook.office.com/SMTP.Send%20offline_access" \
                    f"&state=c69_auto_token"
                    
-        if "oauth20_authorize" not in cur_url and "code=" not in cur_url:
-            await tab.get(auth_url)
-            await asyncio.sleep(4)
+        await tab.get(auth_url)
+        await asyncio.sleep(4)
         
         # 5. Xử lý các màn hình OAuth / Proof Add
         recovery_box_used = None
@@ -248,7 +247,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                         "grant_type": "authorization_code",
                         "code": code,
                         "redirect_uri": redirect_uri,
-                        "scope": "https://graph.microsoft.com/Mail.Read offline_access"
+                        "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access"
                     }
                     r = requests.post(token_url, data=data, timeout=10)
                     if r.status_code != 200:
