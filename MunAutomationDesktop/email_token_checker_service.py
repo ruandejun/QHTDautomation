@@ -141,7 +141,9 @@ async def run_checker():
     invalid_count = 0
     error_count = 0
     checked_count = 0
-    total_count = 7190
+    # Lấy tổng số lượng thực tế từ API C69
+    initial_res = c69.session.get("https://cu.c69.us/dashboard/api/emails/?page_size=1").json()
+    total_count = initial_res.get("count", 7190)
 
     # Khởi tạo Card ban đầu
     msg_card = create_checker_card_html(
