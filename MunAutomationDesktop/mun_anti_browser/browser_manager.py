@@ -125,6 +125,7 @@ class NodriverBrowserManager:
         # Determine user data dir for this profile
         profile_id = profile_config.get("id", 0) or random.randint(10000, 99999)
         profile_dir = os.path.join(self.user_data_dir, str(profile_id))
+        self._active_profile_dir = profile_dir
 
         logger.info(f"Starting browser with profile {profile_id}")
         logger.debug(f"Profile dir: {profile_dir}")
@@ -165,8 +166,9 @@ class NodriverBrowserManager:
                 self.browser = await nodriver.start(config=config)
                 break
             except Exception as e:
-                if attempt == 2:
-                    raise e
+                logger.error(f"Failed to start browser: {e}")
+                await self.close()
+                raise
                 logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, kill dọn sạch và thử lại sau 2s: {e}")
                 # Kill triệt để các Chrome treo cũ
                 os.system("pkill -9 -f /opt/google/chrome/chrome || true")
@@ -410,6 +412,14 @@ class NodriverBrowserManager:
 
         return tab
 
+    async def __aenter__(self):
+        """Async context manager enter."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit with guaranteed cleanup."""
+        await self.close()
+
     async def close(self):
         """Close the browser and clean up."""
         if self.browser:
@@ -442,6 +452,17 @@ class NodriverBrowserManager:
             finally:
                 self.browser = None
                 self.main_tab = None
+
+        # Tự động dọn dẹp thư mục user_data_dir nếu có profile cụ thể được khởi tạo
+        if hasattr(self, '_active_profile_dir') and self._active_profile_dir:
+            try:
+                import shutil
+                if os.path.exists(self._active_profile_dir):
+                    shutil.rmtree(self._active_profile_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up profile directory: {self._active_profile_dir}")
+            except Exception:
+                pass
+            self._active_profile_dir = None
 
     @property
     def is_running(self) -> bool:
