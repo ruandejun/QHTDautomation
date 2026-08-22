@@ -316,6 +316,17 @@ async def run_checker():
                     await manager.close()
                 except Exception:
                     pass
+                # Bắt buộc kill triệt để PID tiến trình Chrome con nếu còn sót lại
+                try:
+                    if hasattr(manager, 'browser') and manager.browser:
+                        p_pid = getattr(manager.browser, '_process_pid', None)
+                        if p_pid:
+                            try:
+                                os.kill(p_pid, 9)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 # Tự động dọn dẹp thư mục profile data rác sau khi phiên kết thúc
                 try:
                     p_id = profile.get("id")
