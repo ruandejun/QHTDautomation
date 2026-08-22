@@ -105,62 +105,62 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 if c69_client and email_id:
                     c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com (3 lần)")
                 return None
-        elif "verify your email" in body_after_email_lower and ("@gmail.com" in body_after_email_lower or "@" in body_after_email_lower):
-            # Nếu bắt xác minh qua Gmail hoặc đuôi mail khác ngoài fviainboxes -> Click "Use your password" để vào nhập pass!
-            logger.info(f"[{email}] 🛡️ Màn hình bắt xác minh qua mail khác, bấm 'Use your password'...")
+        if "verify your email" in body_after_email_lower or "use your password" in body_after_email_lower:
+            # Nếu bắt xác minh trước password -> Click "Use your password" để vào màn hình nhập pass chính thống!
+            logger.info(f"[{email}] 🛡️ Màn hình bắt xác minh trước password, bấm 'Use your password'...")
             await report_step("Đang bấm 'Use your password'...")
             await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
             await asyncio.sleep(3)
-        else:
-            # 2. Điền Password thông thường nếu màn hình yêu cầu pass
-            await report_step("Đang xử lý nhập Password...")
-            typed_pass = False
-            for _ in range(3):
-                typed_pass = await cdp_type_text(tab, "input[name='passwd'], input[type='password'], #passwordEntry, input[id*='Password']", password)
-                if typed_pass:
-                    break
-                
-                # Click vào "Use your password" hoặc "Other ways to sign in"
-                logger.info(f"[{email}] Đang tìm và click vào 'Use your password'...")
-                await report_step("Đang click 'Use your password'...")
-                await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
-                await asyncio.sleep(2.5)
-                
-            if not typed_pass:
-                # Kiểm tra nếu lúc này mới hiện màn hình fviainboxes
-                body_check = await tab.evaluate("document.body.innerText") or ""
-                if "@fviainboxes.com" in body_check.lower():
-                    email_prefix = email.split('@')[0].strip()
-                    expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
-                    logger.info(f"[{email}] 🛡️ Điền email fviainboxes: {expected_fvia_email}")
-                    await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text']", expected_fvia_email)
-                    await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
-                    await asyncio.sleep(4)
-                else:
-                    logger.warning(f"[{email}] Không tìm thấy ô nhập password.")
-                    if c69_client and email_id:
-                        c69_client.update_email_status(email_id, 3, "Không hiển thị ô nhập Password")
-                    return None
-                
-            await asyncio.sleep(0.5)
-            await report_step("Đang bấm Sign in...")
-            await cdp_click_btn_by_text(tab, ["sign in", "next", "submit"])
-            await asyncio.sleep(5)
             
-            # Kiểm tra pass sai / khóa tài khoản
-            body_eval = await tab.evaluate("document.body.innerText")
-            body_after_pass = body_eval if isinstance(body_eval, str) else ""
-            body_lower = body_after_pass.lower()
-            if "that password is incorrect" in body_lower or "password is incorrect" in body_lower:
-                logger.warning(f"[{email}] Mật khẩu không chính xác.")
+        # 2. Điền Password
+        await report_step("Đang xử lý nhập Password...")
+        typed_pass = False
+        for _ in range(3):
+            typed_pass = await cdp_type_text(tab, "input[name='passwd'], input[type='password'], #passwordEntry, input[id*='Password']", password)
+            if typed_pass:
+                break
+            
+            # Click vào "Use your password" hoặc "Other ways to sign in"
+            logger.info(f"[{email}] Đang tìm và click vào 'Use your password'...")
+            await report_step("Đang click 'Use your password'...")
+            await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
+            await asyncio.sleep(2.5)
+            
+        if not typed_pass:
+            # Kiểm tra nếu lúc này mới hiện màn hình fviainboxes
+            body_check = await tab.evaluate("document.body.innerText") or ""
+            if "@fviainboxes.com" in body_check.lower():
+                email_prefix = email.split('@')[0].strip()
+                expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
+                logger.info(f"[{email}] 🛡️ Điền email fviainboxes: {expected_fvia_email}")
+                await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text']", expected_fvia_email)
+                await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
+                await asyncio.sleep(4)
+            else:
+                logger.warning(f"[{email}] Không tìm thấy ô nhập password.")
                 if c69_client and email_id:
-                    c69_client.update_email_status(email_id, 3, "Mật khẩu sai (Incorrect password)")
+                    c69_client.update_email_status(email_id, 3, "Không hiển thị ô nhập Password")
                 return None
-            if "account has been locked" in body_lower or "your account has been temporarily suspended" in body_lower:
-                logger.warning(f"[{email}] Tài khoản bị Microsoft khóa/treo.")
-                if c69_client and email_id:
-                    c69_client.update_email_status(email_id, 3, "Tài khoản bị khóa (Locked)")
-                return None
+            
+        await asyncio.sleep(0.5)
+        await report_step("Đang bấm Sign in...")
+        await cdp_click_btn_by_text(tab, ["sign in", "next", "submit"])
+        await asyncio.sleep(5)
+        
+        # Kiểm tra pass sai / khóa tài khoản
+        body_eval = await tab.evaluate("document.body.innerText")
+        body_after_pass = body_eval if isinstance(body_eval, str) else ""
+        body_lower = body_after_pass.lower()
+        if "that password is incorrect" in body_lower or "password is incorrect" in body_lower:
+            logger.warning(f"[{email}] Mật khẩu không chính xác.")
+            if c69_client and email_id:
+                c69_client.update_email_status(email_id, 3, "Mật khẩu sai (Incorrect password)")
+            return None
+        if "account has been locked" in body_lower or "your account has been temporarily suspended" in body_lower:
+            logger.warning(f"[{email}] Tài khoản bị Microsoft khóa/treo.")
+            if c69_client and email_id:
+                c69_client.update_email_status(email_id, 3, "Tài khoản bị khóa (Locked)")
+            return None
             
         # 3. Click qua Modal Privacy Notice nếu có
         await cdp_click_btn_by_text(tab, ["ok", "next", "continue", "got it", "yes"])
