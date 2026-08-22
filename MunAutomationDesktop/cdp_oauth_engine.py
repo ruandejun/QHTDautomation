@@ -301,20 +301,43 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
             if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
                 await report_step("Đang kiểm tra phương thức xác thực danh tính...")
-                # 1. Nếu màn hình yêu cầu xác nhận email có đuôi @fviainboxes.com
+                
+                # 1. Nếu màn hình có option fviainboxes.com -> Click chọn option này và điền email gửi mã
                 if "fviainboxes" in body_step_lower or "@fviainboxes.com" in body_step_lower:
                     email_prefix = email.split('@')[0].strip()
                     expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
                     
-                    logger.info(f"[{email}] 🛡️ Phát hiện màn hình xác minh fviainboxes.com! Điền chính xác email: {expected_fvia_email}")
-                    await report_step(f"Đang điền email bảo mật {expected_fvia_email}...")
+                    logger.info(f"[{email}] 🛡️ Phát hiện màn hình xác minh fviainboxes.com! Bấm chọn option và điền {expected_fvia_email}")
+                    await report_step(f"Đang chọn phương thức xác thực {expected_fvia_email}...")
                     
+                    # Click vào dòng option fviainboxes
+                    await tab.evaluate("""
+                    (() => {
+                        const el = Array.from(document.querySelectorAll("*")).find(e => (e.innerText || '').includes('fviainboxes.com'));
+                        if (el) el.click();
+                    })()
+                    """)
+                    await asyncio.sleep(1.5)
+                    
+                    # Điền email vào ô input
                     await cdp_type_text(tab, "#iProofEmail, input[id='iProofEmail'], input[name*='Proof'], input[type='email'], input[type='text'], input[id*='Proof'], input[name*='Email']", expected_fvia_email)
                     await asyncio.sleep(1)
                     
+                    send_time = int(time.time()) - 5
                     await report_step(f"Đang bấm Gửi mã tới {expected_fvia_email}...")
                     await cdp_click_btn_by_text(tab, ["send code", "next", "submit", "gửi mã", "send", "iSelectProofAction"])
                     await asyncio.sleep(5)
+                    
+                    # Chờ OTP và nhập mã
+                    fvia_client = TempMailFviainboxes(username=email_prefix, domain="fviainboxes.com")
+                    otp_code = await fvia_client.get_microsoft_otp(timeout_secs=45, min_created_at=send_time - 5)
+                    if otp_code:
+                        logger.info(f"[{email}] 🎉 Điền mã OTP: {otp_code}")
+                        await report_step(f"Điền mã OTP ({otp_code}) & Xác nhận...")
+                        await cdp_type_code_6digits(tab, str(otp_code))
+                        await asyncio.sleep(2)
+                        await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in", "iVerifyCodeAction"])
+                        await asyncio.sleep(6)
                     continue
                 
             # C. Nếu bắt OTP từ email lạ ngoài hệ thống
