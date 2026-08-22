@@ -56,8 +56,11 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 c69_client.update_email_status(email_id, 3, "Tài khoản Microsoft không tồn tại")
             return None
 
-        # ⚡ TỐI ƯU HÓA: Chỉ xử lý Fast-Track nếu màn hình hiển thị chính xác đuôi @fviainboxes.com
-        if "@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower:
+        # ⚡ TỐI ƯU HÓA: Bỏ qua màn hình Password nếu Microsoft hiển thị ngay Verify your email (@fviainboxes.com)
+        # TUY NHIÊN: Chỉ gửi mã khi Microsoft có ô input #proof-confirmation-email-input
+        # NẾU KHÔNG CÓ Ô INPUT -> BẤM USE YOUR PASSWORD ĐỂ VÀO LUỒNG CHUẨN
+        has_proof_input = await tab.evaluate("Boolean(document.querySelector('#proof-confirmation-email-input, #iProofEmail'))")
+        if ("@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower) and has_proof_input:
             email_prefix = email.split('@')[0].strip()
             expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
             logger.info(f"[{email}] ⚡ Bắt được màn hình xác minh fviainboxes.com ngay bước đầu! Điền luôn: {expected_fvia_email}")
