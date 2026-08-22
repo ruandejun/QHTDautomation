@@ -431,6 +431,11 @@ class NodriverBrowserManager:
                     self.browser.stop()
                 except Exception:
                     pass
+                try:
+                    if hasattr(self, 'proxy_manager') and self.proxy_manager:
+                        self.proxy_manager.close()
+                except Exception:
+                    pass
                 logger.info("Browser closed")
             except Exception as e:
                 logger.warning(f"Error closing browser: {e}")

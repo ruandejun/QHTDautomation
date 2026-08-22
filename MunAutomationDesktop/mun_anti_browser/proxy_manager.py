@@ -155,8 +155,16 @@ class ProxyManager:
 
         return args
 
-    @staticmethod
-    def start_auth_relay(config: ProxyConfig) -> int:
+    def close(self):
+        """Đóng relay server và giải phóng port"""
+        if hasattr(self, '_server_sock') and self._server_sock:
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
+            self._server_sock = None
+
+    def start_auth_relay(self, config: ProxyConfig) -> int:
         """
         Start a local SOCKS5 relay server for authenticated proxies.
 
@@ -188,6 +196,7 @@ class ProxyManager:
         server_sock.bind(('127.0.0.1', 0))
         local_port = server_sock.getsockname()[1]
         server_sock.listen(32)
+        self._server_sock = server_sock
 
         def _relay(src, dst):
             """Relay data between two sockets until one closes."""
