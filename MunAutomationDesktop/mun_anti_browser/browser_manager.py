@@ -422,6 +422,8 @@ class NodriverBrowserManager:
 
     async def close(self):
         """Close the browser and clean up."""
+        target_dir = getattr(self, '_active_profile_dir', None)
+
         if self.browser:
             try:
                 # Force terminate child chrome process if available
@@ -453,13 +455,16 @@ class NodriverBrowserManager:
                 self.browser = None
                 self.main_tab = None
 
+        # Đợi 0.5s để tiến trình Chrome hoàn toàn nhả file lock
+        await asyncio.sleep(0.5)
+
         # Tự động dọn dẹp thư mục user_data_dir nếu có profile cụ thể được khởi tạo
-        if hasattr(self, '_active_profile_dir') and self._active_profile_dir:
+        if target_dir:
             try:
                 import shutil
-                if os.path.exists(self._active_profile_dir):
-                    shutil.rmtree(self._active_profile_dir, ignore_errors=True)
-                    logger.info(f"Cleaned up profile directory: {self._active_profile_dir}")
+                if os.path.exists(target_dir):
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up profile directory: {target_dir}")
             except Exception:
                 pass
             self._active_profile_dir = None
