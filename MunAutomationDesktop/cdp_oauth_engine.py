@@ -242,6 +242,7 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     logger.info(f"[{email}] 🎉 Tìm thấy Code, đang đổi lấy Refresh Token...")
                     # Thử lấy token qua endpoint live.com và microsoftonline
                     token_url = "https://login.live.com/oauth20_token.srf"
+                    token_url_v2 = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
                     data = {
                         "client_id": client_id,
                         "grant_type": "authorization_code",
@@ -249,12 +250,21 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                         "redirect_uri": redirect_uri,
                         "scope": "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access"
                     }
-                    r = requests.post(token_url, data=data, timeout=10)
-                    if r.status_code != 200:
-                        token_url_v2 = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-                        r = requests.post(token_url_v2, data=data, timeout=10)
+                    r = None
+                    try:
+                        r = requests.post(token_url, data=data, timeout=25)
+                    except Exception:
+                        try:
+                            r = requests.post(token_url_v2, data=data, timeout=25)
+                        except Exception:
+                            pass
+                    if not r or r.status_code != 200:
+                        try:
+                            r = requests.post(token_url_v2, data=data, timeout=25)
+                        except Exception:
+                            pass
                         
-                    if r.status_code == 200:
+                    if r and r.status_code == 200:
                         res = r.json()
                         new_ref = res.get("refresh_token")
                         if new_ref:
