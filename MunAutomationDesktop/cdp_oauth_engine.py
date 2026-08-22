@@ -101,11 +101,42 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                 await cdp_click_btn_by_text(tab, ["next", "submit", "verify", "sign in", "iVerifyCodeAction"])
                 await asyncio.sleep(5)
             else:
-                logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau 3 lần thử")
-                await report_step("❌ Không nhận được OTP fviainboxes sau 3 lần!")
-                if c69_client and email_id:
-                    c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com (3 lần)")
-                return None
+                logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau 3 lần thử! Đang kích hoạt Reset Mật khẩu...")
+                await report_step("Chưa có OTP login -> Đang tự động chuyển sang Reset Mật khẩu...")
+                email_prefix = email.split('@')[0].strip()
+                new_auto_password = "$1$Zxcv123456"
+                
+                reset_success = await reset_microsoft_password_fvia(
+                    tab=tab,
+                    email=email,
+                    email_prefix=email_prefix,
+                    new_password=new_auto_password,
+                    report_step=report_step
+                )
+                if reset_success:
+                    password = new_auto_password
+                    if c69_client and email_id:
+                        c69_client.session.patch(f"{c69_client.base_url}/dashboard/api/emails/{email_id}/", json={"password": new_auto_password, "note": "Đã tự động Reset Mật khẩu"})
+                        logger.info(f"[{email}] 🎉 Đã cập nhật mật khẩu mới lên C69 DB!")
+                    # Đăng nhập lại với mật khẩu mới
+                    await tab.get("https://login.live.com/")
+                    await asyncio.sleep(4)
+                    await cdp_type_text(tab, "input[name='loginfmt'], input[type='email'], #usernameEntry", email)
+                    await asyncio.sleep(0.5)
+                    await cdp_click_btn_by_text(tab, ["next", "submit"])
+                    await asyncio.sleep(4)
+                    await cdp_click_btn_by_text(tab, ["use your password", "other ways to sign in", "password", "sign in with your password", "enter password"])
+                    await asyncio.sleep(2)
+                    await cdp_type_text(tab, "input[name='passwd'], input[type='password'], #passwordEntry, input[id*='Password']", password)
+                    await asyncio.sleep(0.5)
+                    await cdp_click_btn_by_text(tab, ["sign in", "next", "submit"])
+                    await asyncio.sleep(5)
+                else:
+                    logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com (kể cả reset pass)")
+                    await report_step("❌ Không nhận được OTP fviainboxes sau 3 lần!")
+                    if c69_client and email_id:
+                        c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com (3 lần)")
+                    return None
         if "verify your email" in body_after_email_lower or "use your password" in body_after_email_lower:
             # Nếu bắt xác minh trước password -> Click "Use your password" để vào màn hình nhập pass chính thống!
             logger.info(f"[{email}] 🛡️ Màn hình bắt xác minh trước password, bấm 'Use your password'...")
@@ -320,11 +351,33 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                     await asyncio.sleep(5)
                     continue
                 else:
-                    logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau khi chờ")
-                    await report_step("❌ Không nhận được OTP fviainboxes!")
-                    if c69_client and email_id:
-                        c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com")
-                    return None
+                    logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com sau khi chờ! Đang kích hoạt Reset Mật khẩu...")
+                    await report_step("Chưa có OTP xác minh -> Đang tự động Reset Mật khẩu...")
+                    email_prefix = email.split('@')[0].strip()
+                    new_auto_password = "$1$Zxcv123456"
+                    
+                    reset_success = await reset_microsoft_password_fvia(
+                        tab=tab,
+                        email=email,
+                        email_prefix=email_prefix,
+                        new_password=new_auto_password,
+                        report_step=report_step
+                    )
+                    if reset_success:
+                        password = new_auto_password
+                        if c69_client and email_id:
+                            c69_client.session.patch(f"{c69_client.base_url}/dashboard/api/emails/{email_id}/", json={"password": new_auto_password, "note": "Đã tự động Reset Mật khẩu"})
+                            logger.info(f"[{email}] 🎉 Đã cập nhật mật khẩu mới lên C69 DB!")
+                        # Điều hướng tới trang OAuth để tiếp tục
+                        await tab.get(auth_url)
+                        await asyncio.sleep(4)
+                        continue
+                    else:
+                        logger.warning(f"[{email}] Không nhận được OTP từ fviainboxes.com")
+                        await report_step("❌ Không nhận được OTP fviainboxes!")
+                        if c69_client and email_id:
+                            c69_client.update_email_status(email_id, 3, "Không nhận được OTP từ fviainboxes.com")
+                        return None
 
             # C. Nếu gặp màn hình xác minh danh tính "Help us protect your account" (ĐÃ CÓ EMAIL KHÔI PHỤC)
             if "protect your account" in body_step_lower or "help us protect" in body_step_lower or "verify your identity" in body_step_lower or "identity/confirm" in url_step.lower():
