@@ -1,4 +1,4 @@
-import os, sys, asyncio, logging, json, requests, random, time, re
+import os, sys, asyncio, logging, json, requests, random, time, re, shutil
 from datetime import datetime
 
 sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
@@ -314,6 +314,15 @@ async def run_checker():
                     checked_count += 1
                 try:
                     await manager.close()
+                except Exception:
+                    pass
+                # Tự động dọn dẹp thư mục profile data rác sau khi phiên kết thúc
+                try:
+                    p_id = profile.get("id")
+                    if p_id:
+                        p_dir = os.path.join(manager.user_data_dir, str(p_id))
+                        if os.path.exists(p_dir):
+                            shutil.rmtree(p_dir, ignore_errors=True)
                 except Exception:
                     pass
 
