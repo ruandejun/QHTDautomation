@@ -165,7 +165,8 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
         await cdp_click_btn_by_text(tab, ["ok", "next", "continue", "got it", "yes"])
         await asyncio.sleep(3)
         
-        # 4. Điều hướng tới OAuth URL
+        # 4. Điều hướng tới OAuth URL (nếu chưa ở trang OAuth)
+        cur_url = tab.url or await tab.evaluate("window.location.href") or ""
         redirect_uri = "https://login.live.com/oauth20_desktop.srf"
         auth_url = f"https://login.live.com/oauth20_authorize.srf?" \
                    f"client_id={client_id}" \
@@ -174,12 +175,13 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                    f"&scope=https://graph.microsoft.com/Mail.Read%20offline_access" \
                    f"&state=c69_auto_token"
                    
-        await tab.get(auth_url)
-        await asyncio.sleep(4)
+        if "oauth20_authorize" not in cur_url and "code=" not in cur_url:
+            await tab.get(auth_url)
+            await asyncio.sleep(4)
         
         # 5. Xử lý các màn hình OAuth / Proof Add
         recovery_box_used = None
-        for step in range(12):
+        for step in range(15):
             url_step = tab.url or await tab.evaluate("window.location.href") or ""
             
             # A. Nếu có Authorization Code trong URL
@@ -213,6 +215,13 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
                             logger.info(f"[{email}] 🎉 Cấp mới Refresh Token thành công!")
                             return new_ref
                 break
+
+            # Nếu bị rơi vào trang wrongplace của Microsoft
+            if "wrongplace" in url_step.lower():
+                logger.info(f"[{email}] Đang ở trang wrongplace, chuyển lại về URL OAuth chuẩn...")
+                await tab.get(auth_url)
+                await asyncio.sleep(4)
+                continue
                 
             body_eval_step = await tab.evaluate("document.body.innerText")
             body_step = body_eval_step if isinstance(body_eval_step, str) else ""
