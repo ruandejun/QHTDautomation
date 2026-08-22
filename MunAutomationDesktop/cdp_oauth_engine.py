@@ -4,6 +4,7 @@ sys.path.insert(0, '/root/Workspace/Python/QHTDautomation/MunAutomationDesktop')
 
 from mun_anti_browser.browser_manager import NodriverBrowserManager
 from cdp_automation_helper import cdp_type_text, cdp_click_btn_by_text, cdp_type_code_6digits
+from cdp_reset_helper import reset_microsoft_password_fvia
 from tiktok_reg_automation import C69MailBox, TempMailFviainboxes
 
 logger = logging.getLogger(__name__)
@@ -152,10 +153,27 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
         body_after_pass = body_eval if isinstance(body_eval, str) else ""
         body_lower = body_after_pass.lower()
         if "that password is incorrect" in body_lower or "password is incorrect" in body_lower:
-            logger.warning(f"[{email}] Mật khẩu không chính xác.")
-            if c69_client and email_id:
-                c69_client.update_email_status(email_id, 3, "Mật khẩu sai (Incorrect password)")
-            return None
+            logger.warning(f"[{email}] Mật khẩu không chính xác! Đang kích hoạt cơ chế Tự động Reset Mật khẩu qua fviainboxes...")
+            email_prefix = email.split('@')[0].strip()
+            new_auto_password = "$1$Zxcv123456"
+            
+            reset_success = await reset_microsoft_password_fvia(
+                tab=tab,
+                email=email,
+                email_prefix=email_prefix,
+                new_password=new_auto_password,
+                report_step=report_step
+            )
+            if reset_success:
+                password = new_auto_password
+                if c69_client and email_id:
+                    c69_client.session.patch(f"{c69_client.base_url}/dashboard/api/emails/{email_id}/", json={"password": new_auto_password, "note": "Đã tự động Reset Mật khẩu"})
+                    logger.info(f"[{email}] 🎉 Đã cập nhật mật khẩu mới lên C69 DB!")
+            else:
+                logger.warning(f"[{email}] Reset mật khẩu qua fviainboxes không thành công.")
+                if c69_client and email_id:
+                    c69_client.update_email_status(email_id, 3, "Mật khẩu sai (Reset thất bại)")
+                return None
         if "account has been locked" in body_lower or "your account has been temporarily suspended" in body_lower:
             logger.warning(f"[{email}] Tài khoản bị Microsoft khóa/treo.")
             if c69_client and email_id:
