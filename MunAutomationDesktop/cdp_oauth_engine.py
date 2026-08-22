@@ -57,10 +57,11 @@ async def auto_login_microsoft_and_get_token_cdp(browser, email, password, note_
             return None
 
         # ⚡ TỐI ƯU HÓA: Bỏ qua màn hình Password nếu Microsoft hiển thị ngay Verify your email (@fviainboxes.com)
-        # TUY NHIÊN: Chỉ gửi mã khi Microsoft có ô input #proof-confirmation-email-input
-        # NẾU KHÔNG CÓ Ô INPUT -> BẤM USE YOUR PASSWORD ĐỂ VÀO LUỒNG CHUẨN
+        # NẾU MÀN HÌNH NÀY CÓ "USE YOUR PASSWORD" -> BẤM USE YOUR PASSWORD ĐỂ VÀO LUỒNG CHÍNH THỐNG (Tránh bị Microsoft chặn gửi mã từ màn hình verify trước pass)
+        has_use_password = "use your password" in body_after_email_lower or "password" in body_after_email_lower
         has_proof_input = await tab.evaluate("Boolean(document.querySelector('#proof-confirmation-email-input, #iProofEmail'))")
-        if ("@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower) and has_proof_input:
+        
+        if ("@fviainboxes.com" in body_after_email_lower or "fviainboxes" in body_after_email_lower) and has_proof_input and not has_use_password:
             email_prefix = email.split('@')[0].strip()
             expected_fvia_email = f"{email_prefix}@fviainboxes.com".lower()
             logger.info(f"[{email}] ⚡ Bắt được màn hình xác minh fviainboxes.com ngay bước đầu! Điền luôn: {expected_fvia_email}")
