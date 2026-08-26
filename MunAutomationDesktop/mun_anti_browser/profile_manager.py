@@ -1,5 +1,6 @@
 import random
 import json
+import os
 from typing import Dict, Any, Optional
 from .fingerprint_data import generate_audio_fingerprint, generate_canvas_fingerprint, generate_webgl_fingerprint, generate_rects_offset, generate_font_list, generate_user_agent
 
@@ -54,6 +55,41 @@ class ProfileManager:
         # Add server_id if exists
         if random.random() > 0.7:
             profile["server_id"] = random.randint(100000, 999999)
+
+        return profile
+
+    def get_or_create_named_profile(
+        self,
+        name: str,
+        profile_os: str = "Window",
+        proxy: Optional[str] = None,
+        save_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Tạo mới hoặc lấy profile cố định theo tên để dùng lại"""
+        clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name.lower())
+        if save_dir:
+            profile_file = os.path.join(save_dir, f"{clean_name}_config.json")
+            if os.path.exists(profile_file):
+                try:
+                    with open(profile_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        data["name"] = name
+                        return data
+                except Exception:
+                    pass
+
+        profile = self.create_random_profile(proxy=proxy, os_type=profile_os)
+        profile["id"] = clean_name
+        profile["name"] = name
+
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+            profile_file = os.path.join(save_dir, f"{clean_name}_config.json")
+            try:
+                with open(profile_file, "w", encoding="utf-8") as f:
+                    json.dump(profile, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
         return profile
 
