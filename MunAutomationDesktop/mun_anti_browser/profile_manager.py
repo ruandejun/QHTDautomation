@@ -60,31 +60,31 @@ class ProfileManager:
 
     def get_or_create_named_profile(
         self,
-        name: str,
+        identifier: str,
         profile_os: str = "Window",
         proxy: Optional[str] = None,
         save_dir: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Tạo mới hoặc lấy profile cố định theo tên để dùng lại"""
-        clean_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name.lower())
+        """Tạo mới hoặc lấy profile cố định theo ID / tên ngắn gọn để dùng lại"""
+        clean_id = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(identifier).lower())
         if save_dir:
-            profile_file = os.path.join(save_dir, f"{clean_name}_config.json")
+            profile_file = os.path.join(save_dir, f"{clean_id}_config.json")
             if os.path.exists(profile_file):
                 try:
                     with open(profile_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                        data["name"] = name
+                        data["id"] = clean_id
                         return data
                 except Exception:
                     pass
 
         profile = self.create_random_profile(proxy=proxy, os_type=profile_os)
-        profile["id"] = clean_name
-        profile["name"] = name
+        profile["id"] = clean_id
+        profile["name"] = str(identifier)
 
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
-            profile_file = os.path.join(save_dir, f"{clean_name}_config.json")
+            profile_file = os.path.join(save_dir, f"{clean_id}_config.json")
             try:
                 with open(profile_file, "w", encoding="utf-8") as f:
                     json.dump(profile, f, ensure_ascii=False, indent=2)

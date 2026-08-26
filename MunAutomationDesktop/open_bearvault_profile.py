@@ -7,12 +7,12 @@ from mun_anti_browser import NodriverBrowserManager
 
 async def main():
     manager = NodriverBrowserManager()
-    browser, tab = await manager.start_named_profile(
-        name="bearvault",
+    browser, tab = await manager.start_profile(
+        profile_id="bearvault",
         start_url="https://www.bearvault.cc/my-cards",
         headless=False
     )
-    print("Bearvault profile loaded via start_named_profile('bearvault')")
+    print("Bearvault profile loaded via start_profile('bearvault')")
 
 if __name__ == '__main__':
     asyncio.run(main())

@@ -65,9 +65,9 @@ class NodriverBrowserManager:
         self._injection_script: str = ""
         self._current_profile: Dict[str, Any] = {}
 
-    async def start_named_profile(
+    async def start_profile(
         self,
-        name: str,
+        profile_id: str,
         start_url: str = "",
         proxy_string: str = "",
         proxy_type: str = "socks5",
@@ -79,19 +79,18 @@ class NodriverBrowserManager:
         extensions: Optional[list] = None,
     ) -> Tuple[nodriver.Browser, Any]:
         """
-        Start or get persistent anti-detect profile by name.
+        Start or get persistent anti-detect profile by ID / name.
         """
         profiles_base = os.path.join(self.user_data_dir, "named_profiles")
         profile_config = self.profile_manager.get_or_create_named_profile(
-            name=name,
+            identifier=profile_id,
             proxy=proxy_string,
             save_dir=profiles_base
         )
-        clean_name = profile_config["id"]
-        profile_dir = os.path.join(profiles_base, clean_name)
+        clean_id = profile_config["id"]
+        profile_dir = os.path.join(profiles_base, clean_id)
         os.makedirs(profile_dir, exist_ok=True)
 
-        # Store profile dir for current execution
         custom_manager = NodriverBrowserManager(
             chrome_path=self.chrome_path,
             user_data_dir=profiles_base
@@ -105,6 +104,32 @@ class NodriverBrowserManager:
             disable_images=disable_images,
             headless=headless,
             start_url=start_url,
+            extra_args=extra_args,
+            extensions=extensions,
+        )
+
+    async def start_named_profile(
+        self,
+        name: str,
+        start_url: str = "",
+        proxy_string: str = "",
+        proxy_type: str = "socks5",
+        proxy_username: str = "",
+        proxy_password: str = "",
+        disable_images: bool = False,
+        headless: bool = False,
+        extra_args: Optional[list] = None,
+        extensions: Optional[list] = None,
+    ) -> Tuple[nodriver.Browser, Any]:
+        return await self.start_profile(
+            profile_id=name,
+            start_url=start_url,
+            proxy_string=proxy_string,
+            proxy_type=proxy_type,
+            proxy_username=proxy_username,
+            proxy_password=proxy_password,
+            disable_images=disable_images,
+            headless=headless,
             extra_args=extra_args,
             extensions=extensions,
         )
