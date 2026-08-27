@@ -93,11 +93,13 @@ class BrowserTabPool:
                     prof = pm.create_random_profile(os_type="Window")
 
                 # Không dùng proxy ngoại (US) để tránh bị Taobao khóa tài khoản do nhảy IP
+                if "DISPLAY" not in os.environ:
+                    os.environ["DISPLAY"] = ":1"
                 self.manager = NodriverBrowserManager()
                 self.browser, self.main_tab = await self.manager.start(
                     profile_config=prof,
                     proxy_string="",
-                    headless=False
+                    headless=True
                 )
                 self.is_ready = True
                 logger.info("[+] Browser Instance sẵn sàng phục vụ Multi-Tab!")

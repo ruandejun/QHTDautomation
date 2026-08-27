@@ -194,7 +194,7 @@ class NodriverBrowserManager:
         # Determine user data dir for this profile
         profile_id = profile_config.get("id", 0) or random.randint(10000, 99999)
         profile_dir = os.path.join(self.user_data_dir, str(profile_id))
-        self._active_profile_dir = profile_dir
+        self._active_profile_dir = None
 
         logger.info(f"Starting browser with profile {profile_id}")
         logger.debug(f"Profile dir: {profile_dir}")
@@ -204,12 +204,11 @@ class NodriverBrowserManager:
         self._write_webrtc_prefs(profile_dir)
 
         # Ensure DISPLAY is set in Linux environment
-        if "DISPLAY" not in os.environ and not headless:
+        if "DISPLAY" not in os.environ:
             os.environ["DISPLAY"] = ":1"
 
         # Start browser via nodriver
         config = nodriver.Config()
-        # In Linux/root environment, allow no_sandbox fallback if sandbox fails
         if os.geteuid() == 0:
             config.sandbox = False
         else:
@@ -235,14 +234,13 @@ class NodriverBrowserManager:
                 self.browser = await nodriver.start(config=config)
                 break
             except Exception as e:
-                logger.error(f"Failed to start browser: {e}")
-                await self.close()
-                raise
                 logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, kill dọn sạch và thử lại sau 2s: {e}")
                 # Kill triệt để các Chrome treo cũ
                 os.system("pkill -9 -f /opt/google/chrome/chrome || true")
                 os.system("pkill -9 -f /bin/google-chrome || true")
                 await asyncio.sleep(2)
+        if not self.browser:
+            raise RuntimeError("Failed to launch browser after 3 attempts")
 
         # Get the initial tab
         self.main_tab = self.browser.main_tab
