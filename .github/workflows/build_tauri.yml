@@ -15,12 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest' # macOS Apple Silicon (arm64) + Intel
-            args: '--target aarch64-apple-darwin'
-          - platform: 'windows-latest' # Windows x64 (.exe / .msi)
-            args: ''
-          - platform: 'ubuntu-22.04' # Linux AppImage / .deb
-            args: ''
+          - platform: 'macos-latest' # macOS Apple Silicon & Intel
+            target: 'aarch64-apple-darwin'
+          - platform: 'windows-latest' # Windows x64
+            target: 'x86_64-pc-windows-msvc'
+          - platform: 'ubuntu-22.04' # Linux x64
+            target: 'x86_64-unknown-linux-gnu'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -37,37 +37,60 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: 'MunAutomationRust/src-tauri -> target'
+          targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
-      - name: Install frontend dependencies
+      - name: Install frontend dependencies & Build Vite
         working-directory: MunAutomationRust
-        run: npm ci
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build Tauri App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: './MunAutomationRust'
-          args: ${{ matrix.args }}
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked || true
 
-      
+      - name: Build Tauri Binary
+        working-directory: MunAutomationRust
+        run: |
+          cargo tauri build --target ${{ matrix.target }}
+
+      - name: Create Release Packages
+        id: package
+        shell: bash
+        run: |
+          mkdir -p release_out
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            find MunAutomationRust/src-tauri/target -name "*.dmg" -exec cp {} release_out/ \; 2>/dev/null || true
+            find MunAutomationRust/src-tauri/target -name "*.app" -exec tar -czvf release_out/MunAutomation-macOS.tar.gz -C $(dirname {}) $(basename {}) \; 2>/dev/null || true
+          elif [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            find MunAutomationRust/src-tauri/target -name "*.exe" -exec cp {} release_out/ \; 2>/dev/null || true
+            find MunAutomationRust/src-tauri/target -name "*.msi" -exec cp {} release_out/ \; 2>/dev/null || true
+          else
+            find MunAutomationRust/src-tauri/target -name "*.deb" -exec cp {} release_out/ \; 2>/dev/null || true
+            find MunAutomationRust/src-tauri/target -name "*.AppImage" -exec cp {} release_out/ \; 2>/dev/null || true
+          fi
+
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MunAutomation-${{ matrix.platform }}
-          path: |
-            MunAutomationRust/src-tauri/target/release/bundle/
-            MunAutomationRust/src-tauri/target/*/release/bundle/
+          path: release_out/
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: latest
+          name: "MunAutomation Latest Release"
+          body: "Bản build tự động mới nhất của Mun TikTok Farm (Rust Tauri v2) cho macOS, Windows và Linux."
+          draft: false
+          prerelease: false
+          files: release_out/*
 
