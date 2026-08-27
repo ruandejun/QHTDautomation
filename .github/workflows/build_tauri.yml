@@ -63,6 +63,8 @@ jobs:
         run: |
           mkdir -p release_out
           if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            # Remove quarantine flags & ad-hoc code sign for macOS Gatekeeper
+            find MunAutomationRust/src-tauri/target -name "*.app" -exec codesign --force --deep --sign - {} \; 2>/dev/null || true
             find MunAutomationRust/src-tauri/target -name "*.dmg" -exec cp {} release_out/ \; 2>/dev/null || true
             find MunAutomationRust/src-tauri/target -name "*.app" -exec tar -czvf release_out/MunAutomation-macOS.tar.gz -C $(dirname {}) $(basename {}) \; 2>/dev/null || true
           elif [ "${{ matrix.platform }}" = "windows-latest" ]; then

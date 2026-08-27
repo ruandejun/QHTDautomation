@@ -21,5 +21,22 @@
     "security": {
       "csp": null
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Mun Software Studio",
+    "copyright": "Copyright 2026 Mun Studio",
+    "category": "DeveloperTool",
+    "shortDescription": "TikTok Automation & Network Router Tool",
+    "longDescription": "High-performance TikTok nurture farm and local proxy router utility."
   }
 }
+
