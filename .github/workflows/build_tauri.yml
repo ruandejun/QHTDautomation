@@ -55,7 +55,7 @@ jobs:
       - name: Build Tauri Binary
         working-directory: MunAutomationRust
         run: |
-          npx @tauri-apps/cli build
+          npx @tauri-apps/cli build --target ${{ matrix.target }}
 
       - name: Create Release Packages
         id: package
