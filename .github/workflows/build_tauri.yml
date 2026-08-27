@@ -1,0 +1,68 @@
+name: Build & Release MunAutomation (macOS, Windows, Linux)
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest' # macOS Apple Silicon (arm64) + Intel
+            args: '--target aarch64-apple-darwin'
+          - platform: 'windows-latest' # Windows x64 (.exe / .msi)
+            args: ''
+          - platform: 'ubuntu-22.04' # Linux AppImage / .deb
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'MunAutomationRust/package-lock.json'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'MunAutomationRust/src-tauri -> target'
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Install frontend dependencies
+        working-directory: MunAutomationRust
+        run: npm ci
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: './MunAutomationRust'
+          tagName: app-v__VERSION__
+          releaseName: 'MunAutomation v__VERSION__'
+          releaseBody: 'Phiên bản tự động build bởi GitHub Actions (Rust Tauri v2).'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
