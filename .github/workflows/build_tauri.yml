@@ -55,9 +55,9 @@ jobs:
         run: cargo install tauri-cli --version "^2.0.0" --locked || true
 
       - name: Build Tauri Binary
-        working-directory: MunAutomationRust
+        working-directory: MunAutomationRust/src-tauri
         run: |
-          cargo tauri build --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
 
       - name: Create Release Packages
         id: package
