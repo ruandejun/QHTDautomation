@@ -1,7 +1,8 @@
 pub mod anti_browser;
+pub mod c69_router;
 pub mod commands;
 
-use commands::{scan_adb_devices, start_nurture, stop_nurture, AppState};
+use commands::{list_network_interfaces, scan_adb_devices, start_nurture, stop_nurture, AppState};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_adb_devices,
             start_nurture,
-            stop_nurture
+            stop_nurture,
+            list_network_interfaces
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

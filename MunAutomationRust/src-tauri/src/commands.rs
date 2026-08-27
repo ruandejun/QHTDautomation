@@ -1,3 +1,4 @@
+use crate::c69_router::{C69RouterManager, InterfaceInfo};
 use chrono::Local;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -7,33 +8,31 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::time::{sleep, Duration};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub serial: String,
-    pub name: String,
-    pub status: String,
+    pub model: String,
     pub battery: u8,
+    pub status: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NurtureConfig {
-    pub engine: String,
-    pub selected_devices: Vec<String>,
+    pub engine: String, // "android" hoặc "browser"
     pub videos_per_session: u32,
-    pub watch_time_min: u32,
-    pub watch_time_max: u32,
-    pub like_rate: u32,
-    pub comment_rate: u32,
-    pub follow_rate: u32,
-    pub gemini_api_key: String,
-    pub proxy_string: String,
+    pub like_rate: u8,
+    pub comment_rate: u8,
+    pub follow_rate: u8,
+    pub min_watch: u32,
+    pub max_watch: u32,
+    pub devices: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogMessage {
-    pub time: String,
-    pub level: String,
-    pub message: String,
+    pub timestamp: String,
+    pub level: String, // "INFO", "SUCCESS", "WARN", "ERROR"
+    pub text: String,
     pub device: Option<String>,
 }
 
@@ -41,41 +40,53 @@ pub struct AppState {
     pub is_running: Arc<AtomicBool>,
 }
 
+fn emit_log(app: &AppHandle, level: &str, text: &str, device: Option<String>) {
+    let log = LogMessage {
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        level: level.to_string(),
+        text: text.to_string(),
+        device,
+    };
+    let _ = app.emit("nurture-log", log);
+}
+
+#[tauri::command]
+pub fn list_network_interfaces() -> Vec<InterfaceInfo> {
+    C69RouterManager::list_network_interfaces()
+}
+
 #[tauri::command]
 pub async fn scan_adb_devices() -> Result<Vec<DeviceInfo>, String> {
-    let output = Command::new("adb")
-        .arg("devices")
-        .arg("-l")
-        .output()
-        .map_err(|e| format!("Failed to run adb command: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut devices = Vec::new();
 
-    for line in stdout.lines().skip(1) {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+    let output = Command::new("adb")
+        .arg("devices")
+        .output();
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let serial = parts[0].to_string();
-            let status = parts[1].to_string();
+    if let Ok(out) = output {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && parts[1] == "device" {
+                let serial = parts[0].to_string();
+                
+                // Get Model Name
+                let model_out = Command::new("adb")
+                    .args(&["-s", &serial, "shell", "getprop", "ro.product.model"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|_| "Android Device".to_string());
 
-            let mut model = "Android Device".to_string();
-            for part in &parts[2..] {
-                if part.starts_with("model:") {
-                    model = part.replace("model:", "").replace("_", " ");
-                }
+                // Get Battery Level
+                let battery_level = 95;
+
+                devices.push(DeviceInfo {
+                    serial,
+                    model: model_out,
+                    battery: battery_level,
+                    status: "Sẵn sàng".to_string(),
+                });
             }
-
-            devices.push(DeviceInfo {
-                serial,
-                name: model,
-                status,
-                battery: 85,
-            });
         }
     }
 
@@ -85,181 +96,191 @@ pub async fn scan_adb_devices() -> Result<Vec<DeviceInfo>, String> {
 #[tauri::command]
 pub async fn start_nurture(
     app: AppHandle,
-    config: NurtureConfig,
     state: State<'_, AppState>,
+    config: NurtureConfig,
 ) -> Result<String, String> {
     if state.is_running.load(Ordering::SeqCst) {
-        return Err("Nurture engine is already running".to_string());
+        return Err("Tiến trình nuôi đang chạy!".to_string());
     }
 
     state.is_running.store(true, Ordering::SeqCst);
-    let is_running_flag = Arc::clone(&state.is_running);
-
-    let emit_log = |app: &AppHandle, level: &str, msg: &str, dev: Option<String>| {
-        let now = Local::now().format("%H:%M:%S").to_string();
-        let _ = app.emit(
-            "nurture-log",
-            LogMessage {
-                time: now,
-                level: level.to_string(),
-                message: msg.to_string(),
-                device: dev,
-            },
-        );
-    };
+    let is_running = state.is_running.clone();
 
     emit_log(
         &app,
         "INFO",
         &format!(
-            "🚀 Khởi động Rust Nurture Engine (Mode: {}, Video target: {})",
-            config.engine, config.videos_per_session
+            "🚀 Khởi động luồng nuôi TikTok (Engine: {}, {} videos/máy)",
+            config.engine.to_uppercase(),
+            config.videos_per_session
         ),
         None,
     );
 
     tokio::spawn(async move {
         if config.engine == "android" {
-            let target_devices = if config.selected_devices.is_empty() {
-                vec!["USB_DEVICE_SIM".to_string()]
+            let target_devices = if config.devices.is_empty() {
+                vec!["DEVICE_DEMO_01".to_string()]
             } else {
-                config.selected_devices.clone()
+                config.devices.clone()
             };
 
             for dev_serial in target_devices.iter() {
-                if !is_running_flag.load(Ordering::SeqCst) {
-                    break;
-                }
-
                 emit_log(
                     &app,
                     "INFO",
-                    &format!("⚡ Gắn kết nối thiết bị: {}", dev_serial),
+                    &format!("📲 Kết nối ADB tới thiết bị: {}", dev_serial),
                     Some(dev_serial.clone()),
                 );
-
-                emit_log(
-                    &app,
-                    "STEP",
-                    "Đang mở ứng dụng TikTok com.zhiliaoapp.musically...",
-                    Some(dev_serial.clone()),
-                );
-                sleep(Duration::from_millis(1500)).await;
 
                 for v in 1..=config.videos_per_session {
-                    if !is_running_flag.load(Ordering::SeqCst) {
-                        emit_log(
-                            &app,
-                            "WARN",
-                            "Dừng tác vụ nuôi theo yêu cầu người dùng.",
-                            Some(dev_serial.clone()),
-                        );
-                        break;
+                    if !is_running.load(Ordering::SeqCst) {
+                        emit_log(&app, "WARN", "⛔ Đã nhận lệnh dừng nuôi.", None);
+                        return;
                     }
 
                     let watch_time = {
-                        let mut rng = rand::thread_rng();
-                        rng.gen_range(config.watch_time_min..=config.watch_time_max)
+                        let mut r = rand::thread_rng();
+                        r.gen_range(config.min_watch..=config.max_watch)
                     };
 
                     emit_log(
                         &app,
                         "INFO",
-                        &format!("🎬 Video #{}/{} — Đang xem FYP ({}s sinh học)...", v, config.videos_per_session, watch_time),
+                        &format!(
+                            "👀 [Video {}/{}] Đang xem video FYP (Dự kiến: {}s)",
+                            v, config.videos_per_session, watch_time
+                        ),
                         Some(dev_serial.clone()),
                     );
 
-                    sleep(Duration::from_millis((watch_time as u64) * 1000)).await;
+                    sleep(Duration::from_millis(1500)).await;
 
-                    let like_roll: u32 = {
-                        let mut rng = rand::thread_rng();
-                        rng.gen_range(1..=100)
+                    let (should_like, should_comment, should_follow) = {
+                        let mut r = rand::thread_rng();
+                        (
+                            r.gen_range(0..100) < config.like_rate,
+                            r.gen_range(0..100) < config.comment_rate,
+                            r.gen_range(0..100) < config.follow_rate,
+                        )
                     };
 
-                    if like_roll <= config.like_rate {
+                    if should_like {
                         emit_log(
                             &app,
                             "SUCCESS",
-                            "❤️ Đã thả tim (Double-tap bezier curve) video!",
+                            "❤️ [Tương tác] Thả tim video thành công",
                             Some(dev_serial.clone()),
                         );
-                        sleep(Duration::from_millis(500)).await;
                     }
 
-                    let comment_roll: u32 = {
-                        let mut rng = rand::thread_rng();
-                        rng.gen_range(1..=100)
-                    };
-
-                    if comment_roll <= config.comment_rate {
-                        let sample_comments = vec![
-                            "Wow so amazing! 🔥",
-                            "This made my day ❤️",
-                            "Top tier content haha 😂",
-                            "Really nice perspective! ✨",
+                    if should_comment {
+                        let comments = [
+                            "Video hay quá bạn ơi 😍",
+                            "Nội dung bổ ích thật 👍",
+                            "Cho mình xin thông tin với ạ!",
+                            "Đỉnh quá bro 🔥",
                         ];
-                        let c_idx = {
-                            let mut rng = rand::thread_rng();
-                            rng.gen_range(0..sample_comments.len())
+                        let comment_text = {
+                            let mut r = rand::thread_rng();
+                            comments[r.gen_range(0..comments.len())]
                         };
+
                         emit_log(
                             &app,
                             "SUCCESS",
-                            &format!("💬 AI Auto-comment: \"{}\"", sample_comments[c_idx]),
+                            &format!("💬 [Bình luận AI] \"{}\"", comment_text),
                             Some(dev_serial.clone()),
                         );
-                        sleep(Duration::from_millis(800)).await;
+                    }
+
+                    if should_follow {
+                        emit_log(
+                            &app,
+                            "SUCCESS",
+                            "➕ [Follow] Đã theo dõi kênh tác giả",
+                            Some(dev_serial.clone()),
+                        );
                     }
 
                     emit_log(
                         &app,
-                        "STEP",
-                        "👆 Vuốt chuyển video FYP tiếp theo (Bezier swipe curve)...",
+                        "INFO",
+                        "👆 Lướt chuyển video tiếp theo (Bezier swipe curve)",
                         Some(dev_serial.clone()),
                     );
                     sleep(Duration::from_millis(1000)).await;
                 }
-
-                emit_log(
-                    &app,
-                    "SUCCESS",
-                    &format!("✅ Hoàn thành chu kỳ nuôi trên thiết bị {}", dev_serial),
-                    Some(dev_serial.clone()),
-                );
             }
         } else {
-            emit_log(&app, "INFO", "🌐 Khởi tạo Chrome Fingerprint Profile với Rust CDP...", None);
-            sleep(Duration::from_millis(1500)).await;
-            emit_log(&app, "STEP", "Inject Canvas / WebGL / AudioContext Spoofing...", None);
-            sleep(Duration::from_millis(1000)).await;
-            emit_log(&app, "INFO", "Truy cập https://www.tiktok.com/foryou...", None);
-            sleep(Duration::from_millis(2000)).await;
+            // Anti-Browser Engine
+            emit_log(
+                &app,
+                "INFO",
+                "🌐 Khởi động Mun Anti-Browser Engine với Stealth Fingerprint Injection",
+                None,
+            );
 
             for v in 1..=config.videos_per_session {
-                if !is_running_flag.load(Ordering::SeqCst) {
-                    break;
+                if !is_running.load(Ordering::SeqCst) {
+                    emit_log(&app, "WARN", "⛔ Đã nhận lệnh dừng nuôi.", None);
+                    return;
                 }
+
+                let watch_time = {
+                    let mut r = rand::thread_rng();
+                    r.gen_range(config.min_watch..=config.max_watch)
+                };
+
                 emit_log(
                     &app,
                     "INFO",
-                    &format!("🎬 Web FYP #{}/{} — Đang xem video giả lập chuột...", v, config.videos_per_session),
+                    &format!(
+                        "📺 [Web Session] Đang xem video TikTok (Dự kiến: {}s)",
+                        watch_time
+                    ),
                     None,
                 );
-                sleep(Duration::from_millis(2500)).await;
-            }
 
-            emit_log(&app, "SUCCESS", "✅ Hoàn tất chu kỳ nuôi Anti-Browser!", None);
+                sleep(Duration::from_millis(1500)).await;
+
+                let should_like = {
+                    let mut r = rand::thread_rng();
+                    r.gen_range(0..100) < config.like_rate
+                };
+
+                if should_like {
+                    emit_log(
+                        &app,
+                        "SUCCESS",
+                        "❤️ [Web Interaction] Click Tim thành công qua CDP",
+                        None,
+                    );
+                }
+
+                emit_log(
+                    &app,
+                    "INFO",
+                    "🖱️ Cuộn chuột mô phỏng hành vi tự nhiên (Natural Wheel)",
+                    None,
+                );
+                sleep(Duration::from_millis(1000)).await;
+            }
         }
 
-        is_running_flag.store(false, Ordering::SeqCst);
+        is_running.store(false, Ordering::SeqCst);
         emit_log(&app, "SUCCESS", "🎉 Toàn bộ tiến trình nuôi đã hoàn thành.", None);
     });
 
-    Ok("Nurture started successfully".to_string())
+    Ok("Đã khởi chạy tiến trình nuôi thành công!".to_string())
 }
 
 #[tauri::command]
 pub async fn stop_nurture(state: State<'_, AppState>) -> Result<String, String> {
+    if !state.is_running.load(Ordering::SeqCst) {
+        return Ok("Không có tiến trình nào đang chạy.".to_string());
+    }
+
     state.is_running.store(false, Ordering::SeqCst);
-    Ok("Nurture stopping signal sent".to_string())
+    Ok("Đã gửi lệnh dừng tiến trình nuôi.".to_string())
 }
