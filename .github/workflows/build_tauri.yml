@@ -60,9 +60,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: './MunAutomationRust'
-          tagName: app-v__VERSION__
-          releaseName: 'MunAutomation v__VERSION__'
-          releaseBody: 'Phiên bản tự động build bởi GitHub Actions (Rust Tauri v2).'
-          releaseDraft: false
-          prerelease: false
           args: ${{ matrix.args }}
+
+      
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MunAutomation-${{ matrix.platform }}
+          path: |
+            MunAutomationRust/src-tauri/target/release/bundle/
+            MunAutomationRust/src-tauri/target/*/release/bundle/
+
