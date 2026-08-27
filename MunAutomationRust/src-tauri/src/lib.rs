@@ -1,3 +1,4 @@
+pub mod anti_browser;
 pub mod commands;
 
 use commands::{scan_adb_devices, start_nurture, stop_nurture, AppState};
