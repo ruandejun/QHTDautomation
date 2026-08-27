@@ -1,3 +1,4 @@
+pub mod android_nurture;
 pub mod anti_browser;
 pub mod c69_router;
 pub mod commands;
@@ -15,9 +16,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan_adb_devices,
+            list_network_interfaces,
             start_nurture,
-            stop_nurture,
-            list_network_interfaces
+            stop_nurture
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
