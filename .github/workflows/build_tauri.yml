@@ -49,15 +49,13 @@ jobs:
         working-directory: MunAutomationRust
         run: |
           npm ci
+          npm install --save-dev @tauri-apps/cli@^2.0.0
           npm run build
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0.0" --locked || true
-
       - name: Build Tauri Binary
-        working-directory: MunAutomationRust/src-tauri
+        working-directory: MunAutomationRust
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          npx @tauri-apps/cli build
 
       - name: Create Release Packages
         id: package
