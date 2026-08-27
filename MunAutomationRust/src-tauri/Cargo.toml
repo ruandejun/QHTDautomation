@@ -1,0 +1,22 @@
+[package]
+name = "mun_automation_rust"
+version = "1.0.0"
+description = "Mun TikTok Nurture Automation - Android Phone Farm & Anti-Browser"
+authors = ["Tony <tony@c69.vn>"]
+edition = "2021"
+
+[lib]
+name = "mun_automation_rust_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.5", features = [] }
+
+[dependencies]
+tauri = { version = "2.1.1", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+rand = "0.8"
+reqwest = { version = "0.12", features = ["json"] }
+chrono = "0.4"
