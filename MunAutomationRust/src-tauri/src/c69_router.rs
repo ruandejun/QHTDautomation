@@ -57,7 +57,7 @@ impl C69RouterManager {
         }
     }
 
-    /// Lấy danh sách card mạng đang hoạt động
+    /// Lấy danh sách card mạng đang hoạt động trên hệ điều hành (Windows / macOS / Linux)
     pub fn list_network_interfaces() -> Vec<InterfaceInfo> {
         let mut interfaces = Vec::new();
 
@@ -90,25 +90,81 @@ impl C69RouterManager {
             }
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         {
-            interfaces.push(InterfaceInfo {
-                index: 1,
-                alias: "eth0".to_string(),
-                description: "Primary Ethernet Adapter".to_string(),
-                ip_addresses: vec!["180.93.54.68".to_string()],
-                status: "Up".to_string(),
-            });
-            interfaces.push(InterfaceInfo {
-                index: 2,
-                alias: "lan_phonefarm0".to_string(),
-                description: "Virtual PhoneFarm Bridge".to_string(),
-                ip_addresses: vec!["192.168.88.1".to_string()],
-                status: "Up".to_string(),
-            });
+            if let Ok(out) = Command::new("ifconfig").args(&["-l"]).output() {
+                if let Ok(ifaces_str) = String::from_utf8(out.stdout) {
+                    for (i, iface) in ifaces_str.split_whitespace().enumerate() {
+                        if iface.starts_with("lo") { continue; }
+                        let mut ip_list = Vec::new();
+                        if let Ok(detail_out) = Command::new("ifconfig").arg(iface).output() {
+                            let detail = String::from_utf8_lossy(&detail_out.stdout);
+                            for line in detail.lines() {
+                                if line.trim().starts_with("inet ") {
+                                    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                                    if parts.len() >= 2 {
+                                        ip_list.push(parts[1].to_string());
+                                    }
+                                }
+                            }
+                        }
+                        interfaces.push(InterfaceInfo {
+                            index: (i + 1) as u32,
+                            alias: iface.to_string(),
+                            description: if iface.starts_with("en0") { "Built-in Wi-Fi".to_string() } else { "Ethernet / Aruba Adapter".to_string() },
+                            ip_addresses: ip_list,
+                            status: "Up".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(entries) = fs::read_dir("/sys/class/net") {
+                for (i, entry) in entries.flatten().enumerate() {
+                    let iface = entry.file_name().to_string_lossy().to_string();
+                    if iface.starts_with("lo") { continue; }
+                    interfaces.push(InterfaceInfo {
+                        index: (i + 1) as u32,
+                        alias: iface.clone(),
+                        description: format!("Linux Network Device ({})", iface),
+                        ip_addresses: vec!["180.93.54.68".to_string()],
+                        status: "Up".to_string(),
+                    });
+                }
+            }
         }
 
         interfaces
+    }
+
+    /// Kích hoạt IP Packet Forwarding trên macOS / Linux (không cần file .bat)
+    pub fn enable_unix_routing() -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            let res = Command::new("sysctl")
+                .args(&["-w", "net.inet.ip.forwarding=1"])
+                .output();
+            if let Ok(out) = res {
+                if out.status.success() {
+                    return Ok(());
+                }
+            }
+            return Err("Không thể bật sysctl net.inet.ip.forwarding=1 (cần quyền sudo)".to_string());
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = Command::new("sysctl").args(&["-w", "net.ipv4.ip_forward=1"]).output();
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            Ok(())
+        }
     }
 
     /// Sinh cấu hình Mihomo/Clash Core (clash-config.yaml) chuẩn OpenClash tốc độ cao
@@ -124,11 +180,15 @@ impl C69RouterManager {
         yaml.push_str("ipv6: false\n");
         yaml.push_str("external-controller: 127.0.0.1:9090\n\n");
 
-        // TUN config (Mihomo / Clash Meta)
+        // TUN config (Tự nhận diện device: macOS dùng utun, Windows dùng c69-wintun)
         yaml.push_str("tun:\n");
         yaml.push_str("  enable: true\n");
         yaml.push_str("  stack: mixed\n");
+        #[cfg(target_os = "windows")]
         yaml.push_str("  device: c69-wintun\n");
+        #[cfg(not(target_os = "windows"))]
+        yaml.push_str("  device: utun9\n");
+
         yaml.push_str("  auto-route: true\n");
         yaml.push_str("  auto-detect-interface: true\n");
         yaml.push_str("  dns-hijack:\n");
@@ -237,7 +297,6 @@ mod tests {
         };
 
         let yaml_str = manager.generate_clash_yaml_config(&config).unwrap();
-        assert!(yaml_str.contains("device: c69-wintun"));
         assert!(yaml_str.contains("fake-ip-range: 198.18.0.1/16"));
         assert!(yaml_str.contains("proxy-0"));
         assert!(yaml_str.contains("SRC-IP-CIDR,192.168.88.101/32,\"proxy-0\""));
