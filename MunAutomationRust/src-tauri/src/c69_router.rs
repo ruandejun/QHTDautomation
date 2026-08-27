@@ -22,6 +22,7 @@ pub struct RouterConfig {
     pub dhcp_end: String,
     pub proxy_rules: Vec<ProxyRule>,
     pub dns_servers: Vec<String>,
+    pub hotspot_24ghz_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,79 +111,73 @@ impl C69RouterManager {
         interfaces
     }
 
-    /// Sinh cấu hình sing-box tốc độ cao dạng JSON
-    pub fn generate_singbox_config(&self, config: &RouterConfig) -> Result<String, String> {
-        let mut inbounds = Vec::new();
-        let mut outbounds = Vec::new();
-        let mut route_rules = Vec::new();
+    /// Sinh cấu hình Mihomo/Clash Core (clash-config.yaml) chuẩn OpenClash tốc độ cao
+    pub fn generate_clash_yaml_config(&self, config: &RouterConfig) -> Result<String, String> {
+        let mut yaml = String::new();
+        
+        yaml.push_str("port: 7890\n");
+        yaml.push_str("socks-port: 7891\n");
+        yaml.push_str("mixed-port: 7892\n");
+        yaml.push_str("allow-lan: true\n");
+        yaml.push_str("mode: rule\n");
+        yaml.push_str("log-level: warning\n");
+        yaml.push_str("ipv6: false\n");
+        yaml.push_str("external-controller: 127.0.0.1:9090\n\n");
 
-        // 1. Inbound TUN Interface / Mixed Proxy
-        inbounds.push(serde_json::json!({
-            "type": "tun",
-            "tag": "tun-in",
-            "interface_name": "c69-tun",
-            "inet4_address": format!("{}/24", config.router_ip),
-            "auto_route": true,
-            "strict_route": false,
-            "stack": "system",
-            "sniff": true
-        }));
+        // TUN config (Mihomo / Clash Meta)
+        yaml.push_str("tun:\n");
+        yaml.push_str("  enable: true\n");
+        yaml.push_str("  stack: mixed\n");
+        yaml.push_str("  device: c69-wintun\n");
+        yaml.push_str("  auto-route: true\n");
+        yaml.push_str("  auto-detect-interface: true\n");
+        yaml.push_str("  dns-hijack:\n");
+        yaml.push_str("    - \"any:53\"\n");
+        yaml.push_str("    - \"tcp://any:53\"\n\n");
 
-        inbounds.push(serde_json::json!({
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": config.router_ip,
-            "listen_port": 2080
-        }));
+        // DNS config
+        yaml.push_str("dns:\n");
+        yaml.push_str("  enable: true\n");
+        yaml.push_str("  listen: 0.0.0.0:1053\n");
+        yaml.push_str("  enhanced-mode: fake-ip\n");
+        yaml.push_str("  fake-ip-range: 198.18.0.1/16\n");
+        yaml.push_str("  nameserver:\n");
+        for dns in &config.dns_servers {
+            yaml.push_str(&format!("    - \"{}\"\n", dns));
+        }
+        yaml.push_str("\n");
 
-        // 2. Default Direct Outbound
-        outbounds.push(serde_json::json!({
-            "type": "direct",
-            "tag": "direct"
-        }));
-
-        // 3. Outbounds for Proxies & Route Rules
+        // Proxies
+        yaml.push_str("proxies:\n");
         for (i, rule) in config.proxy_rules.iter().enumerate() {
             if !rule.enabled {
                 continue;
             }
-            let tag = format!("proxy-out-{}", i);
-            outbounds.push(serde_json::json!({
-                "type": "socks",
-                "tag": tag,
-                "server": rule.proxy_url.split(':').next().unwrap_or(""),
-                "server_port": rule.proxy_url.split(':').nth(1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(1080)
-            }));
-
-            route_rules.push(serde_json::json!({
-                "source_ip_cidr": rule.target_ips,
-                "outbound": tag
-            }));
+            let host = rule.proxy_url.split(':').next().unwrap_or("127.0.0.1");
+            let port = rule.proxy_url.split(':').nth(1).unwrap_or("1080");
+            yaml.push_str(&format!("  - name: \"proxy-{}\"\n", i));
+            yaml.push_str("    type: socks5\n");
+            yaml.push_str(&format!("    server: {}\n", host));
+            yaml.push_str(&format!("    port: {}\n", port));
+            yaml.push_str("    udp: true\n");
         }
+        yaml.push_str("\n");
 
-        let full_config = serde_json::json!({
-            "log": {
-                "level": "warn",
-                "timestamp": true
-            },
-            "dns": {
-                "servers": [
-                    {
-                        "tag": "dns-remote",
-                        "address": "8.8.8.8",
-                        "detour": "direct"
-                    }
-                ]
-            },
-            "inbounds": inbounds,
-            "outbounds": outbounds,
-            "route": {
-                "rules": route_rules,
-                "auto_detect_interface": true
+        // Rules
+        yaml.push_str("rules:\n");
+        yaml.push_str("  - DST-PORT,9000,DIRECT\n");
+        yaml.push_str("  - DST-PORT,8000,DIRECT\n");
+        for (i, rule) in config.proxy_rules.iter().enumerate() {
+            if !rule.enabled {
+                continue;
             }
-        });
+            for ip in &rule.target_ips {
+                yaml.push_str(&format!("  - SRC-IP-CIDR,{},\"proxy-{}\"\n", ip, i));
+            }
+        }
+        yaml.push_str("  - MATCH,DIRECT\n");
 
-        serde_json::to_string_pretty(&full_config).map_err(|e| e.to_string())
+        Ok(yaml)
     }
 
     /// Đọc danh sách MAC & IP Lease của các máy Android kết nối vào mạng
@@ -221,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_singbox_config_generation() {
+    fn test_clash_yaml_config_generation() {
         let manager = C69RouterManager::new("/tmp/test_c69_router");
         let config = RouterConfig {
             lan_interface: "Ethernet 2".to_string(),
@@ -238,11 +233,13 @@ mod tests {
                 }
             ],
             dns_servers: vec!["8.8.8.8".to_string()],
+            hotspot_24ghz_only: true,
         };
 
-        let json_str = manager.generate_singbox_config(&config).unwrap();
-        assert!(json_str.contains("c69-tun"));
-        assert!(json_str.contains("192.168.88.1/24"));
-        assert!(json_str.contains("proxy-out-0"));
+        let yaml_str = manager.generate_clash_yaml_config(&config).unwrap();
+        assert!(yaml_str.contains("device: c69-wintun"));
+        assert!(yaml_str.contains("fake-ip-range: 198.18.0.1/16"));
+        assert!(yaml_str.contains("proxy-0"));
+        assert!(yaml_str.contains("SRC-IP-CIDR,192.168.88.101/32,\"proxy-0\""));
     }
 }
