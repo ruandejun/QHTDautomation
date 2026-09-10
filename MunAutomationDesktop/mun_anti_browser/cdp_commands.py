@@ -137,7 +137,7 @@ async def set_user_agent(
         await tab.send(network_cdp.set_user_agent_override(
             user_agent=user_agent,
             accept_language="en-US,en",
-            platform=platform,
+            platform="Windows" if platform == "Win32" else platform,
             user_agent_metadata=metadata,
         ))
 
@@ -145,7 +145,7 @@ async def set_user_agent(
         await tab.send(emulation.set_user_agent_override(
             user_agent=user_agent,
             accept_language="en-US,en",
-            platform=platform,
+            platform="Windows" if platform == "Win32" else platform,
             user_agent_metadata=metadata,
         ))
 
