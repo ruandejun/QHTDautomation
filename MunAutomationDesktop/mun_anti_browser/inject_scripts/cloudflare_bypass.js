@@ -5,6 +5,7 @@
 
 (function antiDetectInit() {
   'use strict';
+  window.__mun_stealth_active = true;
 
   // Setup native toString spoofing early so all subsequent patches can use it
   var _origToString = Function.prototype.toString;
@@ -842,21 +843,24 @@
     window._makeNative(loadTimesFn, 'loadTimes');
     chromeObj.loadTimes = loadTimesFn;
 
-    // 4. runtime (non-enumerable so it does not leak via Object.keys)
+    // 4. runtime (Mock chuẩn Google Chrome)
     var connectFn = function() {};
     var sendMessageFn = function() {};
     window._makeNative(connectFn, 'connect');
     window._makeNative(sendMessageFn, 'sendMessage');
-    Object.defineProperty(chromeObj, 'runtime', {
-      value: {
-        connect: connectFn,
-        sendMessage: sendMessageFn
-      },
-      enumerable: false,
-      configurable: true,
-      writable: true
-    });
+    chromeObj.runtime = {
+      connect: connectFn,
+      sendMessage: sendMessageFn,
+      id: undefined,
+      PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
+      PlatformArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
+      PlatformNaclArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
+      OnInstalledReason: { INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' }
+    };
 
+    try {
+      delete window.chrome;
+    } catch(e) {}
     window.chrome = chromeObj;
   })();
 

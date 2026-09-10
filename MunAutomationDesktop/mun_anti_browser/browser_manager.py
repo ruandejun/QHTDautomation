@@ -245,19 +245,12 @@ class NodriverBrowserManager:
         # Get the initial tab
         self.main_tab = self.browser.main_tab
 
-        # Apply CDP overrides
+        # Apply CDP overrides (Page domain remains enabled so addScriptToEvaluateOnNewDocument executes)
         await cdp_commands.apply_all_cdp_overrides(
             self.main_tab,
             profile_config,
             self._injection_script,
         )
-
-        # Disable Page domain first to prevent detection (since apply_all_cdp_overrides enabled it)
-        import nodriver.cdp.page as page_cdp
-        try:
-            await self.main_tab.send(page_cdp.disable())
-        except Exception as e:
-            logger.warning(f"Failed to disable Page domain: {e}")
 
         # Navigate to start URL
         url = start_url or profile_config.get("profile_start_url", "")
