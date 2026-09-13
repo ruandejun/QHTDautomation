@@ -56,10 +56,7 @@ jobs:
         shell: cmd
         run: |
           cd chromium_build\src
-          git apply ..\..\chromium-patches\01_navigator_hardware.patch
-          git apply ..\..\chromium-patches\02_canvas_noise.patch
-          git apply ..\..\chromium-patches\03_webgl_spoof.patch
-          git apply ..\..\chromium-patches\04_audio_noise.patch
+          python ..\..\chromium-patches\apply_patches.py .
 
       - name: Generate Build Configuration (GN args)
         shell: cmd

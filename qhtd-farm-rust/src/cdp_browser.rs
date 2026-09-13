@@ -208,6 +208,22 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let timing_delta = format!("{:.7}", 0.00001 * ((p_id % 20 + 1) as f64));
     let canvas_delta = ((canvas_seed_val % 3) as usize) + 1;
 
+    let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
+        || profile.profile_os.eq_ignore_ascii_case("iOS")
+        || profile.profile_user_agent.contains("Mobile")
+        || profile.profile_user_agent.contains("Android")
+        || profile.profile_user_agent.contains("iPhone");
+
+    let platform = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
+        "iPhone"
+    } else if is_mobile {
+        "Linux armv81"
+    } else {
+        "Win32"
+    };
+
+    let touch_points = if is_mobile { 5 } else { 0 };
+
     format!(
         r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v6.0 (Profile #{p_id})
 (function() {{
@@ -225,6 +241,8 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
             Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
             Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
             Object.defineProperty(w.navigator, 'webdriver', {{ get: () => false, configurable: true }});
+            Object.defineProperty(w.navigator, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true }});
+            Object.defineProperty(w.navigator, 'platform', {{ get: () => '{platform}', configurable: true }});
         }} catch(e) {{}}
 
         // 2. WebGL Hardware Spoofing ({renderer})
@@ -433,9 +451,28 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         profile.profile_start_url.clone()
     };
 
-    // Kích thước cửa sổ hiển thị cố định vừa vặn trên màn hình: 1200x800
-    let window_width = 1200;
-    let window_height = 800;
+    let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
+        || profile.profile_os.eq_ignore_ascii_case("iOS")
+        || profile.profile_user_agent.contains("Mobile")
+        || profile.profile_user_agent.contains("Android")
+        || profile.profile_user_agent.contains("iPhone");
+
+    let (screen_w, screen_h) = if let Some((w_s, h_s)) = profile.profile_resolution.split_once('x') {
+        (w_s.trim().parse::<i64>().unwrap_or(390), h_s.trim().parse::<i64>().unwrap_or(844))
+    } else if is_mobile {
+        (390, 844)
+    } else {
+        (1920, 1080)
+    };
+
+    // Kích thước cửa sổ hiển thị trên màn hình:
+    // Nếu là profile phone/mobile -> hiển thị khung cửa sổ điện thoại gọn gàng 440x920
+    // Nếu là desktop -> 1200x800
+    let (window_width, window_height) = if is_mobile {
+        (440, 920)
+    } else {
+        (1200, 800)
+    };
 
     let has_custom_ua = !profile.profile_user_agent.trim().is_empty()
         && !profile.profile_user_agent.contains("Chrome/134.")
@@ -592,13 +629,26 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let custom_ua_cmds = if has_custom_ua {
         let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
+        let platform_str = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
+            "iPhone"
+        } else if is_mobile {
+            "Linux armv81"
+        } else {
+            "Win32"
+        };
+        let platform_title = if is_mobile {
+            if platform_str == "iPhone" { "iOS" } else { "Android" }
+        } else {
+            "Windows"
+        };
+
         Some((
             json!({
                 "method": "Emulation.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
                     "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "platform": "Win32",
+                    "platform": platform_str,
                     "userAgentMetadata": {
                         "brands": [
                             {"brand": "Chromium", "version": major_ver},
@@ -606,11 +656,11 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                             {"brand": "Google Chrome", "version": major_ver}
                         ],
                         "fullVersion": full_ver,
-                        "platform": "Windows",
+                        "platform": platform_title,
                         "platformVersion": "15.0.0",
-                        "architecture": "x86",
-                        "model": "",
-                        "mobile": false,
+                        "architecture": if is_mobile { "arm" } else { "x86" },
+                        "model": if is_mobile { "SM-S918B" } else { "" },
+                        "mobile": is_mobile,
                         "bitness": "64",
                         "wow64": false
                     }
@@ -621,7 +671,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                 "params": {
                     "userAgent": profile.profile_user_agent,
                     "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "platform": "Win32"
+                    "platform": platform_str
                 }
             })
         ))
@@ -672,6 +722,34 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     c2["id"] = json!(cmd_id);
                                     c2["sessionId"] = json!(session_id);
                                     let _ = tx.send(Message::Text(c2.to_string()));
+                                }
+
+                                // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone
+                                if is_mobile {
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setDeviceMetricsOverride",
+                                        "params": {
+                                            "width": screen_w,
+                                            "height": screen_h,
+                                            "deviceScaleFactor": 3.0,
+                                            "mobile": true,
+                                            "fitWindow": false
+                                        }
+                                    }).to_string()));
+
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setTouchEmulationEnabled",
+                                        "params": {
+                                            "enabled": true,
+                                            "maxTouchPoints": 5
+                                        }
+                                    }).to_string()));
                                 }
 
                                 // 3. Tiêm Clean Stealth Script cho MỌI lần chuyển trang trong frame/tab này

@@ -124,5 +124,26 @@
     "profile_audio": null,
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)"
+  },
+  {
+    "id": 6,
+    "name": "Profile #6 - TikTok Phone Emulator (Samsung Galaxy S23 / Mobile)",
+    "engine_mode": "js_stealth",
+    "profile_user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36",
+    "profile_os": "Android",
+    "profile_resolution": "390x844",
+    "profile_cpu": 8,
+    "profile_ram": 12,
+    "proxy_string": "",
+    "proxy_type": "direct",
+    "profile_start_url": "https://www.tiktok.com/login/phone-or-email/email?lang=en",
+    "canvas_seed": 189283741,
+    "audio_seed": 839218374,
+    "webrtc_mode": null,
+    "profile_canvas": null,
+    "profile_webgl": null,
+    "profile_audio": null,
+    "gpu_renderer": "Mali-G715 Immortalis MC11",
+    "gpu_vendor": "ARM"
   }
 ]
