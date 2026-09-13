@@ -4,7 +4,7 @@ use crate::tiktok_nurture::{NurtureConfig, TikTokNurtureEngine};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -56,6 +56,8 @@ pub struct BrowserProfile {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
+    pub engine_mode: Option<String>, // "native", "js_stealth", hoặc "hybrid"
+    #[serde(default)]
     pub profile_user_agent: String,
     #[serde(default)]
     pub profile_os: String,
@@ -64,11 +66,19 @@ pub struct BrowserProfile {
     #[serde(default)]
     pub profile_cpu: usize,
     #[serde(default)]
+    pub profile_ram: usize,
+    #[serde(default)]
     pub proxy_string: String,
     #[serde(default)]
     pub proxy_type: String,
     #[serde(default)]
     pub profile_start_url: String,
+    #[serde(default)]
+    pub canvas_seed: Option<u32>,
+    #[serde(default)]
+    pub audio_seed: Option<u32>,
+    #[serde(default)]
+    pub webrtc_mode: Option<String>, // "disabled", "proxy_only", "custom"
     #[serde(default)]
     pub profile_canvas: serde_json::Value,
     #[serde(default)]
@@ -113,9 +123,11 @@ pub fn create_router(state: AppState) -> Router {
         // ── Mun Anti Browser APIs ──
         .route("/api/browser/profiles", get(list_browser_profiles_handler))
         .route("/api/browser/profiles", post(create_browser_profile_handler))
+        .route("/api/browser/profiles", put(update_browser_profile_handler))
         .route("/api/browser/profiles/launch", post(launch_browser_profile_handler))
         .route("/api/browser/profiles/stop", post(stop_browser_profile_handler))
         .route("/api/browser/active", get(get_active_browser_profiles_handler))
+        .route("/api/browser/core-status", get(browser_core_status_handler))
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
         // ── iOS & IPATool APIs ──
         .route("/api/ios/devices", get(list_ios_devices_handler))
@@ -376,14 +388,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
     vec![
         BrowserProfile {
             id: 0,
-            name: "Profile #0 - RTX 3060".into(),
+            name: "Profile #0 - RTX 3060 (Native C++)".into(),
+            engine_mode: Some("native".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1080".into(),
             profile_cpu: 8,
+            profile_ram: 16,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(18472910),
+            audio_seed: Some(92817401),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -392,14 +409,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         },
         BrowserProfile {
             id: 1,
-            name: "Profile #1 - RTX 4070".into(),
+            name: "Profile #1 - RTX 4070 (JS Stealth)".into(),
+            engine_mode: Some("js_stealth".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "2560x1440".into(),
             profile_cpu: 12,
+            profile_ram: 32,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(58392019),
+            audio_seed: Some(39102948),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -408,14 +430,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         },
         BrowserProfile {
             id: 2,
-            name: "Profile #2 - RX 6700 XT".into(),
+            name: "Profile #2 - RX 6700 XT (Hybrid)".into(),
+            engine_mode: Some("hybrid".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1200".into(),
             profile_cpu: 8,
+            profile_ram: 16,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(83920194),
+            audio_seed: Some(19284710),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -424,14 +451,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         },
         BrowserProfile {
             id: 3,
-            name: "Profile #3 - Iris Xe".into(),
+            name: "Profile #3 - Iris Xe (JS Stealth)".into(),
+            engine_mode: Some("js_stealth".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1600x900".into(),
             profile_cpu: 4,
+            profile_ram: 8,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(71928401),
+            audio_seed: Some(48291048),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -440,14 +472,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         },
         BrowserProfile {
             id: 4,
-            name: "Profile #4 - GTX 1660 SUPER".into(),
+            name: "Profile #4 - GTX 1660 SUPER (Native C++)".into(),
+            engine_mode: Some("native".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1536x864".into(),
             profile_cpu: 6,
+            profile_ram: 16,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(38291049),
+            audio_seed: Some(74920194),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -456,14 +493,19 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         },
         BrowserProfile {
             id: 5,
-            name: "Profile #5 - RTX 3070 Ti".into(),
+            name: "Profile #5 - RTX 3070 Ti (Native C++)".into(),
+            engine_mode: Some("native".into()),
             profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1080".into(),
             profile_cpu: 16,
+            profile_ram: 32,
             proxy_string: String::new(),
             proxy_type: "socks5".into(),
             profile_start_url: "https://iphey.com".into(),
+            canvas_seed: Some(94820194),
+            audio_seed: Some(58291048),
+            webrtc_mode: Some("proxy_only".into()),
             profile_canvas: serde_json::Value::Null,
             profile_webgl: serde_json::Value::Null,
             profile_audio: serde_json::Value::Null,
@@ -491,8 +533,34 @@ fn get_profiles_file_path() -> PathBuf {
 async fn list_browser_profiles_handler() -> Json<Vec<BrowserProfile>> {
     let path = get_profiles_file_path();
     if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok(profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+        if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
             if !profiles.is_empty() {
+                // Tự động nâng cấp các profile cũ nếu chưa có engine_mode hoặc seeds
+                let mut need_save = false;
+                for p in &mut profiles {
+                    if p.engine_mode.is_none() {
+                        p.engine_mode = Some(if p.id % 2 == 0 { "native".into() } else { "js_stealth".into() });
+                        need_save = true;
+                    }
+                    if p.profile_ram == 0 {
+                        let rams = [8, 16, 16, 32, 64];
+                        p.profile_ram = rams[p.id % rams.len()];
+                        need_save = true;
+                    }
+                    if p.canvas_seed.is_none() {
+                        p.canvas_seed = Some((p.id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+                        need_save = true;
+                    }
+                    if p.audio_seed.is_none() {
+                        p.audio_seed = Some((p.id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+                        need_save = true;
+                    }
+                }
+                if need_save {
+                    if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+                        let _ = std::fs::write(&path, json_str);
+                    }
+                }
                 return Json(profiles);
             }
         }
@@ -549,6 +617,23 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         new_prof.gpu_vendor = Some(def_vend.to_string());
     }
 
+    if new_prof.engine_mode.is_none() || new_prof.engine_mode.as_ref().unwrap().trim().is_empty() {
+        new_prof.engine_mode = Some(if next_id % 2 == 0 { "native".into() } else { "js_stealth".into() });
+    }
+    if new_prof.profile_ram == 0 {
+        let rams = [8, 16, 16, 32, 64];
+        new_prof.profile_ram = rams[next_id % rams.len()];
+    }
+    if new_prof.canvas_seed.is_none() || new_prof.canvas_seed.unwrap() == 0 {
+        new_prof.canvas_seed = Some((next_id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+    }
+    if new_prof.audio_seed.is_none() || new_prof.audio_seed.unwrap() == 0 {
+        new_prof.audio_seed = Some((next_id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+    }
+    if new_prof.webrtc_mode.is_none() {
+        new_prof.webrtc_mode = Some("proxy_only".into());
+    }
+
     profiles.push(new_prof);
     if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
         let _ = std::fs::write(&path, json_str);
@@ -558,6 +643,38 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         "success": true,
         "message": format!("Đã tạo profile #{} với Fingerprint độc nhất!", next_id)
     }))
+}
+
+async fn update_browser_profile_handler(Json(updated_prof): Json<BrowserProfile>) -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_default();
+
+    let mut found = false;
+    for p in &mut profiles {
+        if p.id == updated_prof.id {
+            *p = updated_prof.clone();
+            found = true;
+            break;
+        }
+    }
+
+    if found {
+        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+            let _ = std::fs::write(&path, json_str);
+        }
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Đã cập nhật cấu hình Fingerprint cho Profile #{}!", updated_prof.id)
+        }))
+    } else {
+        Json(serde_json::json!({
+            "success": false,
+            "message": format!("Không tìm thấy Profile #{}", updated_prof.id)
+        }))
+    }
 }
 
 async fn delete_browser_profile_handler(Path(id): Path<usize>) -> Json<serde_json::Value> {
@@ -578,6 +695,17 @@ async fn delete_browser_profile_handler(Path(id): Path<usize>) -> Json<serde_jso
     }))
 }
 
+async fn browser_core_status_handler() -> Json<serde_json::Value> {
+    let custom = crate::cdp_browser::find_custom_chromium();
+    let sys = crate::cdp_browser::find_system_chrome();
+    Json(serde_json::json!({
+        "has_custom_core": custom.is_some(),
+        "custom_path": custom.map(|p| p.to_string_lossy().to_string()),
+        "has_system_chrome": sys.is_some(),
+        "system_path": sys.map(|p| p.to_string_lossy().to_string()),
+    }))
+}
+
 async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let profiles_path = get_profiles_file_path();
@@ -594,13 +722,18 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
             BrowserProfile {
                 id,
                 name: format!("Profile #{}", id),
+                engine_mode: Some("native".into()),
                 profile_user_agent: String::new(),
                 profile_os: "Windows".into(),
                 profile_resolution: "1920x1080".into(),
                 profile_cpu: 8,
+                profile_ram: 16,
                 proxy_string: String::new(),
                 proxy_type: "socks5".into(),
                 profile_start_url: "https://iphey.com".into(),
+                canvas_seed: Some((id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a),
+                audio_seed: Some((id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5),
+                webrtc_mode: Some("proxy_only".into()),
                 profile_canvas: serde_json::Value::Null,
                 profile_webgl: serde_json::Value::Null,
                 profile_audio: serde_json::Value::Null,
@@ -1132,6 +1265,63 @@ async fn dashboard_handler() -> Html<&'static str> {
             border: 1px solid var(--border);
         }
 
+        .badge-engine-native {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            color: #c084fc;
+            background: rgba(192, 132, 252, 0.12);
+            border: 1px solid rgba(192, 132, 252, 0.35);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .badge-engine-native:hover {
+            background: rgba(192, 132, 252, 0.25);
+            transform: scale(1.03);
+        }
+
+        .badge-engine-js {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .badge-engine-js:hover {
+            background: rgba(56, 189, 248, 0.25);
+            transform: scale(1.03);
+        }
+
+        .badge-engine-hybrid {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            color: #f59e0b;
+            background: rgba(245, 158, 11, 0.12);
+            border: 1px solid rgba(245, 158, 11, 0.35);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .badge-engine-hybrid:hover {
+            background: rgba(245, 158, 11, 0.25);
+            transform: scale(1.03);
+        }
+
         .search-input {
             background: var(--bg-card-hover);
             border: 1px solid var(--border);
@@ -1142,6 +1332,27 @@ async fn dashboard_handler() -> Html<&'static str> {
             outline: none;
         }
         .search-input:focus { border-color: var(--primary); }
+
+        .filter-btn {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+            border-radius: 6px;
+        }
+        .filter-btn:hover {
+            color: #fff;
+            border-color: rgba(255, 255, 255, 0.25);
+            transform: translateY(-1px);
+        }
+        .filter-btn.active {
+            background: rgba(0, 242, 254, 0.15) !important;
+            border-color: var(--primary) !important;
+            color: var(--primary) !important;
+            font-weight: 800 !important;
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
     </style>
 </head>
 <body>
@@ -1247,13 +1458,20 @@ async fn dashboard_handler() -> Html<&'static str> {
         <!-- VIEW 2: MUN ANTI BROWSER (HARDWARE SHIELD NO LEAK) -->
         <div class="view-content" id="view-browser">
             <div class="action-toolbar">
-                <div class="toolbar-group">
-                    <h2 style="font-size: 14px; font-weight: 700;">🌐 Mun Anti Browser — Hardware Fingerprint Shield (100% Không Lộ Finger Gốc)</h2>
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
+                    <h2 style="font-size: 14px; font-weight: 700;">🌐 Mun Anti Browser — Dual-Engine Hardware Shield</h2>
+                    <span id="core-status-badge"></span>
                 </div>
-                <div class="toolbar-group">
-                    <span id="active-profiles-count" style="font-size: 11px; font-weight: 700; color: #10b981; margin-right: 6px;"></span>
-                    <input type="text" class="search-input" placeholder="Tìm profile..." id="profile-search" oninput="filterProfiles()">
-                    <button class="btn btn-primary" onclick="openCreateProfileModal()">➕ Tạo Profile Ẩn Danh Mới</button>
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
+                    <div style="display:flex; gap:4px;">
+                        <button class="btn filter-btn active" onclick="setEngineFilter('all', this)" style="padding:4px 8px; font-size:10px;">Tất cả</button>
+                        <button class="btn filter-btn" onclick="setEngineFilter('native', this)" style="padding:4px 8px; font-size:10px; color:#c084fc;">💎 Native C++</button>
+                        <button class="btn filter-btn" onclick="setEngineFilter('js_stealth', this)" style="padding:4px 8px; font-size:10px; color:#38bdf8;">⚡ JS Stealth</button>
+                        <button class="btn filter-btn" onclick="setEngineFilter('hybrid', this)" style="padding:4px 8px; font-size:10px; color:#f59e0b;">🔥 Hybrid</button>
+                    </div>
+                    <span id="active-profiles-count" style="font-size: 11px; font-weight: 700; color: #10b981;"></span>
+                    <input type="text" class="search-input" placeholder="Tìm profile / proxy..." id="profile-search" oninput="filterProfiles()">
+                    <button class="btn btn-primary" onclick="openCreateProfileModal()">➕ Tạo Profile Mới</button>
                 </div>
             </div>
 
@@ -1262,15 +1480,16 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <tr>
                         <th>ID</th>
                         <th>Tên Profile</th>
+                        <th>Engine Chống Detect</th>
                         <th>Hệ Điều Hành / User-Agent</th>
-                        <th>Card GPU & Bảo Vệ Vân Tay</th>
+                        <th>Card GPU & Dấu Vân Tay</th>
                         <th>Proxy Cấu Hình</th>
                         <th>Trạng Thái</th>
                         <th>Thao Tác</th>
                     </tr>
                 </thead>
                 <tbody id="browser-profiles-body">
-                    <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
+                    <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1283,9 +1502,19 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <button class="btn-close" onclick="closeCreateProfileModal()">✕</button>
                 </div>
                 <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
-                    <div>
-                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Tên Profile:</label>
-                        <input id="modal-prof-name" type="text" class="search-input" style="width:100%;" placeholder="VD: Profile TikTok Farm #1">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Tên Profile:</label>
+                            <input id="modal-prof-name" type="text" class="search-input" style="width:100%;" placeholder="VD: Profile TikTok Farm #1">
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Engine Chống Nhận Diện:</label>
+                            <select id="modal-prof-engine" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="native">💎 Native C++ Core (Sửa mã nguồn Blink)</option>
+                                <option value="js_stealth">⚡ JS CDP Stealth (Mặc định Chrome)</option>
+                                <option value="hybrid">🔥 Hybrid (2 Lớp: C++ Core + CDP Shield)</option>
+                            </select>
+                        </div>
                     </div>
                     <div>
                         <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Card Đồ Họa (WebGL GPU):</label>
@@ -1300,7 +1529,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                             <option value="ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (AMD)">AMD Radeon RX 7600 (DirectX 11)</option>
                         </select>
                     </div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
                         <div>
                             <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Số Nhân CPU:</label>
                             <select id="modal-prof-cpu" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
@@ -1309,6 +1538,15 @@ async fn dashboard_handler() -> Html<&'static str> {
                                 <option value="6">6 Cores</option>
                                 <option value="12">12 Cores</option>
                                 <option value="16">16 Cores</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">RAM (Memory):</label>
+                            <select id="modal-prof-ram" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="16">16 GB (Khuyên dùng)</option>
+                                <option value="8">8 GB</option>
+                                <option value="32">32 GB</option>
+                                <option value="64">64 GB</option>
                             </select>
                         </div>
                         <div>
@@ -1329,9 +1567,96 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Proxy (Tùy chọn):</label>
                         <input id="modal-prof-proxy" type="text" class="search-input" style="width:100%;" placeholder="VD: 127.0.0.1:10808 (Để trống nếu Direct)">
                     </div>
-                    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
-                        <button class="btn btn-dark" onclick="closeCreateProfileModal()">Hủy</button>
-                        <button class="btn btn-primary" onclick="submitCreateProfile()">🚀 Tạo Profile</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                        <button class="btn btn-dark" type="button" onclick="randomizeModalFields()">🎲 Random Hợp Lý</button>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-dark" onclick="closeCreateProfileModal()">Hủy</button>
+                            <button class="btn btn-primary" onclick="submitCreateProfile()">🚀 Tạo Profile</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL CHỈNH SỬA FINGERPRINT CHI TIẾT -->
+        <div id="modal-edit-fingerprint" class="modal-backdrop">
+            <div class="modal-dialog" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3 style="font-size:14px; font-weight:700;" id="modal-edit-title">🛠️ Tùy Chỉnh Dấu Vân Tay (Fingerprint)</h3>
+                    <button class="btn-close" onclick="closeEditFingerprintModal()">✕</button>
+                </div>
+                <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+                    <input type="hidden" id="edit-prof-id">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Tên Profile:</label>
+                            <input id="edit-prof-name" type="text" class="search-input" style="width:100%;">
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Engine Hoạt Động:</label>
+                            <select id="edit-prof-engine" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="native">💎 Native C++ Core (Sửa mã nguồn Chromium)</option>
+                                <option value="js_stealth">⚡ JS CDP Stealth (Chạy trên Google Chrome thường)</option>
+                                <option value="hybrid">🔥 Hybrid (Kết hợp 2 lớp: Native C++ & JS Shield)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">GPU WebGL Renderer:</label>
+                        <input id="edit-prof-gpu-renderer" type="text" class="search-input" style="width:100%; font-size:11px;">
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Số Nhân CPU:</label>
+                            <input id="edit-prof-cpu" type="number" class="search-input" style="width:100%;">
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">RAM (GB):</label>
+                            <input id="edit-prof-ram" type="number" class="search-input" style="width:100%;">
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Độ Phân Giải:</label>
+                            <input id="edit-prof-res" type="text" class="search-input" style="width:100%;">
+                        </div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:flex; justify-content:space-between;">
+                                <span>Canvas Noise Seed:</span>
+                                <a href="javascript:void(0)" onclick="randomSeed('edit-prof-canvas-seed')" style="color:var(--primary); text-decoration:none;">🎲 Random</a>
+                            </label>
+                            <input id="edit-prof-canvas-seed" type="number" class="search-input" style="width:100%;">
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:flex; justify-content:space-between;">
+                                <span>Audio Noise Seed:</span>
+                                <a href="javascript:void(0)" onclick="randomSeed('edit-prof-audio-seed')" style="color:var(--primary); text-decoration:none;">🎲 Random</a>
+                            </label>
+                            <input id="edit-prof-audio-seed" type="number" class="search-input" style="width:100%;">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Proxy Server:</label>
+                        <input id="edit-prof-proxy" type="text" class="search-input" style="width:100%;" placeholder="host:port hoặc socks5://user:pass@host:port">
+                    </div>
+
+                    <div style="background: rgba(0, 242, 254, 0.04); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #94a3b8; display: flex; flex-direction: column; gap: 3px;">
+                        <div style="color:var(--primary); font-weight:700;">💡 Cơ chế Dual-Engine & Fingerprint:</div>
+                        <div>• <b>💎 Native C++:</b> Can thiệp trực tiếp Blink renderer (C++), che dấu 100% qua IFrame & Web Worker.</div>
+                        <div>• <b>⚡ JS Stealth:</b> Lá chắn CDP Runtime v6.0 bảo vệ trên trình duyệt Chrome sẵn có.</div>
+                        <div>• <b>🎲 Noise Seeds:</b> Băm vi sai sub-pixel Canvas & AudioBuffer, sinh fingerprint độc nhất không trùng lặp.</div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                        <button class="btn btn-dark" type="button" onclick="randomizeEditFingerprint()">🎲 Random Toàn Bộ Dấu Vân Tay</button>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-dark" onclick="closeEditFingerprintModal()">Hủy</button>
+                            <button class="btn btn-primary" onclick="saveEditedFingerprint()">💾 Lưu Thay Đổi</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2022,8 +2347,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                     const ids = await resActive.json();
                     activeProfileIds = new Set(ids);
                 }
-                renderProfiles(allProfiles);
+                filterProfiles();
                 updateActiveCountBadge();
+                checkBrowserCoreStatus();
             } catch (e) {
                 console.error(e);
             }
@@ -2043,7 +2369,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 }
                 if (changed) {
                     activeProfileIds = newSet;
-                    renderProfiles(allProfiles);
+                    filterProfiles();
                     updateActiveCountBadge();
                 }
             } catch (e) {
@@ -2067,7 +2393,7 @@ async fn dashboard_handler() -> Html<&'static str> {
         function renderProfiles(profiles) {
             const tbody = document.getElementById('browser-profiles-body');
             if (profiles.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới".</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới".</td></tr>`;
                 return;
             }
 
@@ -2085,38 +2411,108 @@ async fn dashboard_handler() -> Html<&'static str> {
                     else if (p.gpu_renderer.includes('Iris')) gpuLabel = 'Intel Iris Xe Graphics';
                     else gpuLabel = p.gpu_renderer.split('(')[1]?.split(',')[1]?.trim() || p.gpu_renderer.slice(0, 25);
                 }
+
+                const mode = p.engine_mode || 'native';
+                let engineBadge = `<span class="badge-engine-native" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang JS Stealth">💎 Native C++</span>`;
+                if (mode === 'js_stealth') {
+                    engineBadge = `<span class="badge-engine-js" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Hybrid">⚡ JS Stealth</span>`;
+                } else if (mode === 'hybrid') {
+                    engineBadge = `<span class="badge-engine-hybrid" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Native C++">🔥 Hybrid (2 Lớp)</span>`;
+                }
+
                 return `
                 <tr>
                     <td><b>#${p.id}</b></td>
-                    <td><b style="color:var(--primary);">${p.name}</b></td>
-                    <td style="font-size: 11px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os}</span> 
-                        <span style="color:#e2e8f0;">${p.profile_user_agent}</span>
+                    <td>
+                        <b style="color:var(--primary); font-size:13px;">${p.name}</b>
+                        <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Seed: <code>${p.canvas_seed || p.id}</code></div>
+                    </td>
+                    <td>${engineBadge}</td>
+                    <td style="font-size: 11px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os || 'Windows'}</span> 
+                        <span style="color:#e2e8f0;">${p.profile_user_agent || 'Chrome/135 (Auto Sync V8)'}</span>
                     </td>
                     <td>
                         <div style="font-size:11px; color:#38bdf8; font-weight:600;">🎮 ${gpuLabel}</div>
-                        <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise #${p.id} • Audio Noise • ${p.profile_cpu || 8} Cores</div>
+                        <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise • Audio Noise • ${p.profile_cpu || 8} Cores / ${p.profile_ram || 16}GB</div>
                     </td>
-                    <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
+                    <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type || 'socks5'}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
                     <td>
                         ${isRunning 
                             ? `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>` 
                             : `<span class="badge-status-stopped">⚪ Đã tắt</span>`}
                     </td>
-                    <td>
+                    <td style="white-space:nowrap;">
                         ${isRunning
                             ? `<button id="btn-action-${p.id}" class="btn btn-danger" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng Profile</button>`
                             : `<button id="btn-action-${p.id}" class="btn btn-primary" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>`
                         }
+                        <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Tùy chỉnh Fingerprint" onclick="openEditFingerprintModal(${p.id})">🛠️</button>
                         <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
                     </td>
                 </tr>
             `}).join('');
         }
 
+        async function toggleEngine(id) {
+            const prof = allProfiles.find(p => p.id === id);
+            if (!prof) return;
+            const current = prof.engine_mode || 'native';
+            let nextMode = 'js_stealth';
+            if (current === 'js_stealth') nextMode = 'hybrid';
+            else if (current === 'hybrid') nextMode = 'native';
+
+            prof.engine_mode = nextMode;
+            try {
+                await fetch(`${API_BASE}/api/browser/profiles`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(prof)
+                });
+                filterProfiles();
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        let currentEngineFilter = 'all';
+
+        async function checkBrowserCoreStatus() {
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/core-status`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const badge = document.getElementById('core-status-badge');
+                if (!badge) return;
+                if (data.has_custom_core) {
+                    badge.innerHTML = `<span class="badge-engine-native" style="cursor:help; font-size:10px;" title="${data.custom_path || 'qhtd-browser.exe'}">💎 Native C++: Sẵn Sàng</span>`;
+                } else {
+                    badge.innerHTML = `<span class="badge-engine-js" style="cursor:help; font-size:10px;" title="Chưa có folder qhtd-browser, đang kích hoạt System Chrome với lá chắn JS Stealth CDP (Sẵn sàng nạp C++ Core khi tải về)">⚡ JS Stealth CDP (Sẵn sàng C++ Core)</span>`;
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function setEngineFilter(mode, btn) {
+            currentEngineFilter = mode;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+            filterProfiles();
+        }
+
         function filterProfiles() {
-            const term = document.getElementById('profile-search').value.toLowerCase();
-            const filtered = allProfiles.filter(p => p.name.toLowerCase().includes(term) || p.profile_user_agent.toLowerCase().includes(term));
+            const searchEl = document.getElementById('profile-search');
+            const term = searchEl ? searchEl.value.toLowerCase().trim() : '';
+            const filtered = allProfiles.filter(p => {
+                const matchesTerm = !term || 
+                                    (p.name && p.name.toLowerCase().includes(term)) || 
+                                    (p.profile_user_agent && p.profile_user_agent.toLowerCase().includes(term)) ||
+                                    (p.proxy_string && p.proxy_string.toLowerCase().includes(term));
+                const mode = p.engine_mode || 'native';
+                const matchesEngine = currentEngineFilter === 'all' || mode === currentEngineFilter;
+                return matchesTerm && matchesEngine;
+            });
             renderProfiles(filtered);
         }
 
@@ -2130,8 +2526,108 @@ async fn dashboard_handler() -> Html<&'static str> {
             document.getElementById('modal-create-profile').style.display = 'none';
         }
 
+        function randomizeModalFields() {
+            const gpus = [
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)",
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)",
+                "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)",
+                "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (AMD)",
+                "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (Intel)",
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)"
+            ];
+            const cpus = ["4", "6", "8", "12", "16"];
+            const rams = ["8", "16", "32"];
+            const ress = ["1920x1080", "1920x1200", "1536x864", "2560x1440"];
+            const engines = ["native", "js_stealth", "hybrid"];
+
+            document.getElementById('modal-prof-gpu').value = gpus[Math.floor(Math.random() * gpus.length)];
+            document.getElementById('modal-prof-cpu').value = cpus[Math.floor(Math.random() * cpus.length)];
+            document.getElementById('modal-prof-ram').value = rams[Math.floor(Math.random() * rams.length)];
+            document.getElementById('modal-prof-res').value = ress[Math.floor(Math.random() * ress.length)];
+            document.getElementById('modal-prof-engine').value = engines[Math.floor(Math.random() * engines.length)];
+        }
+
+        function openEditFingerprintModal(id) {
+            const p = allProfiles.find(x => x.id === id);
+            if (!p) return;
+
+            document.getElementById('edit-prof-id').value = p.id;
+            document.getElementById('modal-edit-title').innerText = `🛠️ Tùy Chỉnh Dấu Vân Tay: Profile #${p.id} (${p.name})`;
+            document.getElementById('edit-prof-name').value = p.name;
+            document.getElementById('edit-prof-engine').value = p.engine_mode || 'native';
+            document.getElementById('edit-prof-gpu-renderer').value = p.gpu_renderer || 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            document.getElementById('edit-prof-cpu').value = p.profile_cpu || 8;
+            document.getElementById('edit-prof-ram').value = p.profile_ram || 16;
+            document.getElementById('edit-prof-res').value = p.profile_resolution || '1920x1080';
+            document.getElementById('edit-prof-canvas-seed').value = p.canvas_seed || (p.id * 1664525 + 1013904);
+            document.getElementById('edit-prof-audio-seed').value = p.audio_seed || (p.id * 1103515 + 12345);
+            document.getElementById('edit-prof-proxy').value = p.proxy_string || '';
+
+            document.getElementById('modal-edit-fingerprint').style.display = 'flex';
+        }
+
+        function closeEditFingerprintModal() {
+            document.getElementById('modal-edit-fingerprint').style.display = 'none';
+        }
+
+        function randomSeed(elementId) {
+            const seed = Math.floor(Math.random() * 90000000) + 10000000;
+            document.getElementById(elementId).value = seed;
+        }
+
+        function randomizeEditFingerprint() {
+            randomSeed('edit-prof-canvas-seed');
+            randomSeed('edit-prof-audio-seed');
+            const gpus = [
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)"
+            ];
+            const cpus = [4, 6, 8, 12, 16];
+            const rams = [8, 16, 32];
+            const ress = ["1920x1080", "1920x1200", "1536x864", "2560x1440"];
+
+            document.getElementById('edit-prof-gpu-renderer').value = gpus[Math.floor(Math.random() * gpus.length)];
+            document.getElementById('edit-prof-cpu').value = cpus[Math.floor(Math.random() * cpus.length)];
+            document.getElementById('edit-prof-ram').value = rams[Math.floor(Math.random() * rams.length)];
+            document.getElementById('edit-prof-res').value = ress[Math.floor(Math.random() * ress.length)];
+        }
+
+        async function saveEditedFingerprint() {
+            const id = parseInt(document.getElementById('edit-prof-id').value);
+            const p = allProfiles.find(x => x.id === id);
+            if (!p) return;
+
+            p.name = document.getElementById('edit-prof-name').value.trim() || p.name;
+            p.engine_mode = document.getElementById('edit-prof-engine').value;
+            p.gpu_renderer = document.getElementById('edit-prof-gpu-renderer').value.trim();
+            p.profile_cpu = parseInt(document.getElementById('edit-prof-cpu').value) || 8;
+            p.profile_ram = parseInt(document.getElementById('edit-prof-ram').value) || 16;
+            p.profile_resolution = document.getElementById('edit-prof-res').value.trim() || '1920x1080';
+            p.canvas_seed = parseInt(document.getElementById('edit-prof-canvas-seed').value) || (id + 100);
+            p.audio_seed = parseInt(document.getElementById('edit-prof-audio-seed').value) || (id + 200);
+            p.proxy_string = document.getElementById('edit-prof-proxy').value.trim();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/profiles`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(p)
+                });
+                const d = await res.json();
+                closeEditFingerprintModal();
+                alert(d.message || "Đã lưu cấu hình Fingerprint!");
+                loadBrowserProfiles();
+            } catch(e) {
+                alert("Lỗi khi lưu cấu hình: " + e);
+            }
+        }
+
         async function submitCreateProfile() {
             const name = document.getElementById('modal-prof-name').value.trim();
+            const engine = document.getElementById('modal-prof-engine').value;
             const gpuVal = document.getElementById('modal-prof-gpu').value;
             let gpu_renderer = null, gpu_vendor = null;
             if (gpuVal) {
@@ -2140,6 +2636,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 gpu_vendor = parts[1] || "Google Inc. (NVIDIA)";
             }
             const cpu = parseInt(document.getElementById('modal-prof-cpu').value) || 8;
+            const ram = parseInt(document.getElementById('modal-prof-ram').value) || 16;
             const resolution = document.getElementById('modal-prof-res').value || "1920x1080";
             const start_url = document.getElementById('modal-prof-url').value.trim() || "https://iphey.com";
             const proxy = document.getElementById('modal-prof-proxy').value.trim();
@@ -2150,9 +2647,11 @@ async fn dashboard_handler() -> Html<&'static str> {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         name: name || `Profile #${allProfiles.length}`,
+                        engine_mode: engine,
                         gpu_renderer: gpu_renderer,
                         gpu_vendor: gpu_vendor,
                         profile_cpu: cpu,
+                        profile_ram: ram,
                         profile_resolution: resolution,
                         profile_start_url: start_url,
                         proxy_string: proxy

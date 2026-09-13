@@ -47,9 +47,8 @@ pub static GPU_POOL: &[(&str, &str)] = &[
     ("ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
 ];
 
-/// Tìm đường dẫn chrome.exe hoặc qhtd-browser.exe trên máy Windows
-pub fn find_chrome_executable() -> Option<PathBuf> {
-    // 1. Ưu tiên Custom Anti-Detect Chromium Core (nếu có bản build portable)
+/// Tìm đường dẫn Custom Anti-Detect Chromium (qhtd-browser.exe)
+pub fn find_custom_chromium() -> Option<PathBuf> {
     let current_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
     if let Some(ref d) = current_dir {
         let custom_candidates = [
@@ -57,16 +56,20 @@ pub fn find_chrome_executable() -> Option<PathBuf> {
             d.join("qhtd-browser").join("chrome.exe"),
             d.join("qhtd-browser.exe"),
             d.join("bin").join("qhtd-browser.exe"),
+            PathBuf::from(r"D:\Workspace\Python\QHTDautomation\qhtd-browser\qhtd-browser.exe"),
+            PathBuf::from(r"D:\Workspace\Python\QHTDautomation\qhtd-browser\chrome.exe"),
         ];
         for c in &custom_candidates {
             if c.exists() {
-                info!("💎 Sử dụng Custom Anti-Detect Chromium Core: {:?}", c);
                 return Some(c.clone());
             }
         }
     }
+    None
+}
 
-    // 2. Fallback sang Google Chrome chuẩn trên hệ thống
+/// Tìm đường dẫn Google Chrome chuẩn của hệ thống
+pub fn find_system_chrome() -> Option<PathBuf> {
     let candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -95,6 +98,31 @@ pub fn find_chrome_executable() -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Tìm executable dựa trên engine_mode của Profile
+pub fn find_executable_for_engine(engine_mode: &str) -> (Option<PathBuf>, &'static str) {
+    match engine_mode {
+        "native" => {
+            if let Some(custom) = find_custom_chromium() {
+                (Some(custom), "Native C++ Core (qhtd-browser)")
+            } else {
+                warn!("⚠️ Chưa tải Custom Chromium, tự động fallback về System Chrome với JS Stealth!");
+                (find_system_chrome(), "System Chrome (Fallback to JS Stealth)")
+            }
+        }
+        "js_stealth" => {
+            (find_system_chrome(), "Standard Google Chrome (JS CDP Stealth)")
+        }
+        _ => {
+            // "hybrid" hoặc mặc định: Ưu tiên Custom nếu có, nếu không thì dùng Chrome thường
+            if let Some(custom) = find_custom_chromium() {
+                (Some(custom), "Hybrid (Native C++ Core + CDP Shield)")
+            } else {
+                (find_system_chrome(), "Standard Google Chrome (JS CDP Stealth)")
+            }
+        }
+    }
 }
 
 /// Tìm một port TCP trống trên localhost
@@ -144,12 +172,16 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_cpu
     };
 
-    let ram = match p_id % 5 {
-        0 => 16,
-        1 => 32,
-        2 => 16,
-        3 => 8,
-        _ => 16,
+    let ram = if profile.profile_ram == 0 {
+        match p_id % 5 {
+            0 => 16,
+            1 => 32,
+            2 => 16,
+            3 => 8,
+            _ => 16,
+        }
+    } else {
+        profile.profile_ram
     };
 
     let resolution = if profile.profile_resolution.trim().is_empty() {
@@ -158,10 +190,13 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_resolution.clone()
     };
 
+    let canvas_seed_val = profile.canvas_seed.unwrap_or((p_id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a) as u64;
+    let audio_seed_val = profile.audio_seed.unwrap_or((p_id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5) as u64;
+
     // Tạo hash 16-hex độc nhất và nhất quán cho từng profile
-    let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add((p_id as u64).wrapping_mul(0x9e3779b97f4a7c15)));
+    let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add(audio_seed_val.wrapping_mul(0x9e3779b97f4a7c15)));
     let webgl_hash = format!("{:016x}", 0x89b271fa3e409cd1u64.wrapping_add((p_id as u64).wrapping_mul(0xbf58476d1ce4e5b9)));
-    let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add((p_id as u64).wrapping_mul(0x94d049bb133111eb)));
+    let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add(canvas_seed_val.wrapping_mul(0x94d049bb133111eb)));
     let client_rects_hash = format!("{:016x}", 0x26a37c61fad57beau64.wrapping_add((p_id as u64).wrapping_mul(0x517cc1b727220a95)));
     let dom_tags_hash = format!("{:016x}", 0xb020a925a07b81f7u64.wrapping_add((p_id as u64).wrapping_mul(0x6c62272e07bb0142)));
     let plugins_hash = format!("{:016x}", 0xc4fad881c920d19du64.wrapping_add((p_id as u64).wrapping_mul(0xd1b54a32d192ed03)));
@@ -169,9 +204,9 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let svg_computed_style = format!("{:.4}", 124.4 + ((p_id as f64) * 1.713));
     let timing_res_str = format!("{:.17}, {:.17}", 0.099999 + (p_id as f64) * 0.000003, 0.100000 + (p_id as f64) * 0.000004);
 
-    let audio_delta = format!("{:.8}", 0.00000005 * ((p_id % 20 + 1) as f64));
+    let audio_delta = format!("{:.8}", 0.00000005 * ((audio_seed_val % 20 + 1) as f64));
     let timing_delta = format!("{:.7}", 0.00001 * ((p_id % 20 + 1) as f64));
-    let canvas_delta = p_id + 1;
+    let canvas_delta = ((canvas_seed_val % 3) as usize) + 1;
 
     format!(
         r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v6.0 (Profile #{p_id})
@@ -377,9 +412,12 @@ pub fn stop_cdp_profile(profile_id: usize) {
 
 /// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
-    let chrome_path = find_chrome_executable()
-        .ok_or_else(|| "Không tìm thấy file thực thi Google Chrome (chrome.exe)".to_string())?;
+    let mode = profile.engine_mode.as_deref().unwrap_or("native");
+    let (exec_path_opt, engine_label) = find_executable_for_engine(mode);
+    let chrome_path = exec_path_opt
+        .ok_or_else(|| "Không tìm thấy file thực thi trình duyệt (chrome.exe hoặc qhtd-browser.exe)".to_string())?;
 
+    let _is_native_engine = engine_label.contains("Native C++");
     let port = get_free_port(9222 + (profile.id as u16 % 500));
     
     // Thư mục dữ liệu riêng biệt cho từng profile
@@ -408,8 +446,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let offset_y = 40 + ((profile.id as i32 * 25) % 250);
 
     info!(
-        "🚀 Khởi chạy Chrome CDP Native (Rust) cho Profile #{} ({}) trên port {}",
-        profile.id, profile.name, port
+        "🚀 Khởi chạy trình duyệt cho Profile #{} ({}) [{}] trên port {}",
+        profile.id, profile.name, engine_label, port
     );
 
     // Chuẩn bị các flags Chrome sạch (Clean Stealth)
@@ -448,23 +486,30 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         profile.profile_cpu
     };
 
-    let ram = match profile.id % 5 {
-        0 => 16,
-        1 => 32,
-        2 => 16,
-        3 => 8,
-        _ => 16,
+    let ram = if profile.profile_ram == 0 {
+        match profile.id % 5 {
+            0 => 16,
+            1 => 32,
+            2 => 16,
+            3 => 8,
+            _ => 16,
+        }
+    } else {
+        profile.profile_ram
     };
+
+    let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+    let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
     if !profile.proxy_string.trim().is_empty() {
         cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
     }
 
-    // Các switches C++ Native Anti-Detect (được nhận diện trực tiếp bởi QHTD Custom Chromium)
+    // Các switches C++ Native Anti-Detect (Được nhận diện trực tiếp bởi QHTD Custom Chromium)
     cmd.arg(format!("--qhtd-hardware-concurrency={}", cpu))
         .arg(format!("--qhtd-device-memory={}", ram))
-        .arg(format!("--qhtd-canvas-noise={}", (profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a))
-        .arg(format!("--qhtd-audio-noise={}", (profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5))
+        .arg(format!("--qhtd-canvas-noise={}", canvas_seed))
+        .arg(format!("--qhtd-audio-noise={}", audio_seed))
         .arg(format!("--qhtd-webgl-vendor={}", vendor))
         .arg(format!("--qhtd-webgl-renderer={}", renderer));
 

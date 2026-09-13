@@ -69,15 +69,15 @@ fn main() {
 
         rt.block_on(async {
             let mut listener = None;
-            for attempt in 1..=20 {
+            for attempt in 1..=30 {
                 match tokio::net::TcpListener::bind(addr).await {
                     Ok(l) => {
                         listener = Some(l);
                         break;
                     }
                     Err(e) => {
-                        eprintln!("⚠️ [Port 9090] Đang chờ giải phóng socket (lần {}/20: {})...", attempt, e);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                        eprintln!("⚠️ [Port 9090] Đang chờ giải phóng socket (lần {}/30: {})...", attempt, e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     }
                 }
             }
@@ -85,7 +85,7 @@ fn main() {
             let listener = match listener {
                 Some(l) => l,
                 None => {
-                    eprintln!("❌ [Rust Core] Lỗi nghiêm trọng: Không thể bind cổng {} sau 20 lần thử!", port);
+                    eprintln!("❌ [Rust Core] Lỗi nghiêm trọng: Không thể bind cổng {} sau 30 lần thử!", port);
                     let _ = ready_tx.send(false);
                     return;
                 }
@@ -111,8 +111,8 @@ fn main() {
         });
     });
 
-    // Chờ Axum server sẵn sàng trước khi hiển thị giao diện (tối đa 8 giây)
-    match ready_rx.recv_timeout(std::time::Duration::from_secs(8)) {
+    // Chờ Axum server sẵn sàng trước khi hiển thị giao diện (tối đa 15 giây)
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(15)) {
         Ok(true) => (),
         _ => {
             eprintln!("❌ [Rust Core] Server cổng 9090 không thể khởi động, hủy nạp GUI.");
