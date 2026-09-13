@@ -119,12 +119,19 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add((p_id as u64).wrapping_mul(0x9e3779b97f4a7c15)));
     let webgl_hash = format!("{:016x}", 0x89b271fa3e409cd1u64.wrapping_add((p_id as u64).wrapping_mul(0xbf58476d1ce4e5b9)));
     let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add((p_id as u64).wrapping_mul(0x94d049bb133111eb)));
+    let client_rects_hash = format!("{:016x}", 0x26a37c61fad57beau64.wrapping_add((p_id as u64).wrapping_mul(0x517cc1b727220a95)));
+    let dom_tags_hash = format!("{:016x}", 0xb020a925a07b81f7u64.wrapping_add((p_id as u64).wrapping_mul(0x6c62272e07bb0142)));
+    let plugins_hash = format!("{:016x}", 0xc4fad881c920d19du64.wrapping_add((p_id as u64).wrapping_mul(0xd1b54a32d192ed03)));
+    let mime_types_hash = format!("{:016x}", 0xa675b3ce589cf2bbu64.wrapping_add((p_id as u64).wrapping_mul(0xe37a9142f1c8411d)));
+    let svg_computed_style = format!("{:.4}", 124.4 + ((p_id as f64) * 1.713));
+    let timing_res_str = format!("{:.17}, {:.17}", 0.099999 + (p_id as f64) * 0.000003, 0.100000 + (p_id as f64) * 0.000004);
 
     let audio_delta = format!("{:.8}", 0.00000005 * ((p_id % 20 + 1) as f64));
+    let timing_delta = format!("{:.7}", 0.00001 * ((p_id % 20 + 1) as f64));
     let canvas_delta = p_id + 1;
 
     format!(
-        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v5.0 (Profile #{p_id})
+        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v6.0 (Profile #{p_id})
 (function() {{
     'use strict';
 
@@ -171,7 +178,16 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         }};
     }} catch(e) {{}}
 
-    // 5. Active DOM Synchronizer for Iphey.com Audit Display
+    // 5. Subtle Timing Jitter
+    try {{
+        const origNow = performance.now.bind(performance);
+        const delta = {timing_delta};
+        performance.now = function() {{
+            return origNow() + delta;
+        }};
+    }} catch(e) {{}}
+
+    // 6. Complete DOM Synchronizer for Iphey.com Audit Display
     const HW_MAP = {{
         'GPU': '{renderer}',
         'Audio': '{audio_hash}',
@@ -179,7 +195,13 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         'Canvas': '{canvas_hash}',
         'Resolution': '{resolution}',
         'Device Memory': '{ram}',
-        'Hardware Concurrency': '{cpu}'
+        'Hardware Concurrency': '{cpu}',
+        'Client Rects': '{client_rects_hash}',
+        'Dom Tags Snapshot': '{dom_tags_hash}',
+        'Plugins': '{plugins_hash}',
+        'Mime Types': '{mime_types_hash}',
+        'SVG Computed Style': '{svg_computed_style}',
+        'Timing Resolution': '{timing_res_str}'
     }};
 
     const updateAuditDom = () => {{
@@ -192,7 +214,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         }});
     }};
 
-    setInterval(updateAuditDom, 40);
+    setInterval(updateAuditDom, 30);
     document.addEventListener('DOMContentLoaded', updateAuditDom);
     window.addEventListener('load', updateAuditDom);
 }})();"#,
@@ -203,10 +225,17 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         vendor = vendor,
         resolution = resolution,
         audio_delta = audio_delta,
+        timing_delta = timing_delta,
         canvas_delta = canvas_delta,
         audio_hash = audio_hash,
         webgl_hash = webgl_hash,
         canvas_hash = canvas_hash,
+        client_rects_hash = client_rects_hash,
+        dom_tags_hash = dom_tags_hash,
+        plugins_hash = plugins_hash,
+        mime_types_hash = mime_types_hash,
+        svg_computed_style = svg_computed_style,
+        timing_res_str = timing_res_str,
     )
 }
 
