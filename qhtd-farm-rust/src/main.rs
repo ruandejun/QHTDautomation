@@ -45,6 +45,8 @@ fn main() {
     let _ = std::fs::create_dir_all(&temp_data_dir);
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &temp_data_dir);
 
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+
     // 2. Khởi chạy Axum Server trong background runtime của Rust
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -53,6 +55,29 @@ fn main() {
             .expect("Failed to create Tokio runtime");
 
         rt.block_on(async {
+            let mut listener = None;
+            for attempt in 1..=20 {
+                match tokio::net::TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        listener = Some(l);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️ [Port 9090] Đang chờ giải phóng socket (lần {}/20: {})...", attempt, e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                    }
+                }
+            }
+
+            let listener = match listener {
+                Some(l) => l,
+                None => {
+                    eprintln!("❌ [Rust Core] Lỗi nghiêm trọng: Không thể bind cổng {} sau 20 lần thử!", port);
+                    let _ = ready_tx.send(false);
+                    return;
+                }
+            };
+
             let adb = Arc::new(AdbManager::new());
             let stream = Arc::new(StreamManager::new(adb.clone()));
             let nurture = Arc::new(TikTokNurtureEngine::new(adb.clone()));
@@ -65,15 +90,16 @@ fn main() {
 
             let app = create_router(app_state);
             println!("🌐 [Rust Core] Server running at http://127.0.0.1:{}", port);
+            let _ = ready_tx.send(true);
 
-            if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
-                let _ = axum::serve(listener, app).await;
+            if let Err(e) = axum::serve(listener, app).await {
+                eprintln!("❌ [Axum Server] Dừng với lỗi: {:?}", e);
             }
         });
     });
 
-    // Cho server thời gian khởi tạo cổng 9090
-    std::thread::sleep(std::time::Duration::from_millis(350));
+    // Chờ Axum server sẵn sàng trước khi hiển thị giao diện (tối đa 5 giây)
+    let _ = ready_rx.recv_timeout(std::time::Duration::from_secs(5));
 
     // 3. Kiểm tra nếu chạy chế độ --headless (dành cho server / background)
     let args: Vec<String> = std::env::args().collect();
