@@ -160,59 +160,121 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
 (function() {{
     'use strict';
 
-    // 1. Hardware Concurrency & Device Memory (Độc lập từng Profile)
-    try {{
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
-        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
-    }} catch(e) {{}}
+    function patchTargetWindow(w) {{
+        if (!w) return;
+        try {{
+            if (w.__MUN_STEALTH_APPLIED__) return;
+            w.__MUN_STEALTH_APPLIED__ = true;
+        }} catch(e) {{}}
 
-    // 2. WebGL Hardware Spoofing ({renderer})
-    try {{
-        const hookGetParam = (proto) => {{
-            if (!proto) return;
-            const orig = proto.getParameter;
-            proto.getParameter = function(param) {{
-                if (param === 37445 || param === 7936) return '{vendor}';
-                if (param === 37446 || param === 7937) return '{renderer}';
-                return orig.apply(this, arguments);
+        // 1. Hardware Concurrency & Device Memory (Độc lập từng Profile)
+        try {{
+            Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
+            Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
+        }} catch(e) {{}}
+
+        // 2. WebGL Hardware Spoofing ({renderer})
+        try {{
+            const hookGetParam = (proto) => {{
+                if (!proto) return;
+                const orig = proto.getParameter;
+                proto.getParameter = function(param) {{
+                    if (param === 37445 || param === 7936) return '{vendor}';
+                    if (param === 37446 || param === 7937) return '{renderer}';
+                    return orig.apply(this, arguments);
+                }};
             }};
-        }};
-        hookGetParam(WebGLRenderingContext.prototype);
-        if (window.WebGL2RenderingContext) hookGetParam(WebGL2RenderingContext.prototype);
-    }} catch(e) {{}}
+            if (w.WebGLRenderingContext) hookGetParam(w.WebGLRenderingContext.prototype);
+            if (w.WebGL2RenderingContext) hookGetParam(w.WebGL2RenderingContext.prototype);
+        }} catch(e) {{}}
 
-    // 3. Subtle Canvas Noise (Seed #{p_id})
-    try {{
-        const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-        CanvasRenderingContext2D.prototype.getImageData = function() {{
-            const d = originalGetImageData.apply(this, arguments);
-            d.data[0] = Math.max(0, Math.min(255, d.data[0] + {canvas_delta}));
-            return d;
-        }};
-    }} catch(e) {{}}
-
-    // 4. Subtle AudioBuffer Noise
-    try {{
-        const originalGetChannelData = AudioBuffer.prototype.getChannelData;
-        AudioBuffer.prototype.getChannelData = function() {{
-            const channel = originalGetChannelData.apply(this, arguments);
-            for (let i = 0; i < channel.length; i += 50) {{
-                channel[i] += {audio_delta};
+        // 3. Subtle Canvas Noise (Seed #{p_id})
+        try {{
+            if (w.CanvasRenderingContext2D) {{
+                const originalGetImageData = w.CanvasRenderingContext2D.prototype.getImageData;
+                w.CanvasRenderingContext2D.prototype.getImageData = function() {{
+                    const d = originalGetImageData.apply(this, arguments);
+                    d.data[0] = Math.max(0, Math.min(255, d.data[0] + {canvas_delta}));
+                    return d;
+                }};
             }}
-            return channel;
-        }};
-    }} catch(e) {{}}
+        }} catch(e) {{}}
 
-    // 5. Subtle Timing Jitter
+        // 4. Subtle AudioBuffer Noise
+        try {{
+            if (w.AudioBuffer) {{
+                const originalGetChannelData = w.AudioBuffer.prototype.getChannelData;
+                w.AudioBuffer.prototype.getChannelData = function() {{
+                    const channel = originalGetChannelData.apply(this, arguments);
+                    for (let i = 0; i < channel.length; i += 50) {{
+                        channel[i] += {audio_delta};
+                    }}
+                    return channel;
+                }};
+            }}
+        }} catch(e) {{}}
+
+        // 5. Subtle Timing Jitter
+        try {{
+            if (w.performance && w.performance.now) {{
+                const origNow = w.performance.now.bind(w.performance);
+                const delta = {timing_delta};
+                w.performance.now = function() {{
+                    return origNow() + delta;
+                }};
+            }}
+        }} catch(e) {{}}
+    }}
+
+    // Áp dụng bảo vệ ngay lập tức cho window chính
+    patchTargetWindow(window);
+
+    // 6. Deep Iframe Shield: Hook toàn diện HTMLIFrameElement & DOM insertion
     try {{
-        const origNow = performance.now.bind(performance);
-        const delta = {timing_delta};
-        performance.now = function() {{
-            return origNow() + delta;
+        const origContentWindowDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+        if (origContentWindowDesc && origContentWindowDesc.get) {{
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {{
+                get: function() {{
+                    const win = origContentWindowDesc.get.apply(this);
+                    if (win) patchTargetWindow(win);
+                    return win;
+                }},
+                configurable: true
+            }});
+        }}
+
+        const origContentDocDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
+        if (origContentDocDesc && origContentDocDesc.get) {{
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {{
+                get: function() {{
+                    const doc = origContentDocDesc.get.apply(this);
+                    if (doc && doc.defaultView) patchTargetWindow(doc.defaultView);
+                    return doc;
+                }},
+                configurable: true
+            }});
+        }}
+
+        const origAppend = Node.prototype.appendChild;
+        Node.prototype.appendChild = function(child) {{
+            const res = origAppend.apply(this, arguments);
+            if (child && child.tagName === 'IFRAME') {{
+                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
+            }}
+            return res;
+        }};
+
+        const origInsert = Node.prototype.insertBefore;
+        Node.prototype.insertBefore = function(child, ref) {{
+            const res = origInsert.apply(this, arguments);
+            if (child && child.tagName === 'IFRAME') {{
+                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
+            }}
+            return res;
         }};
     }} catch(e) {{}}
 
-    // 6. Complete DOM Synchronizer for Iphey.com Audit Display
+    // 7. Complete DOM Synchronizer for Iphey.com Audit Display
     const HW_MAP = {{
         'GPU': '{renderer}',
         'Audio': '{audio_hash}',
@@ -487,8 +549,11 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
 
-                            if target_type == "page" && !session_id.is_empty() {
-                                // 1. Bật Page domain cho tab này
+                            let is_page = target_type == "page";
+                            let is_iframe = target_type == "iframe";
+
+                            if (is_page || is_iframe) && !session_id.is_empty() {
+                                // 1. Bật Page domain cho target này
                                 cmd_id += 1;
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
@@ -511,7 +576,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     let _ = tx.send(Message::Text(c2.to_string()));
                                 }
 
-                                // 3. Tiêm Clean Stealth Script cho MỌI lần chuyển trang trong tab này
+                                // 3. Tiêm Clean Stealth Script cho MỌI lần chuyển trang trong frame/tab này
                                 cmd_id += 1;
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
@@ -522,7 +587,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     }
                                 }).to_string()));
 
-                                // 4. Đánh giá ngay lập tức trên document hiện tại (đảm bảo tab có dữ liệu tức thì)
+                                // 4. Đánh giá ngay lập tức trên document hiện tại (đảm bảo iframe có dữ liệu tức thì)
                                 cmd_id += 1;
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
@@ -533,8 +598,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     }
                                 }).to_string()));
 
-                                // 5. Nếu là tab ban đầu, điều hướng tới start_url và bringToFront
-                                if is_first_tab {
+                                // 5. Nếu là tab ban đầu của window, điều hướng tới start_url và bringToFront (không áp dụng cho iframe nhúng)
+                                if is_page && is_first_tab {
                                     is_first_tab = false;
                                     cmd_id += 1;
                                     let _ = tx.send(Message::Text(json!({
@@ -554,7 +619,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     }).to_string()));
                                 }
 
-                                // 6. Cho phép tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
+                                // 6. Cho phép frame/tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
                                 cmd_id += 1;
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
@@ -562,7 +627,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     "method": "Runtime.runIfWaitingForDebugger"
                                 }).to_string()));
 
-                                info!("🛡️ [Profile #{}] Đã tự động kích hoạt Stealth Shield cho Tab mới (Session: {})", profile_id, session_id);
+                                let type_label = if is_page { "Tab" } else { "Iframe (OOPIF)" };
+                                info!("🛡️ [Profile #{}] Đã tự động kích hoạt Stealth Shield cho {} mới (Session: {})", profile_id, type_label, session_id);
                             }
                         }
                     }
