@@ -37,11 +37,24 @@ fn main() {
 
     eprintln!("🚀 QHTD AUTOMATION — 100% Pure Native Rust Desktop Engine");
 
+    // 0. Đảm bảo Single Instance: Tự động dọn dẹp các tiến trình cũ đang chiếm cổng 9090
+    let current_pid = std::process::id();
+    let _ = std::process::Command::new("powershell")
+        .args(&[
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Get-Process -Name 'MunAutomation', 'QHTD_Automation_Rust', 'qhtd-farm-core' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne {} }} | Stop-Process -Force -ErrorAction SilentlyContinue",
+                current_pid
+            ),
+        ])
+        .output();
+
     let port = 9090;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     // 1. Cách ly thư mục dữ liệu WebView2 để tránh xung đột khoá file (0x800700AA)
-    let temp_data_dir = std::env::temp_dir().join(format!("MunAutomation_WV_{}", std::process::id()));
+    let temp_data_dir = std::env::temp_dir().join(format!("MunAutomation_WV_{}", current_pid));
     let _ = std::fs::create_dir_all(&temp_data_dir);
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &temp_data_dir);
 
@@ -98,8 +111,14 @@ fn main() {
         });
     });
 
-    // Chờ Axum server sẵn sàng trước khi hiển thị giao diện (tối đa 5 giây)
-    let _ = ready_rx.recv_timeout(std::time::Duration::from_secs(5));
+    // Chờ Axum server sẵn sàng trước khi hiển thị giao diện (tối đa 8 giây)
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(8)) {
+        Ok(true) => (),
+        _ => {
+            eprintln!("❌ [Rust Core] Server cổng 9090 không thể khởi động, hủy nạp GUI.");
+            return;
+        }
+    }
 
     // 3. Kiểm tra nếu chạy chế độ --headless (dành cho server / background)
     let args: Vec<String> = std::env::args().collect();
