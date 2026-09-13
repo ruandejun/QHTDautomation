@@ -171,6 +171,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         try {{
             Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
             Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
+            Object.defineProperty(w.navigator, 'webdriver', {{ get: () => false, configurable: true }});
         }} catch(e) {{}}
 
         // 2. WebGL Hardware Spoofing ({renderer})
@@ -400,7 +401,6 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg(format!("--user-data-dir={}", user_data_dir.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
-        .arg("--disable-blink-features=AutomationControlled")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=vi-VN,vi,en-US,en")
