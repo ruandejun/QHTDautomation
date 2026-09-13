@@ -114,6 +114,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/profiles", get(list_browser_profiles_handler))
         .route("/api/browser/profiles", post(create_browser_profile_handler))
         .route("/api/browser/profiles/launch", post(launch_browser_profile_handler))
+        .route("/api/browser/profiles/stop", post(stop_browser_profile_handler))
+        .route("/api/browser/active", get(get_active_browser_profiles_handler))
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
         // ── iOS & IPATool APIs ──
         .route("/api/ios/devices", get(list_ios_devices_handler))
@@ -621,6 +623,19 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
     }))
 }
 
+async fn stop_browser_profile_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    crate::cdp_browser::stop_cdp_profile(id);
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("🛑 Đã đóng Profile #{}", id)
+    }))
+}
+
+async fn get_active_browser_profiles_handler() -> Json<Vec<usize>> {
+    Json(crate::cdp_browser::get_active_profile_ids())
+}
+
 // ── iOS & IPATool Handlers ───────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -1079,6 +1094,44 @@ async fn dashboard_handler() -> Html<&'static str> {
         .data-table th { background: rgba(0,0,0,0.3); color: var(--text-muted); font-weight: 700; }
         .data-table tr:hover { background: rgba(255,255,255,0.02); }
 
+        .badge-status-running {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #10b981;
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .pulse-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #10b981;
+            box-shadow: 0 0 8px #10b981;
+            animation: pulseAnim 1.5s infinite;
+        }
+        @keyframes pulseAnim {
+            0% { transform: scale(0.9); opacity: 0.8; }
+            50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 12px #10b981; }
+            100% { transform: scale(0.9); opacity: 0.8; }
+        }
+        .badge-status-stopped {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border);
+        }
+
         .search-input {
             background: var(--bg-card-hover);
             border: 1px solid var(--border);
@@ -1198,6 +1251,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <h2 style="font-size: 14px; font-weight: 700;">🌐 Mun Anti Browser — Hardware Fingerprint Shield (100% Không Lộ Finger Gốc)</h2>
                 </div>
                 <div class="toolbar-group">
+                    <span id="active-profiles-count" style="font-size: 11px; font-weight: 700; color: #10b981; margin-right: 6px;"></span>
                     <input type="text" class="search-input" placeholder="Tìm profile..." id="profile-search" oninput="filterProfiles()">
                     <button class="btn btn-primary" onclick="openCreateProfileModal()">➕ Tạo Profile Ẩn Danh Mới</button>
                 </div>
@@ -1211,11 +1265,12 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <th>Hệ Điều Hành / User-Agent</th>
                         <th>Card GPU & Bảo Vệ Vân Tay</th>
                         <th>Proxy Cấu Hình</th>
+                        <th>Trạng Thái</th>
                         <th>Thao Tác</th>
                     </tr>
                 </thead>
                 <tbody id="browser-profiles-body">
-                    <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
+                    <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1954,24 +2009,70 @@ async fn dashboard_handler() -> Html<&'static str> {
         }
 
         // ── Mun Anti Browser Management ──────────────────────────────────────
+        let activeProfileIds = new Set();
+
         async function loadBrowserProfiles() {
             try {
-                const res = await fetch(`${API_BASE}/api/browser/profiles`);
-                allProfiles = await res.json();
+                const [resProf, resActive] = await Promise.all([
+                    fetch(`${API_BASE}/api/browser/profiles`),
+                    fetch(`${API_BASE}/api/browser/active`)
+                ]);
+                allProfiles = await resProf.json();
+                if (resActive.ok) {
+                    const ids = await resActive.json();
+                    activeProfileIds = new Set(ids);
+                }
                 renderProfiles(allProfiles);
+                updateActiveCountBadge();
             } catch (e) {
                 console.error(e);
             }
         }
 
+        async function syncActiveBrowserProfiles() {
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/active`);
+                if (!res.ok) return;
+                const ids = await res.json();
+                const newSet = new Set(ids);
+                let changed = (newSet.size !== activeProfileIds.size);
+                if (!changed) {
+                    for (let id of ids) {
+                        if (!activeProfileIds.has(id)) { changed = true; break; }
+                    }
+                }
+                if (changed) {
+                    activeProfileIds = newSet;
+                    renderProfiles(allProfiles);
+                    updateActiveCountBadge();
+                }
+            } catch (e) {
+                // Silently handle transient errors
+            }
+        }
+
+        function updateActiveCountBadge() {
+            const el = document.getElementById('active-profiles-count');
+            if (!el) return;
+            if (activeProfileIds.size > 0) {
+                el.innerHTML = `🟢 <b>${activeProfileIds.size}</b> profile đang mở`;
+            } else {
+                el.innerText = '';
+            }
+        }
+
+        // Tự động đồng bộ trạng thái thực tế mỗi 2 giây
+        setInterval(syncActiveBrowserProfiles, 2000);
+
         function renderProfiles(profiles) {
             const tbody = document.getElementById('browser-profiles-body');
             if (profiles.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới".</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới".</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = profiles.map(p => {
+                const isRunning = activeProfileIds.has(p.id);
                 let gpuLabel = 'DirectX 11 GPU';
                 if (p.gpu_renderer) {
                     if (p.gpu_renderer.includes('RTX 3060')) gpuLabel = 'NVIDIA RTX 3060';
@@ -1988,7 +2089,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 <tr>
                     <td><b>#${p.id}</b></td>
                     <td><b style="color:var(--primary);">${p.name}</b></td>
-                    <td style="font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <td style="font-size: 11px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                         <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os}</span> 
                         <span style="color:#e2e8f0;">${p.profile_user_agent}</span>
                     </td>
@@ -1998,8 +2099,16 @@ async fn dashboard_handler() -> Html<&'static str> {
                     </td>
                     <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
                     <td>
-                        <button id="btn-launch-${p.id}" class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>
-                        <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
+                        ${isRunning 
+                            ? `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>` 
+                            : `<span class="badge-status-stopped">⚪ Đã tắt</span>`}
+                    </td>
+                    <td>
+                        ${isRunning
+                            ? `<button id="btn-action-${p.id}" class="btn btn-danger" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng Profile</button>`
+                            : `<button id="btn-action-${p.id}" class="btn btn-primary" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>`
+                        }
+                        <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
                     </td>
                 </tr>
             `}).join('');
@@ -2059,10 +2168,11 @@ async fn dashboard_handler() -> Html<&'static str> {
         }
 
         async function launchBrowserProfile(id) {
-            const btn = document.getElementById(`btn-launch-${id}`) || event.target;
-            const origText = btn.innerText;
-            btn.innerText = "⏳ Đang mở...";
-            btn.disabled = true;
+            const btn = document.getElementById(`btn-action-${id}`);
+            if (btn) {
+                btn.innerText = "⏳ Đang mở...";
+                btn.disabled = true;
+            }
 
             try {
                 const res = await fetch(`${API_BASE}/api/browser/profiles/launch`, {
@@ -2071,17 +2181,37 @@ async fn dashboard_handler() -> Html<&'static str> {
                     body: JSON.stringify({ id })
                 });
                 const d = await res.json();
-                setTimeout(() => {
-                    btn.innerText = "🟢 Đang chạy";
-                    setTimeout(() => {
-                        btn.innerText = origText;
-                        btn.disabled = false;
-                    }, 5000);
-                }, 1500);
+                activeProfileIds.add(id);
+                renderProfiles(allProfiles);
+                updateActiveCountBadge();
+                setTimeout(syncActiveBrowserProfiles, 1000);
+                setTimeout(syncActiveBrowserProfiles, 3000);
             } catch(e) {
                 alert("Lỗi khi mở profile: " + e);
-                btn.innerText = origText;
-                btn.disabled = false;
+                renderProfiles(allProfiles);
+            }
+        }
+
+        async function stopBrowserProfile(id) {
+            const btn = document.getElementById(`btn-action-${id}`);
+            if (btn) {
+                btn.innerText = "⏳ Đang đóng...";
+                btn.disabled = true;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/profiles/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                activeProfileIds.delete(id);
+                renderProfiles(allProfiles);
+                updateActiveCountBadge();
+                setTimeout(syncActiveBrowserProfiles, 500);
+            } catch(e) {
+                alert("Lỗi khi đóng profile: " + e);
+                renderProfiles(allProfiles);
             }
         }
 

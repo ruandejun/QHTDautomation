@@ -1,13 +1,38 @@
 use crate::api::BrowserProfile;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Duration;
+use parking_lot::RwLock;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
+
+static ACTIVE_PROFILES: OnceLock<RwLock<HashSet<usize>>> = OnceLock::new();
+
+pub fn active_profiles() -> &'static RwLock<HashSet<usize>> {
+    ACTIVE_PROFILES.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+pub fn is_profile_active(id: usize) -> bool {
+    active_profiles().read().contains(&id)
+}
+
+pub fn get_active_profile_ids() -> Vec<usize> {
+    active_profiles().read().iter().copied().collect()
+}
+
+pub fn mark_profile_active(id: usize) {
+    active_profiles().write().insert(id);
+}
+
+pub fn mark_profile_inactive(id: usize) {
+    active_profiles().write().remove(&id);
+}
 
 pub static GPU_POOL: &[(&str, &str)] = &[
     ("ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
@@ -261,6 +286,14 @@ fn cleanup_profile_process_and_locks(profile_id: usize, user_data_dir: &std::pat
     let _ = std::fs::remove_file(user_data_dir.join("lockfile"));
 }
 
+/// Dừng profile Chrome đang chạy và xóa trạng thái
+pub fn stop_cdp_profile(profile_id: usize) {
+    info!("🛑 Dừng tiến trình Chrome của Profile #{}", profile_id);
+    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    cleanup_profile_process_and_locks(profile_id, &user_data_dir);
+    mark_profile_inactive(profile_id);
+}
+
 /// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
     let chrome_path = find_chrome_executable()
@@ -320,9 +353,19 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
     }
 
-    let _child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Lỗi khi khởi chạy chrome.exe: {}", e))?;
+
+    let p_id = profile.id;
+    mark_profile_active(p_id);
+
+    // Theo dõi tiến trình Chrome nền, khi tắt thì cập nhật trạng thái
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        info!("🛑 Cửa sổ Chrome của Profile #{} đã đóng.", p_id);
+        mark_profile_inactive(p_id);
+    });
 
     // Chờ Chrome mở cổng DevTools
     let client = reqwest::Client::builder()
@@ -450,10 +493,13 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     info!("✅ Đã cấu hình Clean Stealth CDP cho Profile #{} và điều hướng tới {}", profile.id, start_url);
 
+    let ws_p_id = profile.id;
     tokio::spawn(async move {
         while let Some(Ok(_msg)) = read.next().await {
             // Giữ kết nối WebSocket CDP sống liên tục cùng vòng đời của tab trình duyệt
         }
+        info!("🔌 Kết nối CDP của Profile #{} đã ngắt.", ws_p_id);
+        mark_profile_inactive(ws_p_id);
     });
 
     Ok(())
