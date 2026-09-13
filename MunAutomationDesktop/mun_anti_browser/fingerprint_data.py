@@ -23,9 +23,7 @@ SCREEN_RESOLUTIONS = [
 CHROME_VERSIONS = [
     "136.0.7103.113", "136.0.7103.92", "135.0.7049.114",
     "135.0.7049.84", "134.0.6998.165", "134.0.6998.88",
-    "133.0.6943.141", "133.0.6943.98", "132.0.6834.160",
-    "131.0.6778.140", "130.0.6723.117", "129.0.6668.100",
-    "128.0.6613.120", "127.0.6533.99",
+    "133.0.6943.141", "133.0.6943.98",
 ]
 
 IPHONE_DEVICES = {
@@ -297,19 +295,23 @@ def generate_user_agent(
 
     else:
         # Desktop
-        if os_type == "Window":
+        if os_type in ("Window", "Windows") or not os_type:
             agent_os = "Windows NT 10.0; Win64; x64"
-        elif os_type == "Mac OS X":
+            os_name = "Windows"
+        elif os_type == "Mac OS X" or "Mac" in str(os_type):
             ios_ver = random.choice(APPLE_IOS_VERSIONS)
             agent_os = f"Macintosh; Intel Mac OS X {ios_ver}"
+            os_name = "macOS"
         elif os_type == "Linux":
             agent_os = "X11; Linux x86_64"
+            os_name = "Linux"
         else:
-            agent_os = "X11; CrOS x86_64 14909.100.0"
+            agent_os = "Windows NT 10.0; Win64; x64"
+            os_name = "Windows"
 
         ua = (
             f"Mozilla/5.0 ({agent_os}) AppleWebKit/537.36 "
             f"(KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
         )
         resolution = random.choice(SCREEN_RESOLUTIONS)
-        return ua, os_type, resolution, cpu
+        return ua, os_name, resolution, cpu

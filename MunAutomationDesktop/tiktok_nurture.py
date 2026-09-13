@@ -82,9 +82,12 @@ class NurtureConfig:
     videos_per_session: int = 30
     like_probability: float = 0.70
     comment_probability: float = 0.15
+    share_probability: float = 0.10
     follow_probability: float = 0.05
     min_watch_seconds: int = 8
     max_watch_seconds: int = 60
+    session_minutes_min: int = 3
+    session_minutes_max: int = 7
     action_delay_mean: float = 2.5
     action_delay_std: float = 0.8
     scroll_delay_mean: float = 1.5
@@ -96,6 +99,8 @@ class NurtureConfig:
     proxy_type: str = "socks5"
     headless: bool = False
     c69_url: str = "https://c69.us"
+    auto_setup_profile: bool = True
+    avatar_pool_dir: str = ""
     fallback_comments: List[str] = field(default_factory=lambda: [
         "Video hay qua! 🔥",
         "Cam on ban da chia se ❤️",
@@ -117,6 +122,38 @@ class NurtureConfig:
 # ============================================================================
 # SHARED HELPERS
 # ============================================================================
+
+def _clean_cdp_val(val: Any) -> Any:
+    """Chuyển đổi RemoteObject của nodriver/CDP về dict/list/primitive thuần Python."""
+    if isinstance(val, dict):
+        if "value" in val and len(val) <= 2:
+            return _clean_cdp_val(val["value"])
+        return {k: _clean_cdp_val(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        # Format nodriver trả về cho Object: [['key', {'type': '...', 'value': '...'}], ...]
+        if val and isinstance(val[0], (list, tuple)) and len(val[0]) == 2 and isinstance(val[0][0], str):
+            res_dict = {}
+            for item in val:
+                k = item[0]
+                v = item[1]
+                res_dict[k] = _clean_cdp_val(v)
+            return res_dict
+        return [_clean_cdp_val(x) for x in val]
+    return val
+
+async def _safe_eval_json(tab: Any, js_code: str) -> Any:
+    """Evaluate JavaScript và ép kiểu JSON stringify để luôn parse ra dict thuần."""
+    wrapped_js = f"JSON.stringify({js_code})"
+    try:
+        raw_res = await tab.evaluate(wrapped_js)
+        raw_str = _clean_cdp_val(raw_res)
+        if isinstance(raw_str, str):
+            return json.loads(raw_str)
+        return _clean_cdp_val(raw_res)
+    except Exception:
+        # Fallback eval trực tiếp
+        res = await tab.evaluate(js_code)
+        return _clean_cdp_val(res)
 
 async def _human_delay(mean: float = 2.0, std: float = 0.6, min_val: float = 0.3) -> None:
     """Delay Gaussian de mo phong hanh vi nguoi that."""
@@ -222,7 +259,7 @@ class WatchVideoEngine:
     async def _get_video_info(self) -> Dict[str, Any]:
         """Lay thong tin video dang hien thi."""
         try:
-            info = await self.tab.evaluate("""
+            info = await _safe_eval_json(self.tab, """
             (() => {
                 const desc = document.querySelector('[data-e2e="browse-video-desc"]') || document.querySelector('h1');
                 const author = document.querySelector('[data-e2e="browse-username"]');
@@ -236,7 +273,9 @@ class WatchVideoEngine:
                 };
             })()
             """)
-            return info or {"url": "", "description": "", "author": "", "hashtags": []}
+            if isinstance(info, dict):
+                return info
+            return {"url": "", "description": "", "author": "", "hashtags": []}
         except Exception:
             return {"url": "", "description": "", "author": "", "hashtags": []}
 
@@ -313,10 +352,44 @@ class EngagementEngine:
         self.ai = ai or AICommentGenerator(language=config.video_language)
         self.likes = 0
         self.comments = 0
+        self.shares = 0
         self.follows = 0
         self.replies_sent = 0
 
     # ---- Internal actions ----
+
+    async def _share(self) -> bool:
+        """Thực hiện chia sẻ (copy link) video hiện tại."""
+        js = """
+        (() => {
+            const shareBtn = document.querySelector('[data-e2e="share-icon"]')
+                          || document.querySelector('[data-e2e="browse-share-icon"]')
+                          || document.querySelector('button[aria-label*="Share"]')
+                          || document.querySelector('button[aria-label*="Chia sẻ"]');
+            if (shareBtn) {
+                shareBtn.click();
+                return true;
+            }
+            return false;
+        })()
+        """
+        try:
+            res = await self.tab.evaluate(js)
+            if res:
+                await asyncio.sleep(1.0)
+                # Click Copy link trong popup share neu co
+                await self.tab.evaluate("""
+                (() => {
+                    const copyBtn = document.querySelector('[data-e2e="share-copy-link"]')
+                                 || Array.from(document.querySelectorAll('button, div')).find(el => (el.innerText || '').toLowerCase().includes('copy link') || (el.innerText || '').toLowerCase().includes('sao chép'));
+                    if (copyBtn) copyBtn.click();
+                })()
+                """)
+                self.shares += 1
+                return True
+        except Exception as exc:
+            logger.debug(f"  Share error: {exc}")
+        return False
 
     async def _like(self) -> bool:
         """Tha tim video hien tai."""
@@ -423,6 +496,12 @@ class EngagementEngine:
                         logger.info(f"  Liked (total={self.likes})")
                     await _human_delay(self.config.action_delay_mean, self.config.action_delay_std)
 
+                if random.random() < self.config.share_probability:
+                    ok = await self._share()
+                    if ok:
+                        logger.info(f"  Shared/Copied (total={self.shares})")
+                    await _human_delay(self.config.action_delay_mean, self.config.action_delay_std)
+
                 if random.random() < self.config.comment_probability:
                     ok = await self._comment(vid)
                     if ok:
@@ -439,7 +518,7 @@ class EngagementEngine:
                 logger.warning(f"  Engage error: {exc}")
             await _human_delay(2.0, 0.8)
 
-        stats = {"likes": self.likes, "comments": self.comments, "follows": self.follows}
+        stats = {"likes": self.likes, "comments": self.comments, "shares": self.shares, "follows": self.follows}
         logger.info(f"Engage done: {stats}")
         return stats
 
@@ -574,6 +653,177 @@ class VideoPostingEngine:
 
 
 # ============================================================================
+# PROFILE SETUP ENGINE (Username / Nickname & Avatar Auto-Config)
+# ============================================================================
+
+class ProfileSetupEngine:
+    """
+    Kiem tra va thiet lap profile TikTok cho tai khoan moi:
+    - Kiem tra username co phai dang mac dinh he thong random (user1234567...) hay khong -> doi nick.
+    - Kiem tra avatar co phai anh mac dinh hay khong -> upload anh bat ky tu avatar_pool.
+    """
+
+    DEFAULT_NAMES = [
+        "Linh Đan", "Minh Khang", "Bảo Châu", "Hoàng Nam", "Khánh Vy", "Gia Hưng",
+        "Thảo Nguyên", "Tuấn Kiệt", "Mai Anh", "Hải Đăng", "Quỳnh Nga", "Đức Anh",
+        "Phương Linh", "Quốc Bảo", "Thu Trang", "Nhật Minh", "Thanh Hằng", "Việt Dũng",
+        "Alex Nguyen", "Sophie Tran", "Ryan Le", "Chloe Pham", "Lucas Hoang", "Mia Vu"
+    ]
+
+    def __init__(self, tab: Any, config: NurtureConfig, account: Dict[str, Any]):
+        self.tab = tab
+        self.config = config
+        self.account = account
+
+    async def audit_and_setup(self) -> Dict[str, Any]:
+        """Kiem tra va tu dong cap nhat username / avatar neu con mac dinh."""
+        logger.info("🔍 [ProfileSetup] Bắt đầu kiểm tra thông tin tài khoản...")
+        res = {"username_updated": False, "avatar_updated": False, "nickname": "", "username": ""}
+        try:
+            # Vao trang profile ca nhan
+            await self.tab.get("https://www.tiktok.com/@me")
+            await asyncio.sleep(4)
+
+            # Lay username va nickname hien tai
+            profile_info = await _safe_eval_json(self.tab, """
+            (() => {
+                const userH1 = document.querySelector('[data-e2e="user-title"]') || document.querySelector('h1[data-e2e="user-title"]');
+                const subTitle = document.querySelector('[data-e2e="user-subtitle"]');
+                const avatarImg = document.querySelector('[data-e2e="user-avatar"] img') || document.querySelector('span[data-e2e="user-avatar"] img');
+                return {
+                    nickname: userH1 ? userH1.innerText.trim() : '',
+                    username: subTitle ? subTitle.innerText.trim().replace('@', '') : '',
+                    avatar_src: avatarImg ? avatarImg.src : ''
+                };
+            })()
+            """)
+            logger.info(f"  Profile hiện tại: {profile_info}")
+
+            if not isinstance(profile_info, dict):
+                profile_info = {}
+
+            curr_user = profile_info.get("username", "") if profile_info else ""
+            curr_nick = profile_info.get("nickname", "") if profile_info else ""
+            avatar_src = profile_info.get("avatar_src", "") if profile_info else ""
+
+            # 1. Kiem tra va doi Nickname / Username neu mac dinh
+            is_default_user = not curr_user or curr_user.lower().startswith("user") or bool(re.match(r"^user\d{6,}", curr_user.lower()))
+            if is_default_user or not curr_nick:
+                logger.info("⚠️ Phát hiện tên nick hoặc username mặc định -> Bắt đầu đổi profile...")
+                ok = await self._update_name_and_username()
+                res["username_updated"] = ok
+
+            # 2. Kiem tra avatar
+            has_custom_avatar = avatar_src and not ("default" in avatar_src.lower() or "silhouette" in avatar_src.lower() or "avatar-default" in avatar_src.lower())
+            if not has_custom_avatar:
+                logger.info("⚠️ Chưa có Avatar (đang dùng avatar mặc định) -> Tự động upload avatar mới...")
+                ok_ava = await self._upload_random_avatar()
+                res["avatar_updated"] = ok_ava
+            else:
+                logger.info("✅ Tài khoản đã có Avatar cá nhân.")
+
+        except Exception as exc:
+            logger.warning(f"  [ProfileSetup] Lỗi audit profile: {exc}")
+
+        return res
+
+    async def _update_name_and_username(self) -> bool:
+        """Mo modal edit profile va doi name/username."""
+        try:
+            edit_clicked = await self.tab.evaluate("""
+            (() => {
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                const b = btns.find(el => (el.innerText || '').toLowerCase().includes('edit profile') || (el.innerText || '').toLowerCase().includes('sửa hồ sơ'));
+                if (b) { b.click(); return true; }
+                return false;
+            })()
+            """)
+            if not edit_clicked:
+                logger.info("  Không tìm thấy nút Edit profile.")
+                return False
+
+            await asyncio.sleep(2.5)
+
+            new_name = random.choice(self.DEFAULT_NAMES)
+            clean_tag = re.sub(r'[^a-zA-Z0-9_.]', '', self.account.get('email', '').split('@')[0])
+            if len(clean_tag) < 3: clean_tag = f"user_{random.randint(10000, 99999)}"
+
+            # Dien nickname
+            await self.tab.evaluate(f"""
+            (() => {{
+                const inputs = Array.from(document.querySelectorAll('input'));
+                if (inputs.length >= 1) {{
+                    inputs[0].value = '{new_name}';
+                    inputs[0].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
+            }})()
+            """)
+            await asyncio.sleep(1)
+
+            # Click Save
+            await self.tab.evaluate("""
+            (() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const save = btns.find(b => (b.innerText || '').toLowerCase().includes('save') || (b.innerText || '').toLowerCase().includes('lưu'));
+                if (save) save.click();
+            })()
+            """)
+            await asyncio.sleep(2)
+            logger.info(f"✅ Đã cập nhật Nickname mới: {new_name}")
+            return True
+        except Exception as e:
+            logger.warning(f"  Lỗi cập nhật tên: {e}")
+            return False
+
+    async def _upload_random_avatar(self) -> bool:
+        """Lay 1 anh ngau nhien tu avatar_pool de upload avatar len TikTok."""
+        try:
+            pool_dir = self.config.avatar_pool_dir
+            if not pool_dir or not os.path.exists(pool_dir):
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                pool_dir = os.path.join(base_dir, "avatar_pool")
+
+            if not os.path.exists(pool_dir):
+                os.makedirs(pool_dir, exist_ok=True)
+
+            img_files = [
+                os.path.join(pool_dir, f) for f in os.listdir(pool_dir)
+                if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))
+            ]
+
+            if not img_files:
+                logger.warning("  Không tìm thấy ảnh nào trong avatar_pool để upload.")
+                return False
+
+            chosen_avatar = random.choice(img_files)
+            logger.info(f"  Chọn avatar upload: {os.path.basename(chosen_avatar)}")
+
+            file_inp = await self.tab.select('input[type="file"][accept*="image"]', timeout=3)
+            if not file_inp:
+                file_inp = await self.tab.select('input[type="file"]', timeout=3)
+
+            if file_inp:
+                await file_inp.send_keys(os.path.abspath(chosen_avatar))
+                await asyncio.sleep(2.5)
+                await self.tab.evaluate("""
+                (() => {
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    const applyBtn = btns.find(b => (b.innerText || '').toLowerCase().includes('apply') || (b.innerText || '').toLowerCase().includes('áp dụng') || (b.innerText || '').toLowerCase().includes('save') || (b.innerText || '').toLowerCase().includes('lưu'));
+                    if (applyBtn) applyBtn.click();
+                })()
+                """)
+                await asyncio.sleep(2)
+                logger.info("✅ Upload avatar ngẫu nhiên thành công!")
+                return True
+            else:
+                logger.info("  Không tìm thấy input upload ảnh avatar.")
+                return False
+        except Exception as e:
+            logger.warning(f"  Lỗi upload avatar: {e}")
+            return False
+
+
+# ============================================================================
 # SESSION ORCHESTRATOR
 # ============================================================================
 
@@ -659,7 +909,7 @@ class TikTokNurtureSession:
             return False
 
     async def _login(self) -> bool:
-        """Dang nhap bang email/password."""
+        """Dang nhap bang email/password, tu dong doc OTP qua OAuth2 C69 neu can."""
         if await self._check_logged_in():
             self.log("Already logged in.")
             return True
@@ -671,29 +921,124 @@ class TikTokNurtureSession:
         self.log(f"Logging in: {email}")
         try:
             await self.tab.get("https://www.tiktok.com/login/phone-or-email/email?lang=en")
-            await asyncio.sleep(3)
-            email_inp = await self.tab.select('input[name="username"], input[type="email"]', timeout=5)
-            if email_inp:
-                await email_inp.click()
-                for ch in email:
-                    await email_inp.send_keys(ch)
-                    await asyncio.sleep(random.uniform(0.05, 0.15))
-            await asyncio.sleep(0.4)
-            pw_inp = await self.tab.select('input[type="password"]', timeout=5)
-            if pw_inp:
-                await pw_inp.click()
-                for ch in password:
-                    await pw_inp.send_keys(ch)
-                    await asyncio.sleep(random.uniform(0.05, 0.15))
-            await asyncio.sleep(0.4)
-            login_btn = await self.tab.select('button[type="submit"]', timeout=5)
-            if login_btn:
-                await login_btn.click()
-                await asyncio.sleep(5)
+            await asyncio.sleep(4)
+
+            # Điền form đăng nhập sử dụng native prototype setter để kích hoạt hoàn toàn React state
+            fill_success = await self.tab.evaluate(f"""
+            (() => {{
+                const usernameInput = document.querySelector('input[name="username"]') || document.querySelector('input[type="text"]') || document.querySelector('input[placeholder*="Email"]');
+                const passwordInput = document.querySelector('input[type="password"]');
+
+                function setNativeValue(element, value) {{
+                    const valueSetter = Object.getOwnPropertyDescriptor(element, 'value').set;
+                    const prototype = Object.getPrototypeOf(element);
+                    const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value').set;
+                    if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {{
+                        prototypeValueSetter.call(element, value);
+                    }} else if (valueSetter) {{
+                        valueSetter.call(element, value);
+                    }} else {{
+                        element.value = value;
+                    }}
+                    element.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
+                if (usernameInput && passwordInput) {{
+                    usernameInput.focus();
+                    setNativeValue(usernameInput, {json.dumps(email)});
+                    passwordInput.focus();
+                    setNativeValue(passwordInput, {json.dumps(password)});
+                    return true;
+                }}
+                return false;
+            }})()
+            """)
+
+            if not fill_success:
+                # Fallback send_keys nếu evaluate không tìm thấy
+                email_inp = await self.tab.select('input[name="username"], input[type="email"]', timeout=4)
+                if email_inp:
+                    await email_inp.click()
+                    for ch in email:
+                        await email_inp.send_keys(ch)
+                        await asyncio.sleep(0.05)
+                pw_inp = await self.tab.select('input[type="password"]', timeout=4)
+                if pw_inp:
+                    await pw_inp.click()
+                    for ch in password:
+                        await pw_inp.send_keys(ch)
+                        await asyncio.sleep(0.05)
+
+            await asyncio.sleep(1.5)
+
+            # Click Submit button
+            await self.tab.evaluate("""
+            (() => {
+                const btn = document.querySelector('button[type="submit"]');
+                if (btn && !btn.disabled) { btn.click(); return true; }
+                return false;
+            })()
+            """)
+            await asyncio.sleep(6)
+
+            # Kiem tra xem da vao duoc luon chua
+            if await self._check_logged_in():
+                self.log("Login OK (Session established)!", "success")
+                return True
+
+            # Neu TikTok yeu cau ma xac minh OTP (6-digit code)
+            is_otp_page = await self.tab.evaluate("""
+            (() => {
+                const txt = (document.body ? document.body.innerText : '').toLowerCase();
+                return txt.includes('6-digit code') || txt.includes('enter code') || txt.includes('mã 6 chữ số') || Boolean(document.querySelector('input[placeholder*="code"], input[name*="code"]'));
+            })()
+            """)
+
+            if is_otp_page:
+                self.log("📧 TikTok yêu cầu mã 6 số (OTP) -> Đang đọc hòm thư qua OAuth2 C69...", "warning")
+                ae_id = self.account.get("accounts_emails") or self.account.get("accounts_emails_id")
+                otp_code = None
+                if ae_id:
+                    # Polling hòm thư qua C69 Graph API trong 45s
+                    headers = {"Authorization": "Token 99b02d3d255a49193950777b1cc3e3db099ceefb"}
+                    c69_base = self.config.c69_url.rstrip("/")
+                    for wait_idx in range(15):
+                        await asyncio.sleep(3)
+                        try:
+                            r_mail = requests.get(f"{c69_base}/dashboard/api/emails/{ae_id}/read-mailbox/", headers=headers, timeout=10)
+                            if r_mail.status_code == 200:
+                                emails = r_mail.json().get("emails", [])
+                                for m in emails[:5]:
+                                    subj = m.get("subject", "")
+                                    snip = m.get("snippet", "")
+                                    # Tim ma 6 chu so trong subject hoac snippet
+                                    m_code = re.search(r'\b(\d{6})\b', subj) or re.search(r'\b(\d{6})\b', snip)
+                                    if m_code:
+                                        otp_code = m_code.group(1)
+                                        self.log(f"🔑 Lấy được mã TikTok OTP qua OAuth2: {otp_code} (Subject: {subj})", "success")
+                                        break
+                            if otp_code:
+                                break
+                        except Exception as e_poll:
+                            logger.debug(f"Poll mail error: {e_poll}")
+
+                if otp_code:
+                    # Dien ma OTP vao input tren trang
+                    otp_inputs = await self.tab.select_all('input[type="text"], input[inputmode="numeric"]')
+                    if otp_inputs:
+                        if len(otp_inputs) >= 6:
+                            for idx, digit in enumerate(otp_code):
+                                await otp_inputs[idx].send_keys(digit)
+                                await asyncio.sleep(0.15)
+                        else:
+                            await otp_inputs[0].send_keys(otp_code)
+                    await asyncio.sleep(4)
+
             if await self._check_logged_in():
                 self.log("Login OK!", "success")
                 return True
-            self.log("Login failed or captcha needed.", "warning")
+            self.log("Login pending or captcha challenge detected.", "warning")
             return False
         except Exception as exc:
             self.log(f"Login error: {exc}", "error")
@@ -717,12 +1062,51 @@ class TikTokNurtureSession:
         """
         username = self.account.get("username") or self.account.get("email", "unknown")
         self.log(f"Starting nurture session @{username}...")
+
+        # ── Sinh kịch bản ngẫu nhiên riêng biệt cho từng nick (Per-Account Strategy) ──
+        session_mins = random.uniform(self.config.session_minutes_min, self.config.session_minutes_max)
+        calc_videos = max(3, int(session_mins * random.uniform(2.5, 4.5)))
+
+        account_config = NurtureConfig(
+            videos_per_session=calc_videos,
+            like_probability=round(random.uniform(0.35, 0.75), 2),
+            comment_probability=round(random.uniform(0.08, 0.25), 2),
+            share_probability=round(random.uniform(0.05, 0.20), 2),
+            follow_probability=round(random.uniform(0.02, 0.10), 2),
+            min_watch_seconds=random.randint(6, 12),
+            max_watch_seconds=random.randint(35, 75),
+            action_delay_mean=random.uniform(2.0, 3.2),
+            action_delay_std=0.8,
+            scroll_delay_mean=random.uniform(1.2, 2.0),
+            scroll_delay_std=0.5,
+            video_niche=self.config.video_niche,
+            video_language=self.config.video_language,
+            proxy=self.config.proxy,
+            proxy_type=self.config.proxy_type,
+            headless=self.config.headless,
+            c69_url=self.config.c69_url,
+            auto_setup_profile=self.config.auto_setup_profile,
+            avatar_pool_dir=self.config.avatar_pool_dir,
+            fallback_comments=self.config.fallback_comments,
+        )
+
+        self.log(
+            f"🎲 Kịch bản cá nhân hóa @{username}: "
+            f"Thời gian ~{session_mins:.1f} phút, {calc_videos} videos | "
+            f"Tỷ lệ: Like {int(account_config.like_probability*100)}%, "
+            f"Comment {int(account_config.comment_probability*100)}%, "
+            f"Share {int(account_config.share_probability*100)}%, "
+            f"Follow {int(account_config.follow_probability*100)}%"
+        )
+
         result: Dict[str, Any] = {
             "account": username,
             "success": False,
+            "profile_setup": None,
             "videos_watched": 0,
             "likes": 0,
             "comments": 0,
+            "shares": 0,
             "follows": 0,
             "replies": 0,
             "video_posted": False,
@@ -743,25 +1127,34 @@ class TikTokNurtureSession:
             if self._stop_flag:
                 return result
 
-            # 3. Watch videos
-            self.log(f"Watching {self.config.videos_per_session} videos...")
-            watch_eng = WatchVideoEngine(self.tab, self.config)
+            # 3. Kiem tra va setup Nickname / Avatar neu con mac dinh
+            if account_config.auto_setup_profile:
+                profile_engine = ProfileSetupEngine(self.tab, account_config, self.account)
+                setup_res = await profile_engine.audit_and_setup()
+                result["profile_setup"] = setup_res
+
+            if self._stop_flag:
+                return result
+
+            # 4. Watch videos theo kich ban ca nhan
+            self.log(f"Watching {account_config.videos_per_session} videos...")
+            watch_eng = WatchVideoEngine(self.tab, account_config)
             watched = await watch_eng.run_watch_session()
             result["videos_watched"] = len(watched)
 
             if self._stop_flag:
                 return result
 
-            # 4. Engage
+            # 5. Engage theo kich ban ca nhan
             self.log("Engaging on watched videos...")
-            eng = EngagementEngine(self.tab, self.config)
+            eng = EngagementEngine(self.tab, account_config)
             stats = await eng.engage_on_watched(watched)
             result.update(stats)
 
             if self._stop_flag:
                 return result
 
-            # 5. Reply own comments
+            # 6. Reply own comments
             tt_user = self.account.get("tiktok_username", "")
             if tt_user:
                 self.log(f"Checking own comments @{tt_user}...")
@@ -785,8 +1178,8 @@ class TikTokNurtureSession:
             self.log(
                 f"Session done! "
                 f"watched={result['videos_watched']} likes={result['likes']} "
-                f"comments={result['comments']} follows={result['follows']} "
-                f"replies={result['replies']}",
+                f"shares={result['shares']} comments={result['comments']} "
+                f"follows={result['follows']} replies={result['replies']}",
                 "success",
             )
         except Exception as exc:

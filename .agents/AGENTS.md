@@ -27,3 +27,11 @@ Before submitting code changes, perform a review across 5 axes:
 - **Surgical Changes**: Only simplify or refactor code that is *directly modified* by the current task. Do not perform wide-ranging, unrelated refactoring.
 - **Chesterton's Fence**: Never delete or rewrite code unless you fully understand why it was put there in the first place.
 - **Alignment**: This matches Rule 8 "Surgical Changes" in `CLAUDE.md` of `c69-backend`.
+
+## 5. Strict 6-Phase Standard Deployment Protocol (Bắt Buộc)
+1. **Push lên GitHub:** Lấy local commit hash (`git rev-parse HEAD`), push lên GitHub remote branch.
+2. **Server Kiểm Tra Commit Trước Khi Pull:** SSH vào VPS, `git fetch origin <branch>`, so sánh remote commit hash (`git rev-parse origin/<branch>`) với commit vừa push để chắc chắn server nhận đúng commit mới nhất trước khi pull.
+3. **Server Pull Code:** `git pull origin <branch>`
+4. **Backend Collectstatic & Rebuild Assets:** Chạy `python manage.py collectstatic --noinput` trong container backend (và build frontend nếu có thay đổi UI).
+5. **Restart Docker Containers:** Restart service `docker restart <backend> <frontend> <nginx>` hoặc `docker compose up -d --force-recreate`.
+6. **Live Verification & Kiểm Tra Cập Nhật:** Curl endpoint live (`curl -s -I <url>`), kiểm tra HTTP 200 OK và xác thực code mới live 100%.

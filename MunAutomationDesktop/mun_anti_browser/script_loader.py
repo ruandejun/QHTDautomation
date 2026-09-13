@@ -95,8 +95,9 @@ class ScriptLoader:
         cf_script = self.load_script("cloudflare_bypass").replace("{{plugins_seed}}", str(profile_id))
         parts.append(cf_script)
 
-        # 2. User Agent
-        if profile_config.get("profile_user_agent"):
+        # 2. User Agent is handled natively at C++ level via CDP (emulation.set_user_agent_override)
+        # to avoid JS prototype monkey-patching which triggers 'pineapple' on iphey.
+        if profile_config.get("_inject_ua_js"):
             ua_script = self.load_script("user_agent")
             ua_script = ua_script.replace(
                 "{{UserAgent}}", profile_config["profile_user_agent"]
@@ -225,41 +226,34 @@ class ScriptLoader:
             fonts_script = fonts_script.replace("{{fonts}}", json.dumps(font_data))
             parts.append(fonts_script)
 
-        # 9. Network (always)
-        net_script = self.load_script("network").replace("{{plugins_seed}}", str(profile_id))
-        parts.append(net_script)
+        # 9. Optional extra scripts (disabled by default to prevent 'pineapple' & 'roadmap' detection on iphey/MixVisit)
+        if profile_config.get("inject_network"):
+            net_script = self.load_script("network").replace("{{plugins_seed}}", str(profile_id))
+            parts.append(net_script)
 
-        # 10. Battery (always)
-        bat_script = self.load_script("battery").replace("{{plugins_seed}}", str(profile_id))
-        parts.append(bat_script)
+        if profile_config.get("inject_battery"):
+            bat_script = self.load_script("battery").replace("{{plugins_seed}}", str(profile_id))
+            parts.append(bat_script)
 
-        # 11. Navigator extra (always)
-        nav_script = self.load_script("navigator_extra").replace("{{plugins_seed}}", str(profile_id))
-        resolution = profile_config.get("profile_resolution", "1920x1080")
-        width, height = 1920, 1080
-        if resolution:
-            parts_res = resolution.strip().replace(" ", "").split("x")
-            if len(parts_res) == 2:
-                try:
-                    width = int(parts_res[0])
-                    height = int(parts_res[1])
-                except ValueError:
-                    pass
-        nav_script = nav_script.replace("{{profile_width}}", str(width))
-        nav_script = nav_script.replace("{{profile_height}}", str(height))
-        parts.append(nav_script)
+        if profile_config.get("inject_navigator_extra"):
+            nav_script = self.load_script("navigator_extra").replace("{{plugins_seed}}", str(profile_id))
+            resolution = profile_config.get("profile_resolution", "1920x1080")
+            width, height = 1920, 1080
+            if resolution:
+                parts_res = resolution.strip().replace(" ", "").split("x")
+                if len(parts_res) == 2:
+                    try:
+                        width = int(parts_res[0])
+                        height = int(parts_res[1])
+                    except ValueError:
+                        pass
+            nav_script = nav_script.replace("{{profile_width}}", str(width))
+            nav_script = nav_script.replace("{{profile_height}}", str(height))
+            parts.append(nav_script)
 
-        # 12. Speech synthesis (always)
-        parts.append(self.load_script("speech_synthesis"))
-
-        # 13. Media devices (always)
-        parts.append(self.load_script("media_devices"))
-
-        # 14. Ping block (always)
-        parts.append(self.load_script("ping"))
-
-        # 15. Alibaba SECSDK & Baxia bypass (always)
-        parts.append(self.load_script("alibaba_secsdk_bypass"))
+        # 10. Alibaba SECSDK & Baxia bypass (only if explicitly enabled for Taobao/1688)
+        if profile_config.get("alibaba_bypass"):
+            parts.append(self.load_script("alibaba_secsdk_bypass"))
 
         combined = "\n\n".join(parts)
         cleanup_js = """

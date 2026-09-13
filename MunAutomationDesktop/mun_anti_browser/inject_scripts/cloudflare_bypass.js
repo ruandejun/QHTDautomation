@@ -5,7 +5,6 @@
 
 (function antiDetectInit() {
   'use strict';
-  window.__mun_stealth_active = true;
 
   // Setup native toString spoofing early so all subsequent patches can use it
   var _origToString = Function.prototype.toString;
@@ -398,6 +397,8 @@
   //    and ensure prototypes match exactly so instanceof checks work.
   // ============================================================
   (function fakePluginsAndMimeTypes() {
+    // If native plugins exist, do not tamper with Navigator.prototype to avoid roadmap detection
+    if (navigator.plugins && navigator.plugins.length > 0) return;
     // Seeded random number generator
     var seed = {{plugins_seed}} || 12345;
     function seededRandom() {
@@ -481,18 +482,8 @@
       }
     ];
 
-    // Shuffle the base PDF plugins to change the order/hash
-    var fakeData = seededShuffle(basePlugins.slice());
-
-    // Randomly add optional plugins based on the seed
-    optionalPlugins.forEach(function(optPlugin) {
-      if (seededRandom() > 0.5) {
-        fakeData.push(optPlugin);
-      }
-    });
-
-    // Shuffle one last time
-    fakeData = seededShuffle(fakeData);
+    // Real Chrome on desktop ALWAYS has exactly these 5 PDF plugins in fixed order
+    var fakeData = basePlugins;
 
 
     // Helper to generate native-like toString

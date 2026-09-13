@@ -20,6 +20,7 @@ build/
 *.sln
 
 # Large binaries and temporary archives
+bin/
 *.zip
 *.ipa
 dist/
@@ -47,6 +48,10 @@ online_cards_config.json
 
 # Scratch and temporary directories
 scratch/
+target/
+*.WebView2/
+*.html
+*.png
 
 # Runtime profile data
 QHTDautomationDesktop/chrome_data/

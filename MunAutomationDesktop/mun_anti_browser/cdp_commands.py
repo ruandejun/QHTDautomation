@@ -111,11 +111,13 @@ async def set_user_agent(
     Override user agent via both Network and Emulation CDP domains.
     """
     try:
-        version_first = browser_version.split(".")[0] if browser_version else "109"
+        version_first = browser_version.split(".")[0] if browser_version else "135"
+
+        platform_name = "Windows" if platform == "Win32" else platform
 
         # Build user agent metadata matching modern Chromium Client Hints
         metadata = emulation.UserAgentMetadata(
-            platform=platform,
+            platform=platform_name,
             platform_version="15.0.0" if platform == "Win32" or platform == "Windows" else "14.7.1" if "Mac" in platform else "6.8.0",
             architecture="" if is_mobile else "x86",
             model="",
@@ -260,14 +262,8 @@ async def apply_all_cdp_overrides(
     """
     import httpagentparser
 
-    # Enable Page domain so Chrome registers add_script_to_evaluate_on_new_document.
-    # IMPORTANT: Page domain MUST be disabled immediately after navigate in browser_manager
-    # to bypass bot detection (which looks for CDP Page event listeners, e.g. "squirrel").
-    await tab.send(page_cdp.enable())
-
-    # NOTE: Do NOT call page_cdp.set_bypass_csp() — it requires Page domain
-    # and is also a detectable CDP signal.
-
+    # Page.addScriptToEvaluateOnNewDocument does NOT need Page.enable().
+    # Keeping Page domain disabled avoids triggering CDP event listener detection (e.g. 'squirrel' / 'hasCDP').
     # Disable cache
     await disable_cache(tab)
 
@@ -278,8 +274,9 @@ async def apply_all_cdp_overrides(
     # User Agent override
     user_agent_str = profile_config.get("profile_user_agent", "")
     if user_agent_str:
-        ua_parsed = httpagentparser.detect(user_agent_str)
-        browser_version = ua_parsed.get("browser", {}).get("version", "109")
+        import re
+        m = re.search(r"Chrome/(\d+(?:\.\d+)*)", user_agent_str)
+        browser_version = m.group(1) if m else "135.0.7049.84"
         await set_user_agent(tab, user_agent_str, platform, browser_version, is_mobile)
 
     # Timezone override

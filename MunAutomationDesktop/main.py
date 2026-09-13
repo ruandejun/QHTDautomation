@@ -27,7 +27,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QFrame, QMessageBox,
-    QDialog, QLineEdit, QGridLayout, QStackedWidget, QPlainTextEdit, QScrollBar
+    QDialog, QLineEdit, QGridLayout, QStackedWidget, QPlainTextEdit, QScrollBar, QScrollArea
 )
 from PyQt6.QtGui import QPixmap, QIcon, QFont, QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -2740,6 +2740,75 @@ class MunAutomationBridge(QObject):
             if not accounts:
                 return json.dumps({"error": "Không có tài khoản nào để nuôi."})
 
+            nurture_mode = settings.get("nurture_mode", "browser")
+
+            if nurture_mode == "android":
+                self.tiktok_nurture_running = True
+                self.statusMessage.emit("📱 Khởi động Android Phone Farm TikTok Nurture qua Rust Core...")
+
+                def ensure_rust_core():
+                    try:
+                        r = requests.get("http://localhost:9090/api/devices", timeout=1)
+                        if r.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+                    base_d = os.path.dirname(os.path.abspath(__file__))
+                    cand_paths = [
+                        os.path.join(os.path.dirname(base_d), "bin", "qhtd-farm-core.exe"),
+                        os.path.join(base_d, "bin", "qhtd-farm-core.exe"),
+                        os.path.join(os.path.dirname(base_d), "qhtd-farm-rust", "target", "release", "qhtd-farm-core.exe"),
+                    ]
+                    for bp in cand_paths:
+                        if os.path.exists(bp):
+                            subprocess.Popen([bp], cwd=os.path.dirname(base_d), creationflags=0x08000000 if os.name == 'nt' else 0)
+                            time.sleep(1.5)
+                            return True
+                    return False
+
+                def android_nurture_worker():
+                    try:
+                        ensure_rust_core()
+                        # Call start nurture API on Rust Core
+                        nurture_payload = {
+                            "config": {
+                                "videos_per_session": int(settings.get("videos_per_session", 30)),
+                                "like_probability": float(settings.get("like_probability", 0.70)),
+                                "comment_probability": float(settings.get("comment_probability", 0.15)),
+                                "follow_probability": float(settings.get("follow_probability", 0.05)),
+                                "gemini_api_key": settings.get("gemini_api_key", ""),
+                                "video_niche": settings.get("video_niche", "trending"),
+                                "video_language": settings.get("video_language", "vi"),
+                            }
+                        }
+                        r = requests.post("http://localhost:9090/api/nurture/start", json=nurture_payload, timeout=5)
+                        self.tiktokNurtureUpdate.emit(json.dumps({
+                            "message": "⚡ Đã kích hoạt giàn Android Farm nuôi TikTok qua Rust Engine! Mở http://localhost:9090 để xem live stream.",
+                            "level": "success"
+                        }))
+
+                        while self.tiktok_nurture_running:
+                            time.sleep(2)
+                            try:
+                                s_resp = requests.get("http://localhost:9090/api/nurture/status", timeout=2)
+                                if s_resp.status_code == 200:
+                                    s_data = s_resp.json()
+                                    if not s_data.get("is_running", False):
+                                        break
+                                    devs = s_data.get("devices", [])
+                                    msg_txt = " • ".join([f"{d['device_serial']}: {d.get('last_action', d.get('status'))}" for d in devs[:4]])
+                                    if msg_txt:
+                                        self.statusMessage.emit(f"📱 Android Farm: {msg_txt}")
+                            except Exception:
+                                pass
+                    except Exception as ex:
+                        self.tiktokNurtureUpdate.emit(json.dumps({"message": f"❌ Lỗi Android Farm: {ex}", "level": "error"}))
+                    finally:
+                        self.tiktok_nurture_running = False
+
+                threading.Thread(target=android_nurture_worker, daemon=True).start()
+                return json.dumps({"success": True, "message": "Đã khởi chạy nuôi TikTok trên giàn Android qua Rust Core!"})
+
             continuous_247 = bool(settings.get("continuous_247", False))
             auto_post_video = bool(settings.get("auto_post_video", False))
             # Xac suat MOI VONG se dang 1 video da co san trong pool (khong phai moi tai khoan/moi
@@ -2962,9 +3031,34 @@ class MunAutomationBridge(QObject):
         try:
             if self.tiktok_nurture_manager:
                 self.tiktok_nurture_manager.stop()
+            try:
+                requests.post("http://localhost:9090/api/nurture/stop", timeout=1)
+            except Exception:
+                pass
             self.tiktok_nurture_running = False
             self.statusMessage.emit("⏹️ Đã gửi yêu cầu dừng nuôi TikTok...")
             return json.dumps({"success": True, "message": "Yêu cầu dừng nuôi đã được gửi."})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @pyqtSlot(result=str)
+    def getAndroidDevices(self):
+        """Lấy danh sách các thiết bị Android từ Rust Farm Core."""
+        try:
+            r = requests.get("http://localhost:9090/api/devices", timeout=1.5)
+            if r.status_code == 200:
+                return r.text
+        except Exception:
+            pass
+        return json.dumps([])
+
+    @pyqtSlot(result=str)
+    def openAndroidFarmDashboard(self):
+        """Chuyển sang giao diện Giàn Android Farm 8 Máy trực tiếp trong cửa sổ ứng dụng."""
+        try:
+            if hasattr(self, 'main_window') and self.main_window:
+                self.main_window.switch_to_android_farm()
+                return json.dumps({"success": True, "mode": "native_farm"})
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -3819,13 +3913,299 @@ class QHTDWebPage(QWebEnginePage):
 
 
 # ============================================================================
-# MAIN WINDOW — Hybrid Browser + Native Status Bar
+# NATIVE ANDROID PHONE FARM 10-SCREEN LIVE STREAM WIDGET (PyQt6)
+# ============================================================================
+from PyQt6.QtWebSockets import QWebSocket
+
+class PhoneScreenLabel(QLabel):
+    def __init__(self, serial, dev_width=720, dev_height=1480, parent=None):
+        super().__init__(parent)
+        self.serial = serial
+        self.dev_width = dev_width or 720
+        self.dev_height = dev_height or 1480
+        self.setMinimumSize(180, 340)
+        self.setStyleSheet("background-color: #000; border: 1px solid #1e293b; border-radius: 6px;")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setText("⏳ Đang kết nối live stream...")
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.start_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.start_pos = event.position()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.start_pos is not None:
+            end_pos = event.position()
+            rect = self.rect()
+            scale_x = self.dev_width / max(rect.width(), 1)
+            scale_y = self.dev_height / max(rect.height(), 1)
+
+            x1 = int(self.start_pos.x() * scale_x)
+            y1 = int(self.start_pos.y() * scale_y)
+            x2 = int(end_pos.x() * scale_x)
+            y2 = int(end_pos.y() * scale_y)
+
+            dist = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+            if dist < 15:
+                # Tap
+                threading.Thread(target=lambda: self._send_action("tap", {"x": x1, "y": y1}), daemon=True).start()
+            else:
+                # Swipe
+                threading.Thread(target=lambda: self._send_action("swipe", {"x": x1, "y": y1, "x2": x2, "y2": y2, "duration": 250}), daemon=True).start()
+            self.start_pos = None
+
+    def _send_action(self, action, extra):
+        try:
+            payload = {"action": action, **extra}
+            requests.post(f"http://localhost:9090/api/devices/{self.serial}/action", json=payload, timeout=1)
+        except Exception:
+            pass
+
+
+class PhoneCardWidget(QFrame):
+    def __init__(self, dev_info, idx, parent=None):
+        super().__init__(parent)
+        self.dev_info = dev_info
+        self.serial = dev_info.get("serial", f"DEV_{idx}")
+        self.ws = None
+        self.setStyleSheet("""
+            PhoneCardWidget {
+                background-color: #111827;
+                border: 1px solid #1f2937;
+                border-radius: 12px;
+            }
+            PhoneCardWidget:hover {
+                border-color: #3b82f6;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Header
+        header = QHBoxLayout()
+        name_lbl = QLabel(f"<b>#{idx+1} {dev_info.get('model', 'Samsung')}</b>")
+        name_lbl.setStyleSheet("color: #60a5fa; font-size: 11px;")
+        
+        bat = dev_info.get("battery", 100)
+        bat_color = "#10b981" if bat > 20 else "#ef4444"
+        bat_lbl = QLabel(f"🔋 {bat}%")
+        bat_lbl.setStyleSheet(f"color: {bat_color}; font-size: 11px; font-weight: bold;")
+        
+        header.addWidget(name_lbl)
+        header.addStretch()
+        header.addWidget(bat_lbl)
+        layout.addLayout(header)
+
+        # Screen
+        w = dev_info.get("width", 720)
+        h = dev_info.get("height", 1480)
+        self.screen_lbl = PhoneScreenLabel(self.serial, w, h, self)
+        layout.addWidget(self.screen_lbl, 1)
+
+        # Controls
+        ctrls = QHBoxLayout()
+        ctrls.setSpacing(4)
+        
+        def make_btn(text, color, act, extra=None):
+            btn = QPushButton(text)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {color};
+                    color: #fff;
+                    font-size: 10px;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 4px 0;
+                }}
+                QPushButton:hover {{ opacity: 0.8; }}
+            """)
+            btn.clicked.connect(lambda: threading.Thread(target=lambda: self._send_action(act, extra or {}), daemon=True).start())
+            return btn
+
+        ctrls.addWidget(make_btn("⚡ Mở", "#1e293b", "wake"))
+        ctrls.addWidget(make_btn("🎵 TikTok", "#db2777", "launch"))
+        ctrls.addWidget(make_btn("🏠 Home", "#1e293b", "key", {"keycode": 3}))
+        ctrls.addWidget(make_btn("◀ Back", "#1e293b", "key", {"keycode": 4}))
+        layout.addLayout(ctrls)
+
+        # Status Footer
+        footer = QHBoxLayout()
+        sn_lbl = QLabel(f"SN: {self.serial[-6:]}")
+        sn_lbl.setStyleSheet("color: #64748b; font-size: 10px;")
+        
+        self.status_lbl = QLabel("Live ⚡")
+        self.status_lbl.setStyleSheet("color: #10b981; font-size: 10px; font-weight: bold;")
+        
+        footer.addWidget(sn_lbl)
+        footer.addStretch()
+        footer.addWidget(self.status_lbl)
+        layout.addLayout(footer)
+
+        self.init_websocket()
+
+    def init_websocket(self):
+        try:
+            self.ws = QWebSocket()
+            self.ws.binaryMessageReceived.connect(self._on_frame_received)
+            self.ws.open(QUrl(f"ws://127.0.0.1:9090/ws/stream/{self.serial}"))
+        except Exception as e:
+            print(f"[FarmStream] Lỗi kết nối WS cho {self.serial}: {e}")
+
+    def _on_frame_received(self, data):
+        pix = QPixmap()
+        if pix.loadFromData(data):
+            scaled = pix.scaled(self.screen_lbl.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+            self.screen_lbl.setPixmap(scaled)
+
+    def _send_action(self, action, extra):
+        try:
+            payload = {"action": action, **extra}
+            requests.post(f"http://localhost:9090/api/devices/{self.serial}/action", json=payload, timeout=1)
+        except Exception:
+            pass
+
+    def close_ws(self):
+        if self.ws:
+            self.ws.close()
+
+
+class AndroidFarmWidget(QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.cards = {}
+        self.init_ui()
+
+    def init_ui(self):
+        self.setStyleSheet("background-color: #080b11;")
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 12, 16, 12)
+        main_layout.setSpacing(12)
+
+        # Top Toolbar
+        tb = QFrame()
+        tb.setStyleSheet("background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px;")
+        tb_layout = QHBoxLayout(tb)
+        tb_layout.setContentsMargins(12, 8, 12, 8)
+
+        title = QLabel("📱 <b>GIÀN ANDROID FARM — MULTI-SCREEN LIVE STREAM & AUTOMATION</b>")
+        title.setStyleSheet("color: #38bdf8; font-size: 14px;")
+        tb_layout.addWidget(title)
+        tb_layout.addStretch()
+
+        def make_tb_btn(txt, bg, cb):
+            btn = QPushButton(txt)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {bg};
+                    color: #fff;
+                    font-size: 12px;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                }}
+                QPushButton:hover {{ opacity: 0.9; }}
+            """)
+            btn.clicked.connect(cb)
+            return btn
+
+        tb_layout.addWidget(make_tb_btn("📥 Cài TikTok 10 Máy", "linear-gradient(135deg, #a855f7, #ec4899)", self.install_tiktok_all))
+        tb_layout.addWidget(make_tb_btn("⚡ Tối Ưu HD+ (Giảm Lag)", "#2563eb", self.optimize_resolution_all))
+        tb_layout.addWidget(make_tb_btn("🚀 Scrcpy 60 FPS", "#0284c7", self.launch_scrcpy_farm))
+        tb_layout.addWidget(make_tb_btn("🌱 Bắt Đầu Nuôi All", "#059669", self.start_nurture_all))
+        tb_layout.addWidget(make_tb_btn("⏹️ Dừng Nuôi", "#dc2626", self.stop_nurture_all))
+        tb_layout.addWidget(make_tb_btn("⚡ Mở 10 Màn Hình", "#3b82f6", lambda: self.batch_action("wake")))
+        tb_layout.addWidget(make_tb_btn("🎵 Mở TikTok All", "#db2777", lambda: self.batch_action("launch")))
+        tb_layout.addWidget(make_tb_btn("🏠 Home All", "#334155", lambda: self.batch_action("key", {"keycode": 3})))
+        tb_layout.addWidget(make_tb_btn("🔄 Quét Lại USB", "#1e293b", self.refresh_devices))
+        tb_layout.addWidget(make_tb_btn("🌐 Web Dashboard", "#0284c7", lambda: self.main_window.switch_to_web()))
+        
+        main_layout.addWidget(tb)
+
+        # Scroll area for multi-phone grid
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        grid_container = QWidget()
+        grid_container.setStyleSheet("background: transparent;")
+        self.grid_layout = QGridLayout(grid_container)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(12)
+        scroll.setWidget(grid_container)
+        main_layout.addWidget(scroll, 1)
+
+        self.refresh_devices()
+
+    def refresh_devices(self):
+        try:
+            r = requests.get("http://localhost:9090/api/devices", timeout=1.5)
+            devices = r.json() if r.status_code == 200 else []
+        except Exception:
+            devices = []
+
+        # Close old websockets
+        for card in self.cards.values():
+            card.close_ws()
+
+        # Clear old
+        for i in reversed(range(self.grid_layout.count())): 
+            w = self.grid_layout.itemAt(i).widget()
+            if w: w.setParent(None)
+        self.cards.clear()
+
+        cols = 5 if len(devices) > 4 else 4
+        for idx, dev in enumerate(devices):
+            card = PhoneCardWidget(dev, idx, self)
+            row, col = divmod(idx, cols)
+            self.grid_layout.addWidget(card, row, col)
+            self.cards[dev["serial"]] = card
+
+    def optimize_resolution_all(self):
+        threading.Thread(target=lambda: requests.post("http://localhost:9090/api/farm/optimize-resolution", timeout=5), daemon=True).start()
+        self.main_window.status_label.setText("⚡ Đã gửi lệnh tối ưu độ phân giải HD+ (720x1480 / 280dpi) cho toàn bộ giàn máy!")
+
+    def launch_scrcpy_farm(self):
+        threading.Thread(target=lambda: requests.post("http://localhost:9090/api/farm/launch-scrcpy", timeout=5), daemon=True).start()
+        self.main_window.status_label.setText("🚀 Đã khởi chạy Scrcpy Hardware Stream 60 FPS!")
+
+    def install_tiktok_all(self):
+        threading.Thread(target=lambda: requests.post("http://localhost:9090/api/devices/install-tiktok", timeout=3), daemon=True).start()
+        self.main_window.status_label.setText("📥 Đang gửi lệnh cài đặt TikTok APK tự động trên toàn bộ máy...")
+
+    def start_nurture_all(self):
+        threading.Thread(target=lambda: requests.post("http://localhost:9090/api/nurture/start", json={}, timeout=3), daemon=True).start()
+        self.main_window.status_label.setText("🌱 Đã phát lệnh nuôi TikTok tự động cho toàn bộ giàn máy Android!")
+
+    def stop_nurture_all(self):
+        threading.Thread(target=lambda: requests.post("http://localhost:9090/api/nurture/stop", timeout=3), daemon=True).start()
+        self.main_window.status_label.setText("⏹️ Đã dừng tiến trình nuôi TikTok trên giàn máy.")
+
+    def batch_action(self, action, extra=None):
+        def _run():
+            for s in self.cards.keys():
+                try:
+                    payload = {"action": action, **(extra or {})}
+                    requests.post(f"http://localhost:9090/api/devices/{s}/action", json=payload, timeout=1)
+                except Exception:
+                    pass
+        threading.Thread(target=_run, daemon=True).start()
+
+
+# ============================================================================
+# MAIN WINDOW — Hybrid Browser + Native Status Bar + Android Farm View
 # ============================================================================
 class MunAutomationStoreDesktop(QMainWindow):
     def __init__(self):
         super().__init__()
         self.bridge = None
         self.web_view = None
+        self.android_farm_widget = None
         self._cookie_store = None
         self.init_ui()
 
@@ -3850,7 +4230,56 @@ class MunAutomationStoreDesktop(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # === STACKED WIDGET (for loading screen and web view) ===
+        # Top Header Switcher Bar
+        top_header = QFrame()
+        top_header.setFixedHeight(42)
+        top_header.setStyleSheet("""
+            QFrame {
+                background-color: #0b0f19;
+                border-bottom: 1px solid #1e293b;
+            }
+        """)
+        top_layout = QHBoxLayout(top_header)
+        top_layout.setContentsMargins(16, 4, 16, 4)
+
+        logo_lbl = QLabel("⚡ <b>QHTD AUTOMATION</b>")
+        logo_lbl.setStyleSheet("color: #38bdf8; font-size: 13px;")
+        top_layout.addWidget(logo_lbl)
+        top_layout.addStretch()
+
+        self.btn_nav_web = QPushButton("🌐 C69 Web Dashboard")
+        self.btn_nav_web.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #38bdf8;
+                font-size: 12px;
+                font-weight: bold;
+                border: 1px solid #38bdf8;
+                border-radius: 6px;
+                padding: 6px 14px;
+            }
+        """)
+        self.btn_nav_web.clicked.connect(self.switch_to_web)
+        top_layout.addWidget(self.btn_nav_web)
+
+        self.btn_nav_farm = QPushButton("📱 Giàn Android Farm (10 Máy Live)")
+        self.btn_nav_farm.setStyleSheet("""
+            QPushButton {
+                background-color: #059669;
+                color: #fff;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 14px;
+            }
+        """)
+        self.btn_nav_farm.clicked.connect(self.switch_to_android_farm)
+        top_layout.addWidget(self.btn_nav_farm)
+
+        main_layout.addWidget(top_header)
+
+        # === STACKED WIDGET (for loading screen, web view, and native android farm) ===
         self.stacked_widget = QStackedWidget()
         main_layout.addWidget(self.stacked_widget, 1)
 
@@ -3878,26 +4307,13 @@ class MunAutomationStoreDesktop(QMainWindow):
         self.setup_web_engine()
         self.stacked_widget.addWidget(self.web_view)
 
-        # Hiển thị loading overlay mặc định và kết nối signals
-        self.stacked_widget.setCurrentWidget(self.loading_widget)
-        self._initial_load_done = False
+        # === NATIVE ANDROID FARM WIDGET ===
+        self.android_farm_widget = AndroidFarmWidget(self)
+        self.stacked_widget.addWidget(self.android_farm_widget)
 
-        # CHỈ show loading screen 1 lần duy nhất khi khởi động lần đầu.
-        # KHÔNG kết nối loadStarted → tránh nhấp nháy khi React Router
-        # chuyển tab internal hoặc frontend fetch data định kỳ.
-        def _on_first_load_finished(ok):
-            if not self._initial_load_done:
-                self._initial_load_done = True
-                self.stacked_widget.setCurrentWidget(self.web_view)
-                # Ngắt kết nối sau lần đầu — không cần nữa
-                try:
-                    self.web_view.loadFinished.disconnect(_on_first_load_finished)
-                except Exception:
-                    pass
-
-        self.web_view.loadFinished.connect(_on_first_load_finished)
-        # Phòng hờ trường hợp không có tín hiệu loadFinished (timeout 15s)
-        QTimer.singleShot(15000, lambda: self.stacked_widget.setCurrentWidget(self.web_view))
+        # Hiển thị trực tiếp Android Farm Widget để người dùng điều khiển ngay
+        self.stacked_widget.setCurrentWidget(self.android_farm_widget)
+        self._initial_load_done = True
 
         # === NATIVE STATUS BAR (bottom) ===
         status_bar = QFrame()
@@ -3926,11 +4342,23 @@ class MunAutomationStoreDesktop(QMainWindow):
 
         status_layout.addStretch()
 
-        version_label = QLabel(f"MunAutomation v{CLIENT_VERSION} • PyQt6 + Chromium")
+        version_label = QLabel(f"MunAutomation v{CLIENT_VERSION} • PyQt6 + Chromium + Rust Farm Core")
         version_label.setStyleSheet("color: #475569; font-size: 10px;")
         status_layout.addWidget(version_label)
 
         main_layout.addWidget(status_bar)
+
+    def switch_to_web(self):
+        self.stacked_widget.setCurrentWidget(self.web_view)
+        self.btn_nav_web.setStyleSheet("background-color: #0284c7; color: #fff; font-size: 12px; font-weight: bold; border-radius: 6px; padding: 6px 14px;")
+        self.btn_nav_farm.setStyleSheet("background-color: #1e293b; color: #94a3b8; font-size: 12px; font-weight: bold; border: 1px solid #334155; border-radius: 6px; padding: 6px 14px;")
+
+    def switch_to_android_farm(self):
+        self.stacked_widget.setCurrentWidget(self.android_farm_widget)
+        self.btn_nav_farm.setStyleSheet("background-color: #059669; color: #fff; font-size: 12px; font-weight: bold; border-radius: 6px; padding: 6px 14px;")
+        self.btn_nav_web.setStyleSheet("background-color: #1e293b; color: #94a3b8; font-size: 12px; font-weight: bold; border: 1px solid #334155; border-radius: 6px; padding: 6px 14px;")
+        if self.android_farm_widget:
+            self.android_farm_widget.refresh_devices()
 
     def setup_web_engine(self):
         """Thiết lập QWebEngineView + QWebChannel bridge"""

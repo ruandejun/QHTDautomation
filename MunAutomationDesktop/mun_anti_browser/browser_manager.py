@@ -209,7 +209,8 @@ class NodriverBrowserManager:
 
         # Start browser via nodriver
         config = nodriver.Config()
-        if os.geteuid() == 0:
+        is_root = (hasattr(os, "geteuid") and os.geteuid() == 0) or sys.platform == "win32"
+        if is_root:
             config.sandbox = False
         else:
             config.sandbox = True
@@ -236,8 +237,9 @@ class NodriverBrowserManager:
             except Exception as e:
                 logger.warning(f"Lỗi khởi động Chrome lần {attempt+1}, kill dọn sạch và thử lại sau 2s: {e}")
                 # Kill triệt để các Chrome treo cũ
-                os.system("pkill -9 -f /opt/google/chrome/chrome || true")
-                os.system("pkill -9 -f /bin/google-chrome || true")
+                if sys.platform != "win32":
+                    os.system("pkill -9 -f /opt/google/chrome/chrome || true")
+                    os.system("pkill -9 -f /bin/google-chrome || true")
                 await asyncio.sleep(2)
         if not self.browser:
             raise RuntimeError("Failed to launch browser after 3 attempts")
@@ -286,7 +288,6 @@ class NodriverBrowserManager:
             # Disable various detections
             "--disable-component-update",
             "--disable-default-apps",
-            "--disable-extensions",
             "--disable-hang-monitor",
             "--disable-popup-blocking",
             "--disable-prompt-on-repost",
@@ -454,17 +455,10 @@ class NodriverBrowserManager:
         tab = await self.browser.get("about:blank", new_tab=True)
         await asyncio.sleep(0.5)
 
-        # Apply injection to new tab
+        # Apply injection to new tab (Page domain remains enabled so addScriptToEvaluateOnNewDocument executes)
         await cdp_commands.apply_all_cdp_overrides(
             tab, self._current_profile, self._injection_script,
         )
-
-        # Disable Page domain first to prevent detection (since apply_all_cdp_overrides enabled it)
-        import nodriver.cdp.page as page_cdp
-        try:
-            await tab.send(page_cdp.disable())
-        except Exception as e:
-            logger.warning(f"Failed to disable Page domain for new tab: {e}")
 
         # If URL is provided, navigate
         if url:

@@ -476,33 +476,46 @@ def start_router_impl(bridge_obj, config_json, c69_base_url, log_callback=None):
             log(f"   wintun.dll:   {wintun_dll}", "info")
             return json.dumps({"success": True, "note": "Binary OK, no API server (c69-router not found)"})
 
-        log("🔍 Bước 3/4: Tìm Python và khởi động c69-router API server...", "info")
-        
-        python_exe, python_err = _find_router_python(router_dir)
-        if not python_exe:
-            return json.dumps({"error": f"Bước 3 thất bại: {python_err}"})
-        
-        log(f"🐍 Sử dụng Python: {python_exe}", "info")
-        
-        # Kill any existing process on port 8000 first
-        kill_ps = (
-            "$p = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue; "
-            "if ($p) { Stop-Process -Id $p.OwningProcess -Force -ErrorAction SilentlyContinue }"
-        )
-        subprocess.run(
-            f"powershell -Command \"{kill_ps}\"",
-            shell=True, capture_output=True, timeout=5
-        )
-        time.sleep(0.5)
+        # ─── BƯỚC 3: Khởi động API Server (Ưu tiên Rust Native Core) ──────────
+        rust_exe = os.path.join(router_dir, "c69-router.exe")
+        if not os.path.exists(rust_exe):
+            rust_exe = os.path.join(router_dir, "c69-router-rust", "target", "release", "c69-router-core.exe")
+            
+        if os.path.exists(rust_exe):
+            log(f"🚀 Phát hiện C69-Router Rust Native Core tại: {rust_exe}", "info")
+            api_cmd = (
+                f"powershell -Command \"Start-Process '{rust_exe}' "
+                f"-Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            )
+            subprocess.run(api_cmd, shell=True)
+            log("🚀 Đã gửi lệnh khởi động C69-Router Rust Core...", "info")
+        else:
+            log("🔍 Bước 3/4: Tìm Python và khởi động c69-router API server...", "info")
+            python_exe, python_err = _find_router_python(router_dir)
+            if not python_exe:
+                return json.dumps({"error": f"Bước 3 thất bại: {python_err}"})
+            
+            log(f"🐍 Sử dụng Python: {python_exe}", "info")
+            
+            # Kill any existing process on port 8000 first
+            kill_ps = (
+                "$p = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue; "
+                "if ($p) { Stop-Process -Id $p.OwningProcess -Force -ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(
+                f"powershell -Command \"{kill_ps}\"",
+                shell=True, capture_output=True, timeout=5
+            )
+            time.sleep(0.5)
 
-        # Khởi động API server
-        api_cmd = (
-            f"powershell -Command \"Start-Process '{python_exe}' "
-            f"-ArgumentList '-m uvicorn app.main:app --host 0.0.0.0 --port 8000' "
-            f"-Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
-        )
-        subprocess.run(api_cmd, shell=True)
-        log("🚀 Đã gửi lệnh khởi động API server uvicorn...", "info")
+            # Khởi động API server
+            api_cmd = (
+                f"powershell -Command \"Start-Process '{python_exe}' "
+                f"-ArgumentList '-m uvicorn app.main:app --host 0.0.0.0 --port 8000' "
+                f"-Verb RunAs -WorkingDirectory '{router_dir}' -WindowStyle Hidden\""
+            )
+            subprocess.run(api_cmd, shell=True)
+            log("🚀 Đã gửi lệnh khởi động API server uvicorn...", "info")
 
         # ─── BƯỚC 4: Chờ server sẵn sàng ────────────────────────
         log("⏳ Bước 4/4: Chờ API server lắng nghe cổng 8000...", "info")

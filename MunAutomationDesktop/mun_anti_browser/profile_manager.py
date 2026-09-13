@@ -25,6 +25,9 @@ class ProfileManager:
         # Tránh lỗi OS mismatch khi UA là mobile nhưng platform là desktop.
 
 
+        if os_type in ("Window", "Windows") or not os_type:
+            os_type = "Windows"
+
         # Generate base info
         ua, device_name, resolution, cpu = generate_user_agent(os_type, phone_os)
         audio = generate_audio_fingerprint()
@@ -36,7 +39,7 @@ class ProfileManager:
         profile = {
             "id": random.randint(10000, 99999),
             "name": f"Profile_{random.randint(1000, 9999)}",
-            "profile_os": os_type,
+            "profile_os": "Windows" if os_type in ("Window", "Windows") else os_type,
             "profile_user_agent": ua,
             "profile_resolution": resolution,
             "profile_cpu": cpu,
@@ -48,8 +51,8 @@ class ProfileManager:
             "profile_start_url": "https://cu.c69.us",
             "proxy": proxy or "",
             "proxy_type": "socks5",
-            "profile_vendor": webgl.get("37446", "Google Inc."),
-            "profile_renderer": webgl.get("37445", "Google Inc."),
+            "profile_vendor": webgl.get("37445", "Google Inc. (NVIDIA)"),
+            "profile_renderer": webgl.get("37446", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
         }
 
         # Add server_id if exists
