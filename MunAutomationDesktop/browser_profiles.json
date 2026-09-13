@@ -2,7 +2,7 @@
   {
     "id": 0,
     "name": "Profile #0 - RTX 3060",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "1920x1080",
     "profile_cpu": 8,
@@ -18,7 +18,7 @@
   {
     "id": 1,
     "name": "Profile #1 - RTX 4070",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.96 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "2560x1440",
     "profile_cpu": 12,
@@ -34,7 +34,7 @@
   {
     "id": 2,
     "name": "Profile #2 - RX 6700 XT",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.112 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "1920x1200",
     "profile_cpu": 8,
@@ -50,7 +50,7 @@
   {
     "id": 3,
     "name": "Profile #3 - Iris Xe",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "1600x900",
     "profile_cpu": 4,
@@ -66,7 +66,7 @@
   {
     "id": 4,
     "name": "Profile #4 - GTX 1660 SUPER",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.88 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "1536x864",
     "profile_cpu": 6,
@@ -82,7 +82,7 @@
   {
     "id": 5,
     "name": "Profile #5 - RTX 3070 Ti",
-    "profile_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36",
+    "profile_user_agent": "",
     "profile_os": "Windows",
     "profile_resolution": "1920x1080",
     "profile_cpu": 16,

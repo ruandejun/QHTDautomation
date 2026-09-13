@@ -80,14 +80,6 @@ pub fn extract_chrome_version(ua: &str) -> (String, String) {
 /// Tạo clean stealth injection script với HARDWARE độc lập và Fingerprint riêng biệt cho từng profile
 fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let p_id = profile.id;
-    let r_shift = ((p_id as i32 * 17 + 7) % 7) - 3;
-    let g_shift = ((p_id as i32 * 31 + 13) % 7) - 3;
-    let b_shift = ((p_id as i32 * 47 + 19) % 7) - 3;
-    let (r_shift, g_shift, b_shift) = if r_shift == 0 && g_shift == 0 && b_shift == 0 {
-        (1, -1, 1)
-    } else {
-        (r_shift, g_shift, b_shift)
-    };
 
     let gpu_idx = p_id % GPU_POOL.len();
     let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
@@ -129,76 +121,20 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add((p_id as u64).wrapping_mul(0x94d049bb133111eb)));
 
     let audio_delta = format!("{:.8}", 0.00000005 * ((p_id % 20 + 1) as f64));
+    let canvas_delta = p_id + 1;
 
     format!(
-        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v4.0 (Profile #{p_id})
+        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v5.0 (Profile #{p_id})
 (function() {{
     'use strict';
 
-    // 1. Hardware Concurrency, Device Memory & Resolution (Độc lập từng Profile)
+    // 1. Hardware Concurrency & Device Memory (Độc lập từng Profile)
     try {{
         Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
         Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
-        const parts = '{resolution}'.split('x');
-        const sw = parseInt(parts[0]) || 1920;
-        const sh = parseInt(parts[1]) || 1080;
-        Object.defineProperty(screen, 'width', {{ get: () => sw, configurable: true }});
-        Object.defineProperty(screen, 'height', {{ get: () => sh, configurable: true }});
-        Object.defineProperty(screen, 'availWidth', {{ get: () => sw, configurable: true }});
-        Object.defineProperty(screen, 'availHeight', {{ get: () => sh - 40, configurable: true }});
     }} catch(e) {{}}
 
-    // 2. Subtle Canvas Noise (Seed #{p_id})
-    try {{
-        const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-        CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
-            const imgData = originalGetImageData.apply(this, arguments);
-            for (let i = 0; i < imgData.data.length; i += 4) {{
-                imgData.data[i] = Math.max(0, Math.min(255, imgData.data[i] + ({r_shift})));
-                imgData.data[i+1] = Math.max(0, Math.min(255, imgData.data[i+1] + ({g_shift})));
-                imgData.data[i+2] = Math.max(0, Math.min(255, imgData.data[i+2] + ({b_shift})));
-            }}
-            return imgData;
-        }};
-
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function() {{
-            const ctx2d = this.getContext('2d');
-            if (ctx2d) {{
-                try {{
-                    const w = this.width, h = this.height;
-                    if (w > 0 && h > 0) {{
-                        const imgData = originalGetImageData.call(ctx2d, 0, 0, Math.min(10, w), Math.min(10, h));
-                        imgData.data[0] = Math.max(0, Math.min(255, imgData.data[0] + ({r_shift})));
-                        ctx2d.putImageData(imgData, 0, 0);
-                    }}
-                }} catch(e) {{}}
-                return originalToDataURL.apply(this, arguments);
-            }}
-
-            const gl = this.getContext('webgl') || this.getContext('webgl2') || this.getContext('experimental-webgl');
-            if (gl) {{
-                try {{
-                    const helper = document.createElement('canvas');
-                    helper.width = this.width;
-                    helper.height = this.height;
-                    const hctx = helper.getContext('2d');
-                    if (hctx) {{
-                        hctx.drawImage(this, 0, 0);
-                        const imgData = hctx.getImageData(0, 0, Math.min(10, this.width), Math.min(10, this.height));
-                        imgData.data[0] = Math.max(0, Math.min(255, imgData.data[0] + ({r_shift})));
-                        imgData.data[1] = Math.max(0, Math.min(255, imgData.data[1] + ({g_shift})));
-                        imgData.data[2] = Math.max(0, Math.min(255, imgData.data[2] + ({b_shift})));
-                        hctx.putImageData(imgData, 0, 0);
-                        return originalToDataURL.apply(helper, arguments);
-                    }}
-                }} catch(e) {{}}
-            }}
-            return originalToDataURL.apply(this, arguments);
-        }};
-    }} catch(e) {{}}
-
-    // 3. WebGL Hardware Spoofing ({renderer})
+    // 2. WebGL Hardware Spoofing ({renderer})
     try {{
         const hookGetParam = (proto) => {{
             if (!proto) return;
@@ -211,6 +147,16 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         }};
         hookGetParam(WebGLRenderingContext.prototype);
         if (window.WebGL2RenderingContext) hookGetParam(WebGL2RenderingContext.prototype);
+    }} catch(e) {{}}
+
+    // 3. Subtle Canvas Noise (Seed #{p_id})
+    try {{
+        const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+        CanvasRenderingContext2D.prototype.getImageData = function() {{
+            const d = originalGetImageData.apply(this, arguments);
+            d.data[0] = Math.max(0, Math.min(255, d.data[0] + {canvas_delta}));
+            return d;
+        }};
     }} catch(e) {{}}
 
     // 4. Subtle AudioBuffer Noise
@@ -230,15 +176,14 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         'GPU': '{renderer}',
         'Audio': '{audio_hash}',
         'WebGL': '{webgl_hash}',
+        'Canvas': '{canvas_hash}',
         'Resolution': '{resolution}',
         'Device Memory': '{ram}',
-        'Hardware Concurrency': '{cpu}',
-        'Canvas': '{canvas_hash}'
+        'Hardware Concurrency': '{cpu}'
     }};
 
     const updateAuditDom = () => {{
-        const entries = document.querySelectorAll('.detail-entry');
-        entries.forEach(e => {{
+        document.querySelectorAll('.detail-entry').forEach(e => {{
             const n = e.querySelector('.detail-name')?.textContent?.trim();
             const v = e.querySelector('.detail-value');
             if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
@@ -257,10 +202,8 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         renderer = renderer,
         vendor = vendor,
         resolution = resolution,
-        r_shift = r_shift,
-        g_shift = g_shift,
-        b_shift = b_shift,
         audio_delta = audio_delta,
+        canvas_delta = canvas_delta,
         audio_hash = audio_hash,
         webgl_hash = webgl_hash,
         canvas_hash = canvas_hash,
@@ -318,11 +261,10 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let width = parts.first().unwrap_or(&"1920");
     let height = parts.get(1).unwrap_or(&"1080");
 
-    let ua = if profile.profile_user_agent.trim().is_empty() {
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".to_string()
-    } else {
-        profile.profile_user_agent.clone()
-    };
+    let has_custom_ua = !profile.profile_user_agent.trim().is_empty()
+        && !profile.profile_user_agent.contains("Chrome/134.")
+        && !profile.profile_user_agent.contains("Chrome/135.")
+        && !profile.profile_user_agent.contains("Chrome/136.");
 
     let offset_x = 60 + ((profile.id as i32 * 35) % 400);
     let offset_y = 40 + ((profile.id as i32 * 25) % 250);
@@ -343,9 +285,12 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg(format!("--window-size={},{}", width, height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=vi-VN,vi,en-US,en")
-        .arg(format!("--user-agent={}", ua))
         .arg("--new-window")
         .arg("about:blank");
+
+    if has_custom_ua {
+        cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
+    }
 
     if !profile.proxy_string.trim().is_empty() {
         cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
@@ -403,8 +348,6 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let (mut write, mut read) = ws_stream.split();
 
-    let (major_ver, full_ver) = extract_chrome_version(&ua);
-
     // 1. Kích hoạt Page domain để CDP cho phép addScriptToEvaluateOnNewDocument hoạt động chuẩn xác 100%
     let page_enable_cmd = json!({
         "id": 1,
@@ -412,63 +355,48 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     });
     let _ = write.send(Message::Text(page_enable_cmd.to_string())).await;
 
-    // 2. Emulation.setDeviceMetricsOverride để đồng bộ kích thước màn hình theo profile
-    let (w_int, h_int): (i64, i64) = (
-        width.parse().unwrap_or(1920),
-        height.parse().unwrap_or(1080),
-    );
-    let metrics_cmd = json!({
-        "id": 2,
-        "method": "Emulation.setDeviceMetricsOverride",
-        "params": {
-            "width": w_int,
-            "height": h_int,
-            "deviceScaleFactor": 1,
-            "mobile": false
-        }
-    });
-    let _ = write.send(Message::Text(metrics_cmd.to_string())).await;
-
-    // 3. Emulation.setUserAgentOverride với Client Hints chuẩn
-    let ua_override_cmd = json!({
-        "id": 3,
-        "method": "Emulation.setUserAgentOverride",
-        "params": {
-            "userAgent": ua,
-            "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-            "platform": "Win32",
-            "userAgentMetadata": {
-                "brands": [
-                    {"brand": "Chromium", "version": major_ver},
-                    {"brand": "Not:A-Brand", "version": "24"},
-                    {"brand": "Google Chrome", "version": major_ver}
-                ],
-                "fullVersion": full_ver,
-                "platform": "Windows",
-                "platformVersion": "15.0.0",
-                "architecture": "x86",
-                "model": "",
-                "mobile": false,
-                "bitness": "64",
-                "wow64": false
+    // 3. Chỉ gửi User-Agent override khi có UA tùy biến hợp lệ, tránh mismatch V8 version gây lỗi pineapple
+    if has_custom_ua {
+        let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
+        let ua_override_cmd = json!({
+            "id": 3,
+            "method": "Emulation.setUserAgentOverride",
+            "params": {
+                "userAgent": profile.profile_user_agent,
+                "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "platform": "Win32",
+                "userAgentMetadata": {
+                    "brands": [
+                        {"brand": "Chromium", "version": major_ver},
+                        {"brand": "Not:A-Brand", "version": "24"},
+                        {"brand": "Google Chrome", "version": major_ver}
+                    ],
+                    "fullVersion": full_ver,
+                    "platform": "Windows",
+                    "platformVersion": "15.0.0",
+                    "architecture": "x86",
+                    "model": "",
+                    "mobile": false,
+                    "bitness": "64",
+                    "wow64": false
+                }
             }
-        }
-    });
-    let _ = write.send(Message::Text(ua_override_cmd.to_string())).await;
+        });
+        let _ = write.send(Message::Text(ua_override_cmd.to_string())).await;
 
-    // 4. Network.setUserAgentOverride
-    let net_ua_override_cmd = json!({
-        "id": 4,
-        "method": "Network.setUserAgentOverride",
-        "params": {
-            "userAgent": ua,
-            "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-            "platform": "Win32"
-        }
-    });
-    let _ = write.send(Message::Text(net_ua_override_cmd.to_string())).await;
+        let net_ua_override_cmd = json!({
+            "id": 4,
+            "method": "Network.setUserAgentOverride",
+            "params": {
+                "userAgent": profile.profile_user_agent,
+                "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                "platform": "Win32"
+            }
+        });
+        let _ = write.send(Message::Text(net_ua_override_cmd.to_string())).await;
+    }
 
-    // 5. Page.addScriptToEvaluateOnNewDocument (Clean Stealth Script độc nhất theo profile)
+    // 4. Page.addScriptToEvaluateOnNewDocument (Clean Stealth Script độc nhất theo profile)
     let stealth_js = generate_stealth_script(profile);
     let add_script_cmd = json!({
         "id": 5,

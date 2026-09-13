@@ -375,7 +375,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 0,
             name: "Profile #0 - RTX 3060".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1080".into(),
             profile_cpu: 8,
@@ -391,7 +391,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 1,
             name: "Profile #1 - RTX 4070".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.113 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "2560x1440".into(),
             profile_cpu: 12,
@@ -407,7 +407,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 2,
             name: "Profile #2 - RX 6700 XT".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.165 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1200".into(),
             profile_cpu: 8,
@@ -423,7 +423,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 3,
             name: "Profile #3 - Iris Xe".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1600x900".into(),
             profile_cpu: 4,
@@ -439,7 +439,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 4,
             name: "Profile #4 - GTX 1660 SUPER".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.88 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1536x864".into(),
             profile_cpu: 6,
@@ -455,7 +455,7 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
         BrowserProfile {
             id: 5,
             name: "Profile #5 - RTX 3070 Ti".into(),
-            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".into(),
+            profile_user_agent: String::new(),
             profile_os: "Windows".into(),
             profile_resolution: "1920x1080".into(),
             profile_cpu: 16,
@@ -535,15 +535,9 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         new_prof.profile_cpu = cpus[next_id % cpus.len()];
     }
 
-    let ua_pool = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.96 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.112 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.120 Safari/537.36",
-    ];
+    // Nếu không chỉ định UA, để trống để tự động sử dụng Native UA đồng bộ hoàn hảo với V8 Engine
     if new_prof.profile_user_agent.trim().is_empty() {
-        new_prof.profile_user_agent = ua_pool[next_id % ua_pool.len()].to_string();
+        new_prof.profile_user_agent = String::new();
     }
 
     let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
@@ -598,7 +592,7 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
             BrowserProfile {
                 id,
                 name: format!("Profile #{}", id),
-                profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".into(),
+                profile_user_agent: String::new(),
                 profile_os: "Windows".into(),
                 profile_resolution: "1920x1080".into(),
                 profile_cpu: 8,
