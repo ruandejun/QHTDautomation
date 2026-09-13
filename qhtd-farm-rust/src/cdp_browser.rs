@@ -252,14 +252,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         profile.profile_start_url.clone()
     };
 
-    let resolution = if profile.profile_resolution.is_empty() {
-        "1920x1080".to_string()
-    } else {
-        profile.profile_resolution.clone()
-    };
-    let parts: Vec<&str> = resolution.split('x').collect();
-    let width = parts.first().unwrap_or(&"1920");
-    let height = parts.get(1).unwrap_or(&"1080");
+    // Kích thước cửa sổ hiển thị cố định vừa vặn trên màn hình: 1200x800
+    let window_width = 1200;
+    let window_height = 800;
 
     let has_custom_ua = !profile.profile_user_agent.trim().is_empty()
         && !profile.profile_user_agent.contains("Chrome/134.")
@@ -282,7 +277,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg("--disable-blink-features=AutomationControlled")
-        .arg(format!("--window-size={},{}", width, height))
+        .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=vi-VN,vi,en-US,en")
         .arg("--new-window")
