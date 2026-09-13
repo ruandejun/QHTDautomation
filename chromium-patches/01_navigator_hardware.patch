@@ -1,0 +1,33 @@
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -10,6 +10,7 @@
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
+ 
+ namespace blink {
+ 
+@@ -35,6 +36,15 @@ unsigned int Navigator::hardwareConcurrency() const {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch("qhtd-hardware-concurrency")) {
++    unsigned int custom_val = 0;
++    if (base::StringToUint(cmd.GetSwitchValueASCII("qhtd-hardware-concurrency"), &custom_val) && custom_val > 0) {
++      return custom_val;
++    }
++  }
+   return static_cast<unsigned int>(base::SysInfo::NumberOfProcessors());
+ }
+ 
++float Navigator::deviceMemory() const {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch("qhtd-device-memory")) {
++    double custom_ram = 0;
++    if (base::StringToDouble(cmd.GetSwitchValueASCII("qhtd-device-memory"), &custom_ram) && custom_ram > 0) {
++      return static_cast<float>(custom_ram);
++    }
++  }
++  return ApproximatedDeviceMemory();
++}

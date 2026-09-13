@@ -1,0 +1,102 @@
+name: Build Custom Anti-Detect Chromium Core
+run-name: Build Custom Anti-Detect Chromium (${{ github.ref_name }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release Tag (e.g. v128.0.0-qhtd)'
+        required: true
+        default: 'v128.0.0-qhtd'
+
+jobs:
+  build-chromium-windows:
+    name: Build Chromium Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout QHTD Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Google Depot Tools
+        shell: powershell
+        run: |
+          Write-Host "Downloading Google Depot Tools..."
+          Invoke-WebRequest -Uri "https://storage.googleapis.com/chrome-infra/depot_tools.zip" -OutFile "depot_tools.zip"
+          Expand-Archive -Path "depot_tools.zip" -DestinationPath "$env:USERPROFILE\depot_tools"
+          $depotPath = "$env:USERPROFILE\depot_tools"
+          [Environment]::SetEnvironmentVariable("PATH", "$depotPath;" + $env:PATH, [EnvironmentVariableTarget]::Process)
+          [Environment]::SetEnvironmentVariable("DEPOT_TOOLS_WIN_TOOLCHAIN", "0", [EnvironmentVariableTarget]::Process)
+          Add-Content $env:GITHUB_PATH "$depotPath"
+          Add-Content $env:GITHUB_ENV "DEPOT_TOOLS_WIN_TOOLCHAIN=0"
+
+      - name: Fetch Chromium Source Tree (Shallow)
+        shell: cmd
+        run: |
+          mkdir chromium_build
+          cd chromium_build
+          call fetch.bat --no-history --nohooks chromium
+          cd src
+          git checkout tags/128.0.6613.119 -b build_qhtd
+          call gclient sync -D --force --no-history
+
+      - name: Apply QHTD Anti-Detect C++ Patches
+        shell: cmd
+        run: |
+          cd chromium_build\src
+          git apply ..\..\chromium-patches\01_navigator_hardware.patch
+          git apply ..\..\chromium-patches\02_canvas_noise.patch
+          git apply ..\..\chromium-patches\03_webgl_spoof.patch
+          git apply ..\..\chromium-patches\04_audio_noise.patch
+
+      - name: Generate Build Configuration (GN args)
+        shell: cmd
+        run: |
+          cd chromium_build\src
+          mkdir out\Release
+          (
+            echo is_debug = false
+            echo is_official_build = false
+            echo symbol_level = 0
+            echo blink_symbol_level = 0
+            echo enable_nacl = false
+            echo is_component_build = false
+            echo chrome_pgo_phase = 0
+          ) > out\Release\args.gn
+          call gn.bat gen out\Release
+
+      - name: Compile Chromium Core with Ninja
+        shell: cmd
+        run: |
+          cd chromium_build\src
+          call ninja.bat -C out\Release chrome
+
+      - name: Package Portable Chromium
+        shell: powershell
+        run: |
+          $outDir = "chromium_build\src\out\Release"
+          $packDir = "qhtd-browser-portable"
+          New-Item -ItemType Directory -Path $packDir
+          Copy-Item "$outDir\chrome.exe" "$packDir\qhtd-browser.exe"
+          Copy-Item "$outDir\*.dll" "$packDir\"
+          Copy-Item "$outDir\*.pak" "$packDir\"
+          Copy-Item "$outDir\icudtl.dat" "$packDir\"
+          Copy-Item "$outDir\v8_context_snapshot.bin" "$packDir\"
+          if (Test-Path "$outDir\locales") { Copy-Item "$outDir\locales" "$packDir\" -Recurse }
+          Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
+
+      - name: Create GitHub Release & Upload Artifact
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != ''
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: "QHTD Anti-Detect Chromium Core ${{ github.event.inputs.release_tag }}"
+          files: qhtd-browser-windows-x64.zip
+          draft: false
+          prerelease: false

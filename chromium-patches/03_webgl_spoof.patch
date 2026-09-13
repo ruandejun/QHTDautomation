@@ -1,0 +1,43 @@
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -20,6 +20,7 @@
+ #include "gpu/command_buffer/client/gles2_interface.h"
++#include "base/command_line.h"
+ 
+ namespace blink {
+ 
+@@ -3500,6 +3501,19 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case GL_VENDOR:
++      {
++        const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++        if (cmd.HasSwitch("qhtd-webgl-vendor")) {
++          return WebGLAny(script_state, String(cmd.GetSwitchValueASCII("qhtd-webgl-vendor").c_str()));
++        }
++      }
+       return WebGLAny(script_state, String("WebKit"));
+     case GL_RENDERER:
++      {
++        const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++        if (cmd.HasSwitch("qhtd-webgl-renderer")) {
++          return WebGLAny(script_state, String(cmd.GetSwitchValueASCII("qhtd-webgl-renderer").c_str()));
++        }
++      }
+       return WebGLAny(script_state, String("WebKit WebGL"));
+     case GL_UNMASKED_VENDOR_WEBGL:
++      {
++        const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++        if (cmd.HasSwitch("qhtd-webgl-vendor")) {
++          return WebGLAny(script_state, String(cmd.GetSwitchValueASCII("qhtd-webgl-vendor").c_str()));
++        }
++      }
+       return WebGLAny(script_state, String("Google Inc. (NVIDIA)"));
+     case GL_UNMASKED_RENDERER_WEBGL:
++      {
++        const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++        if (cmd.HasSwitch("qhtd-webgl-renderer")) {
++          return WebGLAny(script_state, String(cmd.GetSwitchValueASCII("qhtd-webgl-renderer").c_str()));
++        }
++      }
+       return WebGLAny(script_state, String("ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0)"));

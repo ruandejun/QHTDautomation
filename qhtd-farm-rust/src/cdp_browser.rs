@@ -47,8 +47,26 @@ pub static GPU_POOL: &[(&str, &str)] = &[
     ("ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
 ];
 
-/// Tìm đường dẫn chrome.exe trên máy Windows
+/// Tìm đường dẫn chrome.exe hoặc qhtd-browser.exe trên máy Windows
 pub fn find_chrome_executable() -> Option<PathBuf> {
+    // 1. Ưu tiên Custom Anti-Detect Chromium Core (nếu có bản build portable)
+    let current_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    if let Some(ref d) = current_dir {
+        let custom_candidates = [
+            d.join("qhtd-browser").join("qhtd-browser.exe"),
+            d.join("qhtd-browser").join("chrome.exe"),
+            d.join("qhtd-browser.exe"),
+            d.join("bin").join("qhtd-browser.exe"),
+        ];
+        for c in &custom_candidates {
+            if c.exists() {
+                info!("💎 Sử dụng Custom Anti-Detect Chromium Core: {:?}", c);
+                return Some(c.clone());
+            }
+        }
+    }
+
+    // 2. Fallback sang Google Chrome chuẩn trên hệ thống
     let candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -411,13 +429,48 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
     }
 
+    let gpu_idx = profile.id % GPU_POOL.len();
+    let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
+    let renderer = profile
+        .gpu_renderer
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_renderer);
+    let vendor = profile
+        .gpu_vendor
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_vendor);
+
+    let cpu = if profile.profile_cpu == 0 {
+        [4, 6, 8, 12, 16][profile.id % 5]
+    } else {
+        profile.profile_cpu
+    };
+
+    let ram = match profile.id % 5 {
+        0 => 16,
+        1 => 32,
+        2 => 16,
+        3 => 8,
+        _ => 16,
+    };
+
     if !profile.proxy_string.trim().is_empty() {
         cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
     }
 
+    // Các switches C++ Native Anti-Detect (được nhận diện trực tiếp bởi QHTD Custom Chromium)
+    cmd.arg(format!("--qhtd-hardware-concurrency={}", cpu))
+        .arg(format!("--qhtd-device-memory={}", ram))
+        .arg(format!("--qhtd-canvas-noise={}", (profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a))
+        .arg(format!("--qhtd-audio-noise={}", (profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5))
+        .arg(format!("--qhtd-webgl-vendor={}", vendor))
+        .arg(format!("--qhtd-webgl-renderer={}", renderer));
+
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Lỗi khi khởi chạy chrome.exe: {}", e))?;
+        .map_err(|e| format!("Lỗi khi khởi chạy trình duyệt: {}", e))?;
 
     let p_id = profile.id;
     mark_profile_active(p_id);
