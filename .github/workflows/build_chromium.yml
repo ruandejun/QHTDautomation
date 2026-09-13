@@ -48,7 +48,8 @@ jobs:
           cd chromium_build
           call fetch.bat --no-history --nohooks chromium
           cd src
-          git checkout tags/128.0.6613.119 -b build_qhtd
+          git fetch --depth 1 origin tag 128.0.6613.119
+          git checkout -B build_qhtd tags/128.0.6613.119
           call gclient sync -D --force --no-history
 
       - name: Apply QHTD Anti-Detect C++ Patches
