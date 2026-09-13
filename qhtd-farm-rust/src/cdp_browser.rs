@@ -9,6 +9,19 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
 
+pub static GPU_POOL: &[(&str, &str)] = &[
+    ("ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+    ("ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+    ("ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+    ("ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (AMD)"),
+    ("ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (Intel)"),
+    ("ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+    ("ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (AMD)"),
+    ("ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+    ("ANGLE (Intel, Intel(R) UHD Graphics 770 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (Intel)"),
+    ("ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
+];
+
 /// Tìm đường dẫn chrome.exe trên máy Windows
 pub fn find_chrome_executable() -> Option<PathBuf> {
     let candidates = [
@@ -24,7 +37,6 @@ pub fn find_chrome_executable() -> Option<PathBuf> {
         }
     }
 
-    // Thử tìm trong %LOCALAPPDATA%
     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
         let p = PathBuf::from(local_app).join(r"Google\Chrome\Application\chrome.exe");
         if p.exists() {
@@ -32,7 +44,6 @@ pub fn find_chrome_executable() -> Option<PathBuf> {
         }
     }
 
-    // Thử tìm trong %PROGRAMFILES%
     if let Ok(pf) = std::env::var("ProgramFiles") {
         let p = PathBuf::from(pf).join(r"Google\Chrome\Application\chrome.exe");
         if p.exists() {
@@ -45,31 +56,62 @@ pub fn find_chrome_executable() -> Option<PathBuf> {
 
 /// Tìm một port TCP trống trên localhost
 fn get_free_port(start: u16) -> u16 {
-    for port in start..(start + 100) {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+    for port in start..(start + 200) {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            drop(listener);
             return port;
         }
     }
     9222
 }
 
+/// Trích xuất phiên bản Chrome từ User-Agent
+pub fn extract_chrome_version(ua: &str) -> (String, String) {
+    if let Some(pos) = ua.find("Chrome/") {
+        let after = &ua[pos + 7..];
+        let ver = after.split_whitespace().next().unwrap_or("135.0.7049.84");
+        let major = ver.split('.').next().unwrap_or("135");
+        (major.to_string(), ver.to_string())
+    } else {
+        ("135".to_string(), "135.0.7049.84".to_string())
+    }
+}
+
 /// Tạo clean stealth injection script (Không monkey-patch prototype của plugins, connection, battery)
 /// Đảm bảo vượt qua iphey.com với đánh giá "Trustworthy" và MX Score 100
 fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let p_id = profile.id;
-    let r_shift = ((p_id * 17) % 5) as i32 - 2;
-    let g_shift = ((p_id * 31) % 5) as i32 - 2;
-    let b_shift = ((p_id * 47) % 5) as i32 - 2;
+    let r_shift = ((p_id as i32 * 17 + 7) % 7) - 3;
+    let g_shift = ((p_id as i32 * 31 + 13) % 7) - 3;
+    let b_shift = ((p_id as i32 * 47 + 19) % 7) - 3;
+    let (r_shift, g_shift, b_shift) = if r_shift == 0 && g_shift == 0 && b_shift == 0 {
+        (1, -1, 1)
+    } else {
+        (r_shift, g_shift, b_shift)
+    };
 
-    let vendor = "Google Inc. (NVIDIA)";
-    let renderer = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)";
+    let gpu_idx = p_id % GPU_POOL.len();
+    let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
+
+    let renderer = profile
+        .gpu_renderer
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_renderer);
+    let vendor = profile
+        .gpu_vendor
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_vendor);
+
+    let audio_delta = format!("{:.8}", 0.00000005 * ((p_id % 20 + 1) as f64));
 
     format!(
-        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v3.0
+        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v3.1 (Profile #{p_id})
 (function() {{
     'use strict';
 
-    // 1. Subtle Canvas Noise
+    // 1. Subtle Canvas Noise (Seed #{p_id})
     try {{
         const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
@@ -99,7 +141,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         }};
     }} catch(e) {{}}
 
-    // 2. WebGL Hardware Spoofing (DirectX D3D11 NVIDIA)
+    // 2. WebGL Hardware Spoofing ({renderer})
     try {{
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(param) {{
@@ -124,7 +166,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         AudioBuffer.prototype.getChannelData = function() {{
             const channel = originalGetChannelData.apply(this, arguments);
             for (let i = 0; i < Math.min(channel.length, 100); i += 10) {{
-                channel[i] += 0.0000001 * {p_id};
+                channel[i] += {audio_delta};
             }}
             return channel;
         }};
@@ -135,7 +177,8 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         b_shift = b_shift,
         vendor = vendor,
         renderer = renderer,
-        p_id = p_id
+        p_id = p_id,
+        audio_delta = audio_delta
     )
 }
 
@@ -149,6 +192,12 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     // Thư mục dữ liệu riêng biệt cho từng profile
     let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile.id));
     let _ = std::fs::create_dir_all(&user_data_dir);
+
+    // Xóa các lockfile cũ nếu có để Chrome không bao giờ bị 'Opening in existing browser session'
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+    let _ = std::fs::remove_file(user_data_dir.join("lockfile"));
 
     let start_url = if profile.profile_start_url.trim().is_empty() {
         "https://iphey.com".to_string()
@@ -166,14 +215,14 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let height = parts.get(1).unwrap_or(&"1080");
 
     let ua = if profile.profile_user_agent.trim().is_empty() {
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36".to_string()
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".to_string()
     } else {
         profile.profile_user_agent.clone()
     };
 
     info!(
-        "🚀 Khởi chạy Chrome CDP Native (Rust) cho Profile #{} trên port {}",
-        profile.id, port
+        "🚀 Khởi chạy Chrome CDP Native (Rust) cho Profile #{} ({}) trên port {}",
+        profile.id, profile.name, port
     );
 
     // Chuẩn bị các flags Chrome sạch (Clean Stealth)
@@ -186,14 +235,13 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg("--disable-blink-features=AutomationControlled")
         .arg(format!("--window-size={},{}", width, height))
         .arg("--lang=vi-VN,vi,en-US,en")
-        .arg(format!("--user-agent={}", ua));
+        .arg(format!("--user-agent={}", ua))
+        .arg("--new-window")
+        .arg("about:blank");
 
     if !profile.proxy_string.trim().is_empty() {
         cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
     }
-
-    // Mở about:blank trước để tiêm CDP script trước khi load trang thật
-    cmd.arg("about:blank");
 
     let _child = cmd
         .spawn()
@@ -201,20 +249,21 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     // Chờ Chrome mở cổng DevTools
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(1500))
+        .timeout(Duration::from_millis(2000))
         .build()
         .map_err(|e| e.to_string())?;
 
     let json_url = format!("http://127.0.0.1:{}/json", port);
     let mut target_ws_url: Option<String> = None;
 
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
         if let Ok(res) = client.get(&json_url).send().await {
             if let Ok(targets) = res.json::<serde_json::Value>().await {
                 if let Some(arr) = targets.as_array() {
                     for t in arr {
-                        if t.get("type").and_then(|v| v.as_str()) == Some("page") {
+                        let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if t_type == "page" {
                             if let Some(ws) = t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
                                 target_ws_url = Some(ws.to_string());
                                 break;
@@ -232,7 +281,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let ws_url = match target_ws_url {
         Some(url) => url,
         None => {
-            warn!("Không lấy được WebSocket target của Chrome sau 9s, Chrome vẫn tiếp tục chạy.");
+            warn!("Không lấy được WebSocket target của Chrome sau 10s, Chrome vẫn tiếp tục chạy.");
             return Ok(());
         }
     };
@@ -246,7 +295,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let (mut write, mut read) = ws_stream.split();
 
-    // 1. Emulation.setUserAgentOverride
+    let (major_ver, full_ver) = extract_chrome_version(&ua);
+
+    // 1. Emulation.setUserAgentOverride với Client Hints chuẩn
     let ua_override_cmd = json!({
         "id": 1,
         "method": "Emulation.setUserAgentOverride",
@@ -256,11 +307,11 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
             "platform": "Win32",
             "userAgentMetadata": {
                 "brands": [
-                    {"brand": "Chromium", "version": "135"},
+                    {"brand": "Chromium", "version": major_ver},
                     {"brand": "Not:A-Brand", "version": "24"},
-                    {"brand": "Google Chrome", "version": "135"}
+                    {"brand": "Google Chrome", "version": major_ver}
                 ],
-                "fullVersion": "135.0.0.0",
+                "fullVersion": full_ver,
                 "platform": "Windows",
                 "platformVersion": "15.0.0",
                 "architecture": "x86",
@@ -272,10 +323,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         }
     });
 
-    write
-        .send(Message::Text(ua_override_cmd.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = write.send(Message::Text(ua_override_cmd.to_string())).await;
 
     // 2. Network.setUserAgentOverride
     let net_ua_override_cmd = json!({
@@ -288,12 +336,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         }
     });
 
-    write
-        .send(Message::Text(net_ua_override_cmd.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = write.send(Message::Text(net_ua_override_cmd.to_string())).await;
 
-    // 3. Page.addScriptToEvaluateOnNewDocument
+    // 3. Page.addScriptToEvaluateOnNewDocument (Clean Stealth Script độc nhất theo profile)
     let stealth_js = generate_stealth_script(profile);
     let add_script_cmd = json!({
         "id": 3,
@@ -303,10 +348,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         }
     });
 
-    write
-        .send(Message::Text(add_script_cmd.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = write.send(Message::Text(add_script_cmd.to_string())).await;
 
     // 4. Page.navigate tới start_url
     let nav_cmd = json!({
@@ -317,14 +359,10 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         }
     });
 
-    write
-        .send(Message::Text(nav_cmd.to_string()))
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = write.send(Message::Text(nav_cmd.to_string())).await;
 
-    info!("✅ Đã cấu hình Clean Stealth CDP và điều hướng tới {}", start_url);
+    info!("✅ Đã cấu hình Clean Stealth CDP cho Profile #{} và điều hướng tới {}", profile.id, start_url);
 
-    // Chờ nhận phản hồi để chắc chắn lệnh đã được nhận
     tokio::spawn(async move {
         let mut count = 0;
         while let Some(Ok(_msg)) = read.next().await {

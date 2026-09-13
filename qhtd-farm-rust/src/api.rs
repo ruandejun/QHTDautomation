@@ -49,7 +49,7 @@ pub struct StartNurturePayload {
     pub config: Option<NurtureConfig>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BrowserProfile {
     #[serde(default)]
     pub id: usize,
@@ -70,11 +70,15 @@ pub struct BrowserProfile {
     #[serde(default)]
     pub profile_start_url: String,
     #[serde(default)]
-    pub profile_canvas: String,
+    pub profile_canvas: serde_json::Value,
     #[serde(default)]
-    pub profile_webgl: String,
+    pub profile_webgl: serde_json::Value,
     #[serde(default)]
-    pub profile_audio: String,
+    pub profile_audio: serde_json::Value,
+    #[serde(default)]
+    pub gpu_renderer: Option<String>,
+    #[serde(default)]
+    pub gpu_vendor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -366,8 +370,94 @@ async fn ws_stream_handler(
 
 // ── Mun Anti Browser Handlers ────────────────────────────────────────────────
 
+pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
+    vec![
+        BrowserProfile {
+            id: 0,
+            name: "Profile #0 - RTX 3060".into(),
+            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".into(),
+            profile_os: "Windows".into(),
+            profile_resolution: "1920x1080".into(),
+            profile_cpu: 8,
+            proxy_string: String::new(),
+            proxy_type: "socks5".into(),
+            profile_start_url: "https://iphey.com".into(),
+            profile_canvas: serde_json::Value::Null,
+            profile_webgl: serde_json::Value::Null,
+            profile_audio: serde_json::Value::Null,
+            gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
+            gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+        },
+        BrowserProfile {
+            id: 1,
+            name: "Profile #1 - RTX 4070".into(),
+            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.113 Safari/537.36".into(),
+            profile_os: "Windows".into(),
+            profile_resolution: "1920x1080".into(),
+            profile_cpu: 12,
+            proxy_string: String::new(),
+            proxy_type: "socks5".into(),
+            profile_start_url: "https://iphey.com".into(),
+            profile_canvas: serde_json::Value::Null,
+            profile_webgl: serde_json::Value::Null,
+            profile_audio: serde_json::Value::Null,
+            gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
+            gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+        },
+        BrowserProfile {
+            id: 2,
+            name: "Profile #2 - RX 6700 XT".into(),
+            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.165 Safari/537.36".into(),
+            profile_os: "Windows".into(),
+            profile_resolution: "1920x1080".into(),
+            profile_cpu: 8,
+            proxy_string: String::new(),
+            proxy_type: "socks5".into(),
+            profile_start_url: "https://iphey.com".into(),
+            profile_canvas: serde_json::Value::Null,
+            profile_webgl: serde_json::Value::Null,
+            profile_audio: serde_json::Value::Null,
+            gpu_renderer: Some("ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
+            gpu_vendor: Some("Google Inc. (AMD)".into()),
+        },
+        BrowserProfile {
+            id: 3,
+            name: "Profile #3 - Iris Xe".into(),
+            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36".into(),
+            profile_os: "Windows".into(),
+            profile_resolution: "1920x1080".into(),
+            profile_cpu: 4,
+            proxy_string: String::new(),
+            proxy_type: "socks5".into(),
+            profile_start_url: "https://iphey.com".into(),
+            profile_canvas: serde_json::Value::Null,
+            profile_webgl: serde_json::Value::Null,
+            profile_audio: serde_json::Value::Null,
+            gpu_renderer: Some("ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
+            gpu_vendor: Some("Google Inc. (Intel)".into()),
+        },
+        BrowserProfile {
+            id: 4,
+            name: "Profile #4 - GTX 1660 SUPER".into(),
+            profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.88 Safari/537.36".into(),
+            profile_os: "Windows".into(),
+            profile_resolution: "1920x1080".into(),
+            profile_cpu: 6,
+            proxy_string: String::new(),
+            proxy_type: "socks5".into(),
+            profile_start_url: "https://iphey.com".into(),
+            profile_canvas: serde_json::Value::Null,
+            profile_webgl: serde_json::Value::Null,
+            profile_audio: serde_json::Value::Null,
+            gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
+            gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+        },
+    ]
+}
+
 fn get_profiles_file_path() -> PathBuf {
     let candidates = [
+        PathBuf::from(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles.json"),
         PathBuf::from("MunAutomationDesktop").join("browser_profiles.json"),
         PathBuf::from("browser_profiles.json"),
         PathBuf::from("..").join("MunAutomationDesktop").join("browser_profiles.json"),
@@ -384,10 +474,17 @@ async fn list_browser_profiles_handler() -> Json<Vec<BrowserProfile>> {
     let path = get_profiles_file_path();
     if let Ok(data) = std::fs::read_to_string(&path) {
         if let Ok(profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
-            return Json(profiles);
+            if !profiles.is_empty() {
+                return Json(profiles);
+            }
         }
     }
-    Json(vec![])
+
+    let defaults = get_default_browser_profiles();
+    if let Ok(json_str) = serde_json::to_string_pretty(&defaults) {
+        let _ = std::fs::write(&path, json_str);
+    }
+    Json(defaults)
 }
 
 async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>) -> Json<serde_json::Value> {
@@ -395,23 +492,49 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
     let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default();
+        .unwrap_or_else(get_default_browser_profiles);
 
-    new_prof.id = profiles.len() + 1;
-    if new_prof.name.is_empty() {
-        new_prof.name = format!("Profile #{}", new_prof.id);
+    let next_id = if profiles.is_empty() {
+        0
+    } else {
+        profiles.iter().map(|p| p.id).max().unwrap_or(0) + 1
+    };
+    new_prof.id = next_id;
+
+    if new_prof.name.trim().is_empty() {
+        new_prof.name = format!("Profile #{}", next_id);
     }
-    if new_prof.profile_user_agent.is_empty() {
-        new_prof.profile_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.165 Safari/537.36".into();
-    }
-    if new_prof.profile_os.is_empty() {
+    if new_prof.profile_os.trim().is_empty() {
         new_prof.profile_os = "Windows".into();
     }
-    if new_prof.profile_resolution.is_empty() {
-        new_prof.profile_resolution = "1920x1080".into();
+    if new_prof.profile_start_url.trim().is_empty() {
+        new_prof.profile_start_url = "https://iphey.com".into();
+    }
+    if new_prof.profile_resolution.trim().is_empty() {
+        let resolutions = ["1920x1080", "1920x1200", "1536x864", "2560x1440"];
+        new_prof.profile_resolution = resolutions[next_id % resolutions.len()].into();
     }
     if new_prof.profile_cpu == 0 {
-        new_prof.profile_cpu = 8;
+        let cpus = [4, 6, 8, 12, 16];
+        new_prof.profile_cpu = cpus[next_id % cpus.len()];
+    }
+
+    let ua_pool = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.113 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.165 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.88 Safari/537.36",
+    ];
+    if new_prof.profile_user_agent.trim().is_empty() {
+        new_prof.profile_user_agent = ua_pool[next_id % ua_pool.len()].to_string();
+    }
+
+    let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
+    let (def_rend, def_vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
+    if new_prof.gpu_renderer.is_none() || new_prof.gpu_renderer.as_ref().unwrap().trim().is_empty() {
+        new_prof.gpu_renderer = Some(def_rend.to_string());
+        new_prof.gpu_vendor = Some(def_vend.to_string());
     }
 
     profiles.push(new_prof);
@@ -421,7 +544,7 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
 
     Json(serde_json::json!({
         "success": true,
-        "message": "Đã tạo profile trình duyệt ẩn danh thành công!"
+        "message": format!("Đã tạo profile #{} với Fingerprint độc nhất!", next_id)
     }))
 }
 
@@ -443,175 +566,48 @@ async fn delete_browser_profile_handler(Path(id): Path<usize>) -> Json<serde_jso
     }))
 }
 
-/// Creates a dedicated Manifest V3 Chrome extension to inject anti-fingerprint scripts directly in world: MAIN
-fn create_anti_detect_extension(profile: &BrowserProfile, ext_dir: &PathBuf) -> std::io::Result<()> {
-    std::fs::create_dir_all(ext_dir)?;
-
-    let manifest = r#"{
-  "manifest_version": 3,
-  "name": "MunAntiBrowser Shield",
-  "version": "2.4.0",
-  "description": "Hardware-level anti-detection & fingerprint spoofing shield",
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["inject.js"],
-      "run_at": "document_start",
-      "all_frames": true,
-      "world": "MAIN"
-    }
-  ]
-}"#;
-    std::fs::write(ext_dir.join("manifest.json"), manifest)?;
-
-    let ua = if !profile.profile_user_agent.is_empty() {
-        &profile.profile_user_agent
-    } else {
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.165 Safari/537.36"
-    };
-
-    let p_id = profile.id;
-    let r_shift = ((p_id * 17) % 5) as i32 - 2;
-    let g_shift = ((p_id * 31) % 5) as i32 - 2;
-    let b_shift = ((p_id * 47) % 5) as i32 - 2;
-
-    let inject_js = format!(
-        r#"// MunAntiBrowser Hardware Anti-Detection Engine v2.4 (Pure Rust)
-(function() {{
-    'use strict';
-
-    // 1. Hide navigator.webdriver & automation flags
-    try {{
-        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
-        Object.defineProperty(navigator, 'plugins', {{ get: () => [1, 2, 3, 4, 5], configurable: true }});
-        Object.defineProperty(navigator, 'languages', {{ get: () => ['vi-VN', 'vi', 'en-US', 'en'], configurable: true }});
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
-        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => 8, configurable: true }});
-        Object.defineProperty(navigator, 'platform', {{ get: () => 'Win32', configurable: true }});
-        Object.defineProperty(navigator, 'userAgent', {{ get: () => '{ua}', configurable: true }});
-        Object.defineProperty(navigator, 'appVersion', {{ get: () => '{ua}'.replace('Mozilla/', ''), configurable: true }});
-        window.chrome = {{ runtime: {{}}, loadTimes: () => {{}}, csi: () => {{}}, app: {{}} }};
-    }} catch(e) {{}}
-
-    // 2. Anti-Canvas Fingerprint Noise
-    try {{
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-
-        CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {{
-            const imgData = originalGetImageData.apply(this, arguments);
-            for (let i = 0; i < imgData.data.length; i += 4) {{
-                imgData.data[i] = Math.max(0, Math.min(255, imgData.data[i] + {r_shift}));
-                imgData.data[i+1] = Math.max(0, Math.min(255, imgData.data[i+1] + {g_shift}));
-                imgData.data[i+2] = Math.max(0, Math.min(255, imgData.data[i+2] + {b_shift}));
-            }}
-            return imgData;
-        }};
-
-        HTMLCanvasElement.prototype.toDataURL = function() {{
-            const ctx = this.getContext('2d');
-            if (ctx) {{
-                try {{
-                    const w = this.width, h = this.height;
-                    if (w > 0 && h > 0) {{
-                        const imgData = originalGetImageData.call(ctx, 0, 0, Math.min(10, w), Math.min(10, h));
-                        imgData.data[0] = Math.max(0, Math.min(255, imgData.data[0] + {r_shift}));
-                        ctx.putImageData(imgData, 0, 0);
-                    }}
-                }} catch(e) {{}}
-            }}
-            return originalToDataURL.apply(this, arguments);
-        }};
-    }} catch(e) {{}}
-
-    // 3. WebGL Spoofing (Vendor / Renderer)
-    try {{
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function(param) {{
-            if (param === 37445) return 'Google Inc. (NVIDIA)';
-            if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-            return getParameter.apply(this, arguments);
-        }};
-
-        if (window.WebGL2RenderingContext) {{
-            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
-            WebGL2RenderingContext.prototype.getParameter = function(param) {{
-                if (param === 37445) return 'Google Inc. (NVIDIA)';
-                if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                return getParameter2.apply(this, arguments);
-            }};
-        }}
-    }} catch(e) {{}}
-
-    // 4. Anti-Audio Fingerprint Noise
-    try {{
-        const originalGetChannelData = AudioBuffer.prototype.getChannelData;
-        AudioBuffer.prototype.getChannelData = function() {{
-            const channel = originalGetChannelData.apply(this, arguments);
-            for (let i = 0; i < Math.min(channel.length, 100); i += 10) {{
-                channel[i] += 0.0000001 * {p_id};
-            }}
-            return channel;
-        }};
-    }} catch(e) {{}}
-
-    // 5. WebRTC IP Leak Protection
-    try {{
-        if (window.RTCPeerConnection) {{
-            const origCreateOffer = RTCPeerConnection.prototype.createOffer;
-            RTCPeerConnection.prototype.createOffer = function(options) {{
-                return origCreateOffer.apply(this, arguments);
-            }};
-        }}
-    }} catch(e) {{}}
-}})();"#,
-        ua = ua,
-        cpu = profile.profile_cpu,
-        p_id = p_id,
-        r_shift = r_shift,
-        g_shift = g_shift,
-        b_shift = b_shift
-    );
-
-    std::fs::write(ext_dir.join("inject.js"), inject_js)?;
-    Ok(())
-}
-
 async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
     let id = payload.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let profiles_path = get_profiles_file_path();
     let profiles: Vec<BrowserProfile> = std::fs::read_to_string(&profiles_path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default();
+        .unwrap_or_else(get_default_browser_profiles);
 
-    let default_prof = BrowserProfile {
-        id,
-        name: format!("Profile #{}", id),
-        profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36".into(),
-        profile_os: "Windows".into(),
-        profile_resolution: "1920x1080".into(),
-        profile_cpu: 8,
-        proxy_string: String::new(),
-        proxy_type: "socks5".into(),
-        profile_start_url: "https://iphey.com".into(),
-        profile_canvas: String::new(),
-        profile_webgl: String::new(),
-        profile_audio: String::new(),
+    let target_prof = match profiles.into_iter().find(|p| p.id == id) {
+        Some(p) => p,
+        None => {
+            let gpu_idx = id % crate::cdp_browser::GPU_POOL.len();
+            let (rend, vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
+            BrowserProfile {
+                id,
+                name: format!("Profile #{}", id),
+                profile_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.84 Safari/537.36".into(),
+                profile_os: "Windows".into(),
+                profile_resolution: "1920x1080".into(),
+                profile_cpu: 8,
+                proxy_string: String::new(),
+                proxy_type: "socks5".into(),
+                profile_start_url: "https://iphey.com".into(),
+                profile_canvas: serde_json::Value::Null,
+                profile_webgl: serde_json::Value::Null,
+                profile_audio: serde_json::Value::Null,
+                gpu_renderer: Some(rend.to_string()),
+                gpu_vendor: Some(vend.to_string()),
+            }
+        }
     };
 
-    let target_prof = profiles.into_iter().find(|p| p.id == id).unwrap_or(default_prof);
-
-    // Khởi chạy trực tiếp bằng Pure Rust CDP Native Stealth Engine
+    let prof_to_launch = target_prof.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::cdp_browser::launch_cdp_profile(&target_prof).await {
-            eprintln!("❌ Lỗi khi khởi chạy Pure Rust CDP Browser: {}", e);
+        if let Err(e) = crate::cdp_browser::launch_cdp_profile(&prof_to_launch).await {
+            eprintln!("❌ Lỗi khi khởi chạy Pure Rust CDP Browser cho Profile #{}: {}", prof_to_launch.id, e);
         }
     });
 
     Json(serde_json::json!({
         "success": true,
-        "message": format!("🚀 Đang khởi chạy Mun Anti Browser (Pure Rust CDP Clean Stealth) cho Profile #{}", id)
+        "message": format!("🚀 Đang khởi chạy Profile #{} ({})", id, target_prof.name)
     }))
 }
 
@@ -1193,7 +1189,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 </div>
                 <div class="toolbar-group">
                     <input type="text" class="search-input" placeholder="Tìm profile..." id="profile-search" oninput="filterProfiles()">
-                    <button class="btn btn-primary" onclick="createNewProfile()">➕ Tạo Profile Ẩn Danh Mới</button>
+                    <button class="btn btn-primary" onclick="openCreateProfileModal()">➕ Tạo Profile Ẩn Danh Mới</button>
                 </div>
             </div>
 
@@ -1203,7 +1199,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <th>ID</th>
                         <th>Tên Profile</th>
                         <th>Hệ Điều Hành / User-Agent</th>
-                        <th>Bảo Vệ Vân Tay Máy</th>
+                        <th>Card GPU & Bảo Vệ Vân Tay</th>
                         <th>Proxy Cấu Hình</th>
                         <th>Thao Tác</th>
                     </tr>
@@ -1212,6 +1208,68 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
                 </tbody>
             </table>
+        </div>
+
+        <!-- MODAL TẠO PROFILE MỚI -->
+        <div id="modal-create-profile" class="modal-backdrop">
+            <div class="modal-dialog">
+                <div class="modal-header">
+                    <h3 style="font-size:14px; font-weight:700;">✨ Tạo Profile Mun Anti-Browser Mới</h3>
+                    <button class="btn-close" onclick="closeCreateProfileModal()">✕</button>
+                </div>
+                <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Tên Profile:</label>
+                        <input id="modal-prof-name" type="text" class="search-input" style="width:100%;" placeholder="VD: Profile TikTok Farm #1">
+                    </div>
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Card Đồ Họa (WebGL GPU):</label>
+                        <select id="modal-prof-gpu" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                            <option value="">🎲 Tự động gán GPU ngẫu nhiên</option>
+                            <option value="ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)">NVIDIA GeForce RTX 3060 (DirectX 11)</option>
+                            <option value="ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)">NVIDIA GeForce RTX 4070 (DirectX 11)</option>
+                            <option value="ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)">NVIDIA GeForce GTX 1660 SUPER (DirectX 11)</option>
+                            <option value="ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (AMD)">AMD Radeon RX 6700 XT (DirectX 11)</option>
+                            <option value="ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (Intel)">Intel Iris Xe Graphics (DirectX 11)</option>
+                            <option value="ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (NVIDIA)">NVIDIA GeForce RTX 4060 (DirectX 11)</option>
+                            <option value="ANGLE (AMD, AMD Radeon RX 7600 Direct3D11 vs_5_0 ps_5_0, D3D11)|Google Inc. (AMD)">AMD Radeon RX 7600 (DirectX 11)</option>
+                        </select>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Số Nhân CPU:</label>
+                            <select id="modal-prof-cpu" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="8">8 Cores (Khuyên dùng)</option>
+                                <option value="4">4 Cores</option>
+                                <option value="6">6 Cores</option>
+                                <option value="12">12 Cores</option>
+                                <option value="16">16 Cores</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Độ Phân Giải:</label>
+                            <select id="modal-prof-res" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="1920x1080">1920x1080 (FHD)</option>
+                                <option value="1920x1200">1920x1200 (WUXGA)</option>
+                                <option value="1536x864">1536x864 (Laptop)</option>
+                                <option value="2560x1440">2560x1440 (2K)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">URL Khởi Động:</label>
+                        <input id="modal-prof-url" type="text" class="search-input" style="width:100%;" value="https://iphey.com">
+                    </div>
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Proxy (Tùy chọn):</label>
+                        <input id="modal-prof-proxy" type="text" class="search-input" style="width:100%;" placeholder="VD: 127.0.0.1:10808 (Để trống nếu Direct)">
+                    </div>
+                    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+                        <button class="btn btn-dark" onclick="closeCreateProfileModal()">Hủy</button>
+                        <button class="btn btn-primary" onclick="submitCreateProfile()">🚀 Tạo Profile</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- VIEW 3: IOS AUTOMATION & IPATOOL -->
@@ -1903,23 +1961,38 @@ async fn dashboard_handler() -> Html<&'static str> {
                 return;
             }
 
-            tbody.innerHTML = profiles.map(p => `
+            tbody.innerHTML = profiles.map(p => {
+                let gpuLabel = 'DirectX 11 GPU';
+                if (p.gpu_renderer) {
+                    if (p.gpu_renderer.includes('RTX 3060')) gpuLabel = 'NVIDIA RTX 3060';
+                    else if (p.gpu_renderer.includes('RTX 4070')) gpuLabel = 'NVIDIA RTX 4070';
+                    else if (p.gpu_renderer.includes('RTX 3070')) gpuLabel = 'NVIDIA RTX 3070';
+                    else if (p.gpu_renderer.includes('RTX 4060')) gpuLabel = 'NVIDIA RTX 4060';
+                    else if (p.gpu_renderer.includes('GTX 1660')) gpuLabel = 'NVIDIA GTX 1660 SUPER';
+                    else if (p.gpu_renderer.includes('RX 6700')) gpuLabel = 'AMD Radeon RX 6700 XT';
+                    else if (p.gpu_renderer.includes('RX 7600')) gpuLabel = 'AMD Radeon RX 7600';
+                    else if (p.gpu_renderer.includes('Iris')) gpuLabel = 'Intel Iris Xe Graphics';
+                    else gpuLabel = p.gpu_renderer.split('(')[1]?.split(',')[1]?.trim() || p.gpu_renderer.slice(0, 25);
+                }
+                return `
                 <tr>
                     <td><b>#${p.id}</b></td>
                     <td><b style="color:var(--primary);">${p.name}</b></td>
-                    <td style="font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os}</span> ${p.profile_user_agent}
+                    <td style="font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os}</span> 
+                        <span style="color:#e2e8f0;">${p.profile_user_agent}</span>
                     </td>
                     <td>
-                        <span style="color:#38bdf8; font-size:11px;">🛡️ Canvas Noise • WebGL Spoofed • Audio/WebRTC Protected</span>
+                        <div style="font-size:11px; color:#38bdf8; font-weight:600;">🎮 ${gpuLabel}</div>
+                        <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise #${p.id} • Audio Noise • ${p.profile_cpu || 8} Cores</div>
                     </td>
                     <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
                     <td>
-                        <button class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>
+                        <button id="btn-launch-${p.id}" class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>
                         <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
                     </td>
                 </tr>
-            `).join('');
+            `}).join('');
         }
 
         function filterProfiles() {
@@ -1928,23 +2001,78 @@ async fn dashboard_handler() -> Html<&'static str> {
             renderProfiles(filtered);
         }
 
-        async function createNewProfile() {
-            const name = prompt("Nhập tên Profile mới (VD: TikTok Farm #1):");
-            if (!name) return;
-            await fetch(`${API_BASE}/api/browser/profiles`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
-            });
-            loadBrowserProfiles();
+        function openCreateProfileModal() {
+            const modal = document.getElementById('modal-create-profile');
+            document.getElementById('modal-prof-name').value = `Profile #${allProfiles.length}`;
+            modal.style.display = 'flex';
+        }
+
+        function closeCreateProfileModal() {
+            document.getElementById('modal-create-profile').style.display = 'none';
+        }
+
+        async function submitCreateProfile() {
+            const name = document.getElementById('modal-prof-name').value.trim();
+            const gpuVal = document.getElementById('modal-prof-gpu').value;
+            let gpu_renderer = null, gpu_vendor = null;
+            if (gpuVal) {
+                const parts = gpuVal.split('|');
+                gpu_renderer = parts[0];
+                gpu_vendor = parts[1] || "Google Inc. (NVIDIA)";
+            }
+            const cpu = parseInt(document.getElementById('modal-prof-cpu').value) || 8;
+            const resolution = document.getElementById('modal-prof-res').value || "1920x1080";
+            const start_url = document.getElementById('modal-prof-url').value.trim() || "https://iphey.com";
+            const proxy = document.getElementById('modal-prof-proxy').value.trim();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/profiles`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: name || `Profile #${allProfiles.length}`,
+                        gpu_renderer: gpu_renderer,
+                        gpu_vendor: gpu_vendor,
+                        profile_cpu: cpu,
+                        profile_resolution: resolution,
+                        profile_start_url: start_url,
+                        proxy_string: proxy
+                    })
+                });
+                const data = await res.json();
+                closeCreateProfileModal();
+                alert(data.message || "Đã tạo profile thành công!");
+                loadBrowserProfiles();
+            } catch (e) {
+                alert("Lỗi khi tạo profile: " + e);
+            }
         }
 
         async function launchBrowserProfile(id) {
-            await fetch(`${API_BASE}/api/browser/profiles/launch`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id })
-            });
+            const btn = document.getElementById(`btn-launch-${id}`) || event.target;
+            const origText = btn.innerText;
+            btn.innerText = "⏳ Đang mở...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/profiles/launch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id })
+                });
+                const d = await res.json();
+                setTimeout(() => {
+                    btn.innerText = "🟢 Đang chạy";
+                    setTimeout(() => {
+                        btn.innerText = origText;
+                        btn.disabled = false;
+                    }, 5000);
+                }, 1500);
+            } catch(e) {
+                alert("Lỗi khi mở profile: " + e);
+                btn.innerText = origText;
+                btn.disabled = false;
+            }
         }
 
         async function deleteBrowserProfile(id) {
