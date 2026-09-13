@@ -182,6 +182,28 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     )
 }
 
+/// Dọn dẹp tiến trình Chrome cũ và lockfile của profile trước khi khởi chạy
+fn cleanup_profile_process_and_locks(profile_id: usize, user_data_dir: &std::path::Path) {
+    let dir_name = format!("mun_profile_{}", profile_id);
+    let _ = Command::new("powershell")
+        .args(&[
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" | Where-Object {{ $_.CommandLine -like '*{}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+                dir_name
+            ),
+        ])
+        .output();
+
+    std::thread::sleep(Duration::from_millis(150));
+
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
+    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
+    let _ = std::fs::remove_file(user_data_dir.join("lockfile"));
+}
+
 /// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
     let chrome_path = find_chrome_executable()
@@ -193,11 +215,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile.id));
     let _ = std::fs::create_dir_all(&user_data_dir);
 
-    // Xóa các lockfile cũ nếu có để Chrome không bao giờ bị 'Opening in existing browser session'
-    let _ = std::fs::remove_file(user_data_dir.join("SingletonLock"));
-    let _ = std::fs::remove_file(user_data_dir.join("SingletonCookie"));
-    let _ = std::fs::remove_file(user_data_dir.join("SingletonSocket"));
-    let _ = std::fs::remove_file(user_data_dir.join("lockfile"));
+    // Xóa triệt để zombie chrome và lockfile của profile này
+    cleanup_profile_process_and_locks(profile.id, &user_data_dir);
 
     let start_url = if profile.profile_start_url.trim().is_empty() {
         "https://iphey.com".to_string()
@@ -220,6 +239,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         profile.profile_user_agent.clone()
     };
 
+    let offset_x = 60 + ((profile.id as i32 * 35) % 400);
+    let offset_y = 40 + ((profile.id as i32 * 25) % 250);
+
     info!(
         "🚀 Khởi chạy Chrome CDP Native (Rust) cho Profile #{} ({}) trên port {}",
         profile.id, profile.name, port
@@ -234,6 +256,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg("--no-default-browser-check")
         .arg("--disable-blink-features=AutomationControlled")
         .arg(format!("--window-size={},{}", width, height))
+        .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=vi-VN,vi,en-US,en")
         .arg(format!("--user-agent={}", ua))
         .arg("--new-window")
@@ -361,15 +384,18 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let _ = write.send(Message::Text(nav_cmd.to_string())).await;
 
+    // 5. Page.bringToFront: Đảm bảo cửa sổ Chrome lập tức nổi lên màn hình chính
+    let bring_front_cmd = json!({
+        "id": 5,
+        "method": "Page.bringToFront"
+    });
+    let _ = write.send(Message::Text(bring_front_cmd.to_string())).await;
+
     info!("✅ Đã cấu hình Clean Stealth CDP cho Profile #{} và điều hướng tới {}", profile.id, start_url);
 
     tokio::spawn(async move {
-        let mut count = 0;
         while let Some(Ok(_msg)) = read.next().await {
-            count += 1;
-            if count >= 4 {
-                break;
-            }
+            // Giữ kết nối WebSocket CDP sống liên tục cùng vòng đời của tab trình duyệt
         }
     });
 
