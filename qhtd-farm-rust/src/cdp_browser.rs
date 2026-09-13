@@ -373,134 +373,206 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .build()
         .map_err(|e| e.to_string())?;
 
-    let json_url = format!("http://127.0.0.1:{}/json", port);
-    let mut target_ws_url: Option<String> = None;
+    let version_url = format!("http://127.0.0.1:{}/json/version", port);
+    let mut browser_ws_url: Option<String> = None;
 
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if let Ok(res) = client.get(&json_url).send().await {
-            if let Ok(targets) = res.json::<serde_json::Value>().await {
-                if let Some(arr) = targets.as_array() {
-                    for t in arr {
-                        let t_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        if t_type == "page" {
-                            if let Some(ws) = t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
-                                target_ws_url = Some(ws.to_string());
-                                break;
+        if let Ok(res) = client.get(&version_url).send().await {
+            if let Ok(v) = res.json::<serde_json::Value>().await {
+                if let Some(ws) = v.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
+                    browser_ws_url = Some(ws.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    let ws_url = match browser_ws_url {
+        Some(url) => url,
+        None => {
+            warn!("Không lấy được Browser WebSocket của Chrome sau 10s, Chrome vẫn tiếp tục chạy.");
+            return Ok(());
+        }
+    };
+
+    info!("🔌 Kết nối Browser CDP WebSocket: {}", ws_url);
+
+    // Kết nối Browser WebSocket qua tokio-tungstenite
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .map_err(|e| format!("Lỗi kết nối Browser WebSocket CDP: {}", e))?;
+
+    let (mut write, mut read) = ws_stream.split();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+
+    // Writer task gửi message không đồng bộ
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let Err(_) = write.send(msg).await {
+                break;
+            }
+        }
+    });
+
+    // Kích hoạt Target.setAutoAttach để tự động quản lý 100% các tab (Tab ban đầu, Tab mới Ctrl+T, Popup, Link click)
+    let auto_attach_cmd = json!({
+        "id": 1,
+        "method": "Target.setAutoAttach",
+        "params": {
+            "autoAttach": true,
+            "waitForDebuggerOnStart": true,
+            "flatten": true
+        }
+    });
+    let _ = tx.send(Message::Text(auto_attach_cmd.to_string()));
+
+    let stealth_js = generate_stealth_script(profile);
+    let profile_id = profile.id;
+
+    let custom_ua_cmds = if has_custom_ua {
+        let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
+        Some((
+            json!({
+                "method": "Emulation.setUserAgentOverride",
+                "params": {
+                    "userAgent": profile.profile_user_agent,
+                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "platform": "Win32",
+                    "userAgentMetadata": {
+                        "brands": [
+                            {"brand": "Chromium", "version": major_ver},
+                            {"brand": "Not:A-Brand", "version": "24"},
+                            {"brand": "Google Chrome", "version": major_ver}
+                        ],
+                        "fullVersion": full_ver,
+                        "platform": "Windows",
+                        "platformVersion": "15.0.0",
+                        "architecture": "x86",
+                        "model": "",
+                        "mobile": false,
+                        "bitness": "64",
+                        "wow64": false
+                    }
+                }
+            }),
+            json!({
+                "method": "Network.setUserAgentOverride",
+                "params": {
+                    "userAgent": profile.profile_user_agent,
+                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "platform": "Win32"
+                }
+            })
+        ))
+    } else {
+        None
+    };
+
+    let start_url_clone = start_url.clone();
+
+    // Reader task lắng nghe Target.attachedToTarget để tiêm Stealth vào MỌI tab mới tạo
+    tokio::spawn(async move {
+        let mut cmd_id: u64 = 100;
+        let mut is_first_tab = true;
+
+        while let Some(Ok(msg)) = read.next().await {
+            if let Ok(text) = msg.to_text() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                    if val.get("method").and_then(|m| m.as_str()) == Some("Target.attachedToTarget") {
+                        if let Some(params) = val.get("params") {
+                            let session_id = params.get("sessionId").and_then(|s| s.as_str()).unwrap_or("");
+                            let target_type = params.get("targetInfo")
+                                .and_then(|ti| ti.get("type"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+
+                            if target_type == "page" && !session_id.is_empty() {
+                                // 1. Bật Page domain cho tab này
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Page.enable"
+                                }).to_string()));
+
+                                // 2. Override UA nếu có tùy biến
+                                if let Some((ref ua_cmd, ref net_cmd)) = custom_ua_cmds {
+                                    cmd_id += 1;
+                                    let mut c1 = ua_cmd.clone();
+                                    c1["id"] = json!(cmd_id);
+                                    c1["sessionId"] = json!(session_id);
+                                    let _ = tx.send(Message::Text(c1.to_string()));
+
+                                    cmd_id += 1;
+                                    let mut c2 = net_cmd.clone();
+                                    c2["id"] = json!(cmd_id);
+                                    c2["sessionId"] = json!(session_id);
+                                    let _ = tx.send(Message::Text(c2.to_string()));
+                                }
+
+                                // 3. Tiêm Clean Stealth Script cho MỌI lần chuyển trang trong tab này
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Page.addScriptToEvaluateOnNewDocument",
+                                    "params": {
+                                        "source": stealth_js
+                                    }
+                                }).to_string()));
+
+                                // 4. Đánh giá ngay lập tức trên document hiện tại (đảm bảo tab có dữ liệu tức thì)
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Runtime.evaluate",
+                                    "params": {
+                                        "expression": stealth_js
+                                    }
+                                }).to_string()));
+
+                                // 5. Nếu là tab ban đầu, điều hướng tới start_url và bringToFront
+                                if is_first_tab {
+                                    is_first_tab = false;
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Page.navigate",
+                                        "params": {
+                                            "url": start_url_clone
+                                        }
+                                    }).to_string()));
+
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Page.bringToFront"
+                                    }).to_string()));
+                                }
+
+                                // 6. Cho phép tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Runtime.runIfWaitingForDebugger"
+                                }).to_string()));
+
+                                info!("🛡️ [Profile #{}] Đã tự động kích hoạt Stealth Shield cho Tab mới (Session: {})", profile_id, session_id);
                             }
                         }
                     }
                 }
             }
         }
-        if target_ws_url.is_some() {
-            break;
-        }
-    }
-
-    let ws_url = match target_ws_url {
-        Some(url) => url,
-        None => {
-            warn!("Không lấy được WebSocket target của Chrome sau 10s, Chrome vẫn tiếp tục chạy.");
-            return Ok(());
-        }
-    };
-
-    info!("🔌 Kết nối CDP WebSocket: {}", ws_url);
-
-    // Kết nối WebSocket qua tokio-tungstenite
-    let (ws_stream, _) = connect_async(&ws_url)
-        .await
-        .map_err(|e| format!("Lỗi kết nối WebSocket CDP: {}", e))?;
-
-    let (mut write, mut read) = ws_stream.split();
-
-    // 1. Kích hoạt Page domain để CDP cho phép addScriptToEvaluateOnNewDocument hoạt động chuẩn xác 100%
-    let page_enable_cmd = json!({
-        "id": 1,
-        "method": "Page.enable"
-    });
-    let _ = write.send(Message::Text(page_enable_cmd.to_string())).await;
-
-    // 3. Chỉ gửi User-Agent override khi có UA tùy biến hợp lệ, tránh mismatch V8 version gây lỗi pineapple
-    if has_custom_ua {
-        let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
-        let ua_override_cmd = json!({
-            "id": 3,
-            "method": "Emulation.setUserAgentOverride",
-            "params": {
-                "userAgent": profile.profile_user_agent,
-                "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                "platform": "Win32",
-                "userAgentMetadata": {
-                    "brands": [
-                        {"brand": "Chromium", "version": major_ver},
-                        {"brand": "Not:A-Brand", "version": "24"},
-                        {"brand": "Google Chrome", "version": major_ver}
-                    ],
-                    "fullVersion": full_ver,
-                    "platform": "Windows",
-                    "platformVersion": "15.0.0",
-                    "architecture": "x86",
-                    "model": "",
-                    "mobile": false,
-                    "bitness": "64",
-                    "wow64": false
-                }
-            }
-        });
-        let _ = write.send(Message::Text(ua_override_cmd.to_string())).await;
-
-        let net_ua_override_cmd = json!({
-            "id": 4,
-            "method": "Network.setUserAgentOverride",
-            "params": {
-                "userAgent": profile.profile_user_agent,
-                "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                "platform": "Win32"
-            }
-        });
-        let _ = write.send(Message::Text(net_ua_override_cmd.to_string())).await;
-    }
-
-    // 4. Page.addScriptToEvaluateOnNewDocument (Clean Stealth Script độc nhất theo profile)
-    let stealth_js = generate_stealth_script(profile);
-    let add_script_cmd = json!({
-        "id": 5,
-        "method": "Page.addScriptToEvaluateOnNewDocument",
-        "params": {
-            "source": stealth_js
-        }
-    });
-    let _ = write.send(Message::Text(add_script_cmd.to_string())).await;
-
-    // 6. Page.navigate tới start_url
-    let nav_cmd = json!({
-        "id": 6,
-        "method": "Page.navigate",
-        "params": {
-            "url": start_url
-        }
-    });
-    let _ = write.send(Message::Text(nav_cmd.to_string())).await;
-
-    // 7. Page.bringToFront: Đảm bảo cửa sổ Chrome lập tức nổi lên màn hình chính
-    let bring_front_cmd = json!({
-        "id": 7,
-        "method": "Page.bringToFront"
-    });
-    let _ = write.send(Message::Text(bring_front_cmd.to_string())).await;
-
-    info!("✅ Đã cấu hình Clean Stealth CDP cho Profile #{} và điều hướng tới {}", profile.id, start_url);
-
-    let ws_p_id = profile.id;
-    tokio::spawn(async move {
-        while let Some(Ok(_msg)) = read.next().await {
-            // Giữ kết nối WebSocket CDP sống liên tục cùng vòng đời của tab trình duyệt
-        }
-        info!("🔌 Kết nối CDP của Profile #{} đã ngắt.", ws_p_id);
-        mark_profile_inactive(ws_p_id);
+        info!("🔌 Kết nối Browser CDP của Profile #{} đã ngắt.", profile_id);
+        mark_profile_inactive(profile_id);
     });
 
+    info!("✅ Đã cấu hình Browser Auto-Attach Stealth CDP cho Profile #{}", profile.id);
     Ok(())
 }
