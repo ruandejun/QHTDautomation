@@ -467,23 +467,39 @@ impl BrowserNurtureEngine {
             self.update_log(pid, "✅ Phát hiện phiên đăng nhập TikTok có sẵn trong profile! Sẵn sàng vào FYP...".to_string(), "Đã đăng nhập");
             tokio::time::sleep(Duration::from_secs(2)).await;
         } else {
-            // Chưa đăng nhập -> Cần thực hiện quy trình đăng nhập bằng tài khoản C69
-            let acc = match &c69_acc {
-                Some(a) if a.password.as_deref().unwrap_or("").trim().len() > 0 => a,
-                _ => {
-                    self.set_error(pid, "❌ Profile chưa đăng nhập TikTok và chưa được gắn tài khoản C69 hợp lệ! Vui lòng chọn tài khoản có mật khẩu để tự động đăng nhập.".to_string());
+            // Chưa đăng nhập -> Cần thực hiện quy trình đăng nhập
+            let has_valid_c69_pwd = c69_acc.as_ref().map(|a| a.password.as_deref().unwrap_or("").trim().len() > 0).unwrap_or(false);
+            if !has_valid_c69_pwd {
+                self.update_log(pid, "⚠️ Profile chưa đăng nhập TikTok! Đang mở trang đăng nhập https://www.tiktok.com/login... Vui lòng đăng nhập trên cửa sổ trình duyệt (hoặc gắn tài khoản C69 có mật khẩu).".to_string(), "Chờ đăng nhập");
+                let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
+
+                let mut manual_login_ok = false;
+                for wait_i in 1..=60 {
+                    if !run_flag.load(Ordering::Relaxed) { return; }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let check_now = cdp.evaluate(check_session_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                    if check_now {
+                        manual_login_ok = true;
+                        break;
+                    }
+                    if wait_i % 5 == 0 {
+                        self.update_log(pid, format!("Đang chờ bạn đăng nhập TikTok trên trình duyệt (thời gian còn {}s)...", (60 - wait_i) * 2), "Chờ đăng nhập");
+                    }
+                }
+                if !manual_login_ok {
+                    self.set_error(pid, "❌ Quá thời gian chờ đăng nhập TikTok (120s) hoặc chưa hoàn tất đăng nhập. Vui lòng thử lại.".to_string());
                     return;
                 }
-            };
-
-            let pwd = acc.password.as_deref().unwrap_or("");
-            let login_identity = if let Some(ref email) = acc.email {
-                if email.contains('@') { email.clone() } else { acc.username.clone() }
             } else {
-                acc.username.clone()
-            };
+                let acc = c69_acc.as_ref().unwrap();
+                let pwd = acc.password.as_deref().unwrap_or("");
+                let login_identity = if let Some(ref email) = acc.email {
+                    if email.contains('@') { email.clone() } else { acc.username.clone() }
+                } else {
+                    acc.username.clone()
+                };
 
-            self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản: {}", login_identity), "Tiến hành đăng nhập");
+                self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản: {}", login_identity), "Tiến hành đăng nhập");
 
             let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
             tokio::time::sleep(Duration::from_secs(6)).await;
@@ -737,12 +753,13 @@ impl BrowserNurtureEngine {
                 }
             }
 
-            if !login_confirmed {
-                self.set_error(
-                    pid, 
-                    "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 180s) hoặc chưa hoàn tất Captcha / Mã OTP xác thực. Dừng lại an toàn.".to_string()
-                );
-                return;
+                if !login_confirmed {
+                    self.set_error(
+                        pid, 
+                        "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 180s) hoặc chưa hoàn tất Captcha / Mã OTP xác thực. Dừng lại an toàn.".to_string()
+                    );
+                    return;
+                }
             }
 
             self.clear_challenge(pid);

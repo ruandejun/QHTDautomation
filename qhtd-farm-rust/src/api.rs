@@ -665,6 +665,9 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
     if new_prof.webrtc_mode.is_none() {
         new_prof.webrtc_mode = Some("proxy_only".into());
     }
+    if new_prof.proxy_type.trim().is_empty() {
+        new_prof.proxy_type = if new_prof.proxy_string.trim().is_empty() { "direct".into() } else { "socks5".into() };
+    }
 
     profiles.push(new_prof);
     if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
@@ -2041,9 +2044,38 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">URL Khởi Động:</label>
                         <input id="modal-prof-url" type="text" class="search-input" style="width:100%;" value="https://iphey.com">
                     </div>
-                    <div>
-                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Proxy (Tùy chọn):</label>
-                        <input id="modal-prof-proxy" type="text" class="search-input" style="width:100%;" placeholder="VD: 127.0.0.1:10808 (Để trống nếu Direct)">
+                    <div style="background: rgba(0, 242, 254, 0.03); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <label style="font-size:11px; font-weight:700; color:var(--primary);">🌐 Cấu Hình Proxy & SOCKS5:</label>
+                            <span id="modal-create-proxy-status" style="font-size:10px; color:var(--text-muted);"></span>
+                        </div>
+                        <div style="display:grid; grid-template-columns: 140px 1fr; gap:8px;">
+                            <div>
+                                <select id="modal-prof-proxy-type" onchange="onCreateProxyTypeChange()" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:7px 8px; border-radius:6px; font-size:12px;">
+                                    <option value="direct">⚡ Direct (Không Proxy)</option>
+                                    <option value="socks5" selected>🛡️ SOCKS5 Proxy</option>
+                                    <option value="http">🌐 HTTP Proxy</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <input id="modal-prof-proxy" type="text" class="search-input" style="flex:1;" placeholder="host:port hoặc socks5://user:pass@host:port">
+                                <button class="btn btn-dark" type="button" onclick="testModalProxy('create')" style="font-size:11px; padding:6px 10px; border-color:var(--border);">⚡ Test</button>
+                            </div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:11px;">
+                            <div style="display:flex; gap:6px;">
+                                <button class="btn btn-dark" type="button" onclick="assignRandomC69ProxyToField('modal-prof-proxy', 'modal-prof-proxy-type')" style="font-size:10px; padding:3px 8px; border-color:rgba(0,242,254,0.3); color:var(--primary);">🎲 Random C69 SOCKS5</button>
+                                <button class="btn btn-dark" type="button" onclick="clearModalProxyField('modal-prof-proxy', 'modal-prof-proxy-type')" style="font-size:10px; padding:3px 8px;">✕ Xóa Proxy</button>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:4px;">
+                                <span style="color:var(--text-muted); font-size:10px;">WebRTC:</span>
+                                <select id="modal-prof-webrtc" style="background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:2px 6px; border-radius:4px; font-size:10px;">
+                                    <option value="proxy_only">🛡️ Ép qua Proxy (Chống Lộ IP)</option>
+                                    <option value="disabled">🚫 Tắt WebRTC</option>
+                                    <option value="custom">🌐 Mặc định</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
                         <button class="btn btn-dark" type="button" onclick="randomizeModalFields()">🎲 Random Hợp Lý</button>
@@ -2117,9 +2149,38 @@ async fn dashboard_handler() -> Html<&'static str> {
                         </div>
                     </div>
 
-                    <div>
-                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Proxy Server:</label>
-                        <input id="edit-prof-proxy" type="text" class="search-input" style="width:100%;" placeholder="host:port hoặc socks5://user:pass@host:port">
+                    <div style="background: rgba(0, 242, 254, 0.03); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <label style="font-size:11px; font-weight:700; color:var(--primary);">🌐 Cấu Hình Proxy & SOCKS5:</label>
+                            <span id="modal-edit-proxy-status" style="font-size:10px; color:var(--text-muted);"></span>
+                        </div>
+                        <div style="display:grid; grid-template-columns: 140px 1fr; gap:8px;">
+                            <div>
+                                <select id="edit-prof-proxy-type" onchange="onEditProxyTypeChange()" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:7px 8px; border-radius:6px; font-size:12px;">
+                                    <option value="direct">⚡ Direct (Không Proxy)</option>
+                                    <option value="socks5">🛡️ SOCKS5 Proxy</option>
+                                    <option value="http">🌐 HTTP Proxy</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <input id="edit-prof-proxy" type="text" class="search-input" style="flex:1;" placeholder="host:port hoặc socks5://user:pass@host:port">
+                                <button class="btn btn-dark" type="button" onclick="testModalProxy('edit')" style="font-size:11px; padding:6px 10px; border-color:var(--border);">⚡ Test</button>
+                            </div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:11px;">
+                            <div style="display:flex; gap:6px;">
+                                <button class="btn btn-dark" type="button" onclick="assignRandomC69ProxyToField('edit-prof-proxy', 'edit-prof-proxy-type')" style="font-size:10px; padding:3px 8px; border-color:rgba(0,242,254,0.3); color:var(--primary);">🎲 Random C69 SOCKS5</button>
+                                <button class="btn btn-dark" type="button" onclick="clearModalProxyField('edit-prof-proxy', 'edit-prof-proxy-type')" style="font-size:10px; padding:3px 8px;">✕ Xóa Proxy</button>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:4px;">
+                                <span style="color:var(--text-muted); font-size:10px;">WebRTC:</span>
+                                <select id="edit-prof-webrtc" style="background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:2px 6px; border-radius:4px; font-size:10px;">
+                                    <option value="proxy_only">🛡️ Ép qua Proxy (Chống Lộ IP)</option>
+                                    <option value="disabled">🚫 Tắt WebRTC</option>
+                                    <option value="custom">🌐 Mặc định</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
 
                     <div style="background: rgba(0, 242, 254, 0.04); border: 1px solid rgba(0, 242, 254, 0.15); border-radius: 8px; padding: 8px 12px; font-size: 11px; color: #94a3b8; display: flex; flex-direction: column; gap: 3px;">
@@ -3093,9 +3154,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <div style="font-size:11px; color:#38bdf8; font-weight:600;">🎮 ${gpuLabel}</div>
                         <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise • Audio Noise • ${p.profile_cpu || 8} Cores / ${p.profile_ram || 16}GB</div>
                     </td>
-                    <td>${p.proxy_string 
-                        ? `<div style="display:flex; align-items:center; gap:4px;"><span style="color:#10b981; font-weight:600; font-size:11px;" title="${p.proxy_string}">${p.proxy_string.length > 22 ? p.proxy_string.slice(0, 20) + '…' : p.proxy_string}</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; border-color:var(--border);" onclick="testSingleProxy('${p.proxy_string.replace(/'/g, "\\'")}', this)" title="Kiểm tra kết nối Proxy">⚡ Test</button></div>` 
-                        : `<div style="display:flex; align-items:center; gap:4px;"><span style="color:var(--text-muted); font-size:11px;">Direct</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; color:#38bdf8; border-color:rgba(56,189,248,0.3);" onclick="assignC69ProxyToProfile(${p.id})" title="Gán 1 proxy SOCKS5 từ C69 Pool">➕ Gán C69</button></div>`}</td>
+                    <td>${p.proxy_string && (p.proxy_type !== 'direct')
+                        ? `<div style="display:flex; align-items:center; gap:4px;"><span style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3); font-size:9px; padding:1px 4px; border-radius:3px; font-weight:700;">${(p.proxy_type || 'SOCKS5').toUpperCase()}</span><span style="color:#10b981; font-weight:600; font-size:11px;" title="${p.proxy_string}">${p.proxy_string.length > 18 ? p.proxy_string.slice(0, 16) + '…' : p.proxy_string}</span><button class="btn btn-dark" style="padding:2px 5px; font-size:10px; border-color:var(--border);" onclick="testSingleProxy('${p.proxy_string.replace(/'/g, "\\'")}', this)" title="Kiểm tra kết nối Proxy">⚡ Test</button></div>` 
+                        : `<div style="display:flex; align-items:center; gap:4px;"><span style="color:var(--text-muted); font-size:11px; background:rgba(255,255,255,0.05); padding:1px 5px; border-radius:3px;">⚡ Direct</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; color:#38bdf8; border-color:rgba(56,189,248,0.3);" onclick="assignC69ProxyToProfile(${p.id})" title="Gán 1 proxy SOCKS5 từ C69 Pool">➕ Gán C69</button></div>`}</td>
                     <td>${statusBadge}</td>
                     <td style="white-space:nowrap;">
                         <div style="display:flex; gap:5px; align-items:center;">
@@ -3647,6 +3708,103 @@ async fn dashboard_handler() -> Html<&'static str> {
             document.getElementById('modal-prof-engine').value = engines[Math.floor(Math.random() * engines.length)];
         }
 
+        function onCreateProxyTypeChange() {
+            const t = document.getElementById('modal-prof-proxy-type').value;
+            const input = document.getElementById('modal-prof-proxy');
+            if (t === 'direct') {
+                input.value = '';
+                input.placeholder = '⚡ Chế độ Direct (Không dùng Proxy)';
+                input.disabled = true;
+            } else if (t === 'socks5') {
+                input.placeholder = 'VD: 127.0.0.1:10808 hoặc user:pass@host:port';
+                input.disabled = false;
+            } else {
+                input.placeholder = 'VD: 127.0.0.1:8080 hoặc user:pass@host:port';
+                input.disabled = false;
+            }
+        }
+
+        function onEditProxyTypeChange() {
+            const t = document.getElementById('edit-prof-proxy-type').value;
+            const input = document.getElementById('edit-prof-proxy');
+            if (t === 'direct') {
+                input.value = '';
+                input.placeholder = '⚡ Chế độ Direct (Không dùng Proxy)';
+                input.disabled = true;
+            } else if (t === 'socks5') {
+                input.placeholder = 'VD: host:port hoặc socks5://user:pass@host:port';
+                input.disabled = false;
+            } else {
+                input.placeholder = 'VD: host:port hoặc http://user:pass@host:port';
+                input.disabled = false;
+            }
+        }
+
+        async function testModalProxy(modalType) {
+            const isEdit = modalType === 'edit';
+            const inputId = isEdit ? 'edit-prof-proxy' : 'modal-prof-proxy';
+            const statusId = isEdit ? 'modal-edit-proxy-status' : 'modal-create-proxy-status';
+            const typeId = isEdit ? 'edit-prof-proxy-type' : 'modal-prof-proxy-type';
+            const val = document.getElementById(inputId).value.trim();
+            const statusEl = document.getElementById(statusId);
+            const pType = document.getElementById(typeId).value;
+
+            if (pType === 'direct' || !val) {
+                statusEl.innerHTML = `<span style="color:var(--warning);">⚡ Chế độ Direct hoặc chưa nhập Proxy!</span>`;
+                return;
+            }
+
+            statusEl.innerHTML = `<span style="color:var(--primary);">⏳ Đang kiểm tra...</span>`;
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/proxy/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy_string: val })
+                });
+                const d = await res.json();
+                if (d.success) {
+                    statusEl.innerHTML = `<span style="color:#10b981; font-weight:700;">✅ Live (${d.latency_ms}ms)</span>`;
+                } else {
+                    statusEl.innerHTML = `<span style="color:#ef4444; font-weight:700;">❌ Die: ${d.message}</span>`;
+                }
+            } catch(e) {
+                statusEl.innerHTML = `<span style="color:#ef4444;">Lỗi: ${e}</span>`;
+            }
+        }
+
+        async function assignRandomC69ProxyToField(inputId, typeId) {
+            const input = document.getElementById(inputId);
+            const typeEl = document.getElementById(typeId);
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/c69/proxies`);
+                const data = await res.json();
+                if (data.proxies && data.proxies.length > 0) {
+                    const picked = data.proxies[Math.floor(Math.random() * data.proxies.length)];
+                    typeEl.value = 'socks5';
+                    input.disabled = false;
+                    input.value = picked.proxy_string;
+                    const isEdit = inputId.includes('edit');
+                    testModalProxy(isEdit ? 'edit' : 'create');
+                } else {
+                    alert('Chưa tải được Proxy từ Pool C69!');
+                }
+            } catch (e) {
+                alert('Lỗi lấy Proxy C69: ' + e);
+            }
+        }
+
+        function clearModalProxyField(inputId, typeId) {
+            const input = document.getElementById(inputId);
+            const typeEl = document.getElementById(typeId);
+            input.value = '';
+            typeEl.value = 'direct';
+            input.disabled = true;
+            input.placeholder = '⚡ Chế độ Direct (Không dùng Proxy)';
+            const isEdit = inputId.includes('edit');
+            const statusEl = document.getElementById(isEdit ? 'modal-edit-proxy-status' : 'modal-create-proxy-status');
+            if (statusEl) statusEl.innerHTML = `<span style="color:var(--text-muted);">Direct (Không Proxy)</span>`;
+        }
+
         function openEditFingerprintModal(id) {
             const p = allProfiles.find(x => x.id === id);
             if (!p) return;
@@ -3661,7 +3819,16 @@ async fn dashboard_handler() -> Html<&'static str> {
             document.getElementById('edit-prof-res').value = p.profile_resolution || '1920x1080';
             document.getElementById('edit-prof-canvas-seed').value = p.canvas_seed || (p.id * 1664525 + 1013904);
             document.getElementById('edit-prof-audio-seed').value = p.audio_seed || (p.id * 1103515 + 12345);
-            document.getElementById('edit-prof-proxy').value = p.proxy_string || '';
+
+            // Cấu hình Proxy & WebRTC
+            const pType = p.proxy_type || (p.proxy_string ? 'socks5' : 'direct');
+            document.getElementById('edit-prof-proxy-type').value = pType;
+            const pInput = document.getElementById('edit-prof-proxy');
+            pInput.value = p.proxy_string || '';
+            pInput.disabled = (pType === 'direct');
+            document.getElementById('edit-prof-webrtc').value = p.webrtc_mode || 'proxy_only';
+            const statusEl = document.getElementById('modal-edit-proxy-status');
+            if (statusEl) statusEl.innerHTML = p.proxy_string ? `<span style="color:#10b981;">Đã nạp proxy</span>` : `<span style="color:var(--text-muted);">Direct</span>`;
 
             document.getElementById('modal-edit-fingerprint').style.display = 'flex';
         }
@@ -3708,7 +3875,11 @@ async fn dashboard_handler() -> Html<&'static str> {
             p.profile_resolution = document.getElementById('edit-prof-res').value.trim() || '1920x1080';
             p.canvas_seed = parseInt(document.getElementById('edit-prof-canvas-seed').value) || (id + 100);
             p.audio_seed = parseInt(document.getElementById('edit-prof-audio-seed').value) || (id + 200);
-            p.proxy_string = document.getElementById('edit-prof-proxy').value.trim();
+
+            // Lưu Proxy & WebRTC
+            p.proxy_type = document.getElementById('edit-prof-proxy-type').value;
+            p.proxy_string = (p.proxy_type === 'direct') ? '' : document.getElementById('edit-prof-proxy').value.trim();
+            p.webrtc_mode = document.getElementById('edit-prof-webrtc').value;
 
             try {
                 const res = await fetch(`${API_BASE}/api/browser/profiles`, {
@@ -3718,7 +3889,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 });
                 const d = await res.json();
                 closeEditFingerprintModal();
-                alert(d.message || "Đã lưu cấu hình Fingerprint!");
+                alert(d.message || "Đã lưu cấu hình Fingerprint & Proxy!");
                 loadBrowserProfiles();
             } catch(e) {
                 alert("Lỗi khi lưu cấu hình: " + e);
@@ -3739,7 +3910,10 @@ async fn dashboard_handler() -> Html<&'static str> {
             const ram = parseInt(document.getElementById('modal-prof-ram').value) || 16;
             const resolution = document.getElementById('modal-prof-res').value || "1920x1080";
             const start_url = document.getElementById('modal-prof-url').value.trim() || "https://iphey.com";
-            const proxy = document.getElementById('modal-prof-proxy').value.trim();
+
+            const proxy_type = document.getElementById('modal-prof-proxy-type').value;
+            const proxy_string = (proxy_type === 'direct') ? '' : document.getElementById('modal-prof-proxy').value.trim();
+            const webrtc_mode = document.getElementById('modal-prof-webrtc').value;
 
             try {
                 const res = await fetch(`${API_BASE}/api/browser/profiles`, {
@@ -3754,7 +3928,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                         profile_ram: ram,
                         profile_resolution: resolution,
                         profile_start_url: start_url,
-                        proxy_string: proxy
+                        proxy_string: proxy_string,
+                        proxy_type: proxy_type,
+                        webrtc_mode: webrtc_mode
                     })
                 });
                 const data = await res.json();

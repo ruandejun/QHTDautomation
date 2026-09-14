@@ -102,6 +102,18 @@ pub fn parse_proxy_string(raw: &str) -> Option<ParsedProxy> {
     None
 }
 
+pub fn parse_proxy_string_with_type(raw: &str, proxy_type: &str) -> Option<ParsedProxy> {
+    if proxy_type.eq_ignore_ascii_case("direct") || raw.trim().is_empty() {
+        return None;
+    }
+    let default_scheme = if proxy_type.eq_ignore_ascii_case("http") { "http" } else { "socks5" };
+    let mut parsed = parse_proxy_string(raw)?;
+    if !raw.contains("://") {
+        parsed.scheme = default_scheme.to_string();
+    }
+    Some(parsed)
+}
+
 fn parse_host_port(hp: &str) -> Option<(String, u16)> {
     let clean = hp.trim_matches('/').trim();
     let parts: Vec<&str> = clean.split(':').collect();
@@ -641,15 +653,22 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a);
     let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
-    if let Some(parsed_proxy) = parse_proxy_string(&profile.proxy_string) {
-        let server_arg = parsed_proxy.server_arg();
-        info!("🛡️ Cấu hình Proxy cho Profile #{}: {}", profile.id, server_arg);
-        cmd.arg(format!("--proxy-server={}", server_arg));
+    let use_proxy = !profile.proxy_type.eq_ignore_ascii_case("direct") && !profile.proxy_string.trim().is_empty();
+    if use_proxy {
+        if let Some(parsed_proxy) = parse_proxy_string_with_type(&profile.proxy_string, &profile.proxy_type) {
+            let server_arg = parsed_proxy.server_arg();
+            info!("🛡️ Cấu hình Proxy [{}] cho Profile #{}: {}", parsed_proxy.scheme.to_uppercase(), profile.id, server_arg);
+            cmd.arg(format!("--proxy-server={}", server_arg));
 
-        // WebRTC Leak Protection: Bắt buộc định tuyến WebRTC qua Proxy hoặc tắt non-proxied UDP
-        cmd.arg("--webrtc-ip-handling-policy=disable_non_proxied_udp")
-            .arg("--enforce-webrtc-ip-permission-check")
-            .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+            // WebRTC Leak Protection: Bắt buộc định tuyến WebRTC qua Proxy hoặc tắt hẳn
+            let webrtc_mode = profile.webrtc_mode.as_deref().unwrap_or("proxy_only");
+            if webrtc_mode == "disabled" {
+                cmd.arg("--disable-webrtc");
+            } else if webrtc_mode == "proxy_only" {
+                cmd.arg("--webrtc-ip-handling-policy=disable_non_proxied_udp")
+                    .arg("--enforce-webrtc-ip-permission-check")
+                    .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+            }
 
         // Nếu proxy có xác thực Username / Password:
         // Tự động sinh Chrome Proxy Auth Extension vào thư mục user_data_dir của profile
@@ -699,6 +718,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
             }
         }
     }
+}
 
     // Các switches C++ Native Anti-Detect (Được nhận diện trực tiếp bởi QHTD Custom Chromium)
     cmd.arg(format!("--qhtd-hardware-concurrency={}", cpu))
@@ -784,6 +804,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let stealth_js = generate_stealth_script(profile);
     let profile_id = profile.id;
+    let profile_tiktok_username = profile.tiktok_username.clone();
+    let profile_tiktok_account_id = profile.tiktok_account_id;
 
     let custom_ua_cmds = if has_custom_ua {
         let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
@@ -951,6 +973,19 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                         "sessionId": session_id,
                                         "method": "Page.bringToFront"
                                     }).to_string()));
+                                    let is_tiktok = start_url_clone.contains("tiktok.com") 
+                                        || profile_tiktok_username.is_some() 
+                                        || profile_tiktok_account_id.is_some();
+                                    if is_tiktok {
+                                        let s_id = session_id.to_string();
+                                        let tx_sub = tx.clone();
+                                        let p_id = profile_id;
+                                        let u_name = profile_tiktok_username.clone();
+                                        let a_id = profile_tiktok_account_id;
+                                        tokio::spawn(async move {
+                                            check_and_handle_tiktok_login_cdp(p_id, s_id, tx_sub, u_name, a_id).await;
+                                        });
+                                    }
                                 }
 
                                 // 6. Cho phép frame/tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
@@ -975,4 +1010,204 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     info!("✅ Đã cấu hình Browser Auto-Attach Stealth CDP cho Profile #{}", profile.id);
     Ok(())
+}
+
+async fn check_and_handle_tiktok_login_cdp(
+    profile_id: usize,
+    session_id: String,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
+    tiktok_username: Option<String>,
+    tiktok_account_id: Option<u64>,
+) {
+    // 1. Chờ 6s để trang web TikTok tải xong hoàn toàn
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    info!("🔍 [Profile #{}] Đang kiểm tra trạng thái đăng nhập TikTok...", profile_id);
+
+    // Lấy thông tin tài khoản C69 gắn với profile này (nếu có)
+    let c69_acc = if let Ok(accounts) = crate::browser_nurture::fetch_c69_tiktok_accounts().await {
+        accounts.into_iter().find(|a| {
+            if let Some(aid) = tiktok_account_id {
+                if a.id == aid { return true; }
+            }
+            if let Some(ref u) = tiktok_username {
+                if a.username.eq_ignore_ascii_case(u) { return true; }
+            }
+            false
+        })
+    } else {
+        None
+    };
+
+    if let Some(acc) = c69_acc {
+        let username_str = acc.username.clone();
+        let pwd_str = acc.password.clone().unwrap_or_default();
+        let two_fa = acc.two_factor_auth.clone().unwrap_or_default();
+
+        info!("👤 [Profile #{}] Đã gắn tài khoản C69: @{}. Kiểm tra phiên đăng nhập...", profile_id, username_str);
+
+        // Script kiểm tra và tự động điền form đăng nhập nếu chưa login
+        let login_script = format!(r#"
+            (async () => {{
+                const hasCookie = document.cookie.includes('sessionid=');
+                const hasAvatar = !!(
+                    document.querySelector('[data-e2e="profile-icon"]') || 
+                    document.querySelector('img[alt*="avatar"]') || 
+                    document.querySelector('a[href*="/@"]') ||
+                    document.querySelector('[data-e2e="inbox-icon"]')
+                );
+                if (hasCookie || hasAvatar) {{
+                    console.log('QHTD: Tài khoản TikTok đã đăng nhập sẵn!');
+                    if (window.location.href.includes('/login')) {{
+                        window.location.href = 'https://www.tiktok.com/foryou';
+                    }}
+                    return 'already_logged_in';
+                }}
+
+                // Nếu chưa ở trang login, chuyển hướng vào trang login
+                if (!window.location.href.includes('/login')) {{
+                    console.log('QHTD: Chưa đăng nhập, chuyển hướng đến trang Login...');
+                    window.location.href = 'https://www.tiktok.com/login/phone-or-email/email?lang=en';
+                    return 'redirecting_to_login';
+                }}
+
+                // Nếu đã ở trang login, tự động điền thông tin tài khoản
+                const uInp = document.querySelector('input[name="username"]') || 
+                             document.querySelector('input[placeholder*="Email"]') || 
+                             document.querySelector('input[placeholder*="Username"]') ||
+                             document.querySelector('input[type="text"]');
+                const pInp = document.querySelector('input[type="password"]');
+
+                if (uInp && pInp) {{
+                    uInp.focus();
+                    uInp.value = '{}';
+                    uInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    uInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    
+                    pInp.focus();
+                    pInp.value = '{}';
+                    pInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    pInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+
+                    const submitBtn = document.querySelector('button[type="submit"]') || 
+                                      Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
+                    if (submitBtn && !submitBtn.disabled) {{
+                        setTimeout(() => submitBtn.click(), 800);
+                        return 'form_submitted';
+                    }}
+                }}
+                return 'waiting_login_fields';
+            }})()
+        "#, username_str.replace('\'', "\\'"), pwd_str.replace('\'', "\\'"));
+
+        let cmd_exec = json!({
+            "id": 999902,
+            "sessionId": session_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": login_script,
+                "awaitPromise": true
+            }
+        });
+        let _ = tx.send(Message::Text(cmd_exec.to_string()));
+
+        // Chờ 6s và thử điền lại (cho trường hợp vừa chuyển hướng từ tiktok.com sang trang login)
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let cmd_retry = json!({
+            "id": 999903,
+            "sessionId": session_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": login_script,
+                "awaitPromise": true
+            }
+        });
+        let _ = tx.send(Message::Text(cmd_retry.to_string()));
+
+        // Nếu có 2FA Secret Key, chờ thêm 4s để tự động giải mã và điền OTP TOTP
+        if !two_fa.trim().is_empty() && two_fa.trim().len() >= 8 {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            let totp_script = format!(r#"
+                (async () => {{
+                    const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+                    let bits = '';
+                    const clean = '{}'.replace(/[\s=-]/g, '').toUpperCase();
+                    for (let i = 0; i < clean.length; i++) {{
+                        const val = base32chars.indexOf(clean[i]);
+                        if (val >= 0) bits += val.toString(2).padStart(5, '0');
+                    }}
+                    const bytes = new Uint8Array(Math.floor(bits.length / 8));
+                    for (let i = 0; i < bytes.length; i++) {{
+                        bytes[i] = parseInt(bits.substr(i * 8, 8), 2);
+                    }}
+                    const epoch = Math.floor(Date.now() / 1000);
+                    const counter = Math.floor(epoch / 30);
+                    const counterBuffer = new ArrayBuffer(8);
+                    const counterView = new DataView(counterBuffer);
+                    counterView.setUint32(4, counter, false);
+                    const key = await crypto.subtle.importKey('raw', bytes, {{ name: 'HMAC', hash: {{ name: 'SHA-1' }} }}, false, ['sign']);
+                    const sig = await crypto.subtle.sign('HMAC', key, counterBuffer);
+                    const sigBytes = new Uint8Array(sig);
+                    const offset = sigBytes[sigBytes.length - 1] & 0x0f;
+                    const code = ((sigBytes[offset] & 0x7f) << 24 | (sigBytes[offset + 1] & 0xff) << 16 | (sigBytes[offset + 2] & 0xff) << 8 | (sigBytes[offset + 3] & 0xff)) % 1000000;
+                    const totp = code.toString().padStart(6, '0');
+
+                    const otpInputs = Array.from(document.querySelectorAll('input')).filter(i => {{
+                        const maxL = i.getAttribute('maxlength');
+                        return maxL === '1' || maxL === '6' || i.className.includes('digit') || i.className.includes('code');
+                    }});
+                    if (otpInputs.length === 6) {{
+                        for (let i = 0; i < 6; i++) {{
+                            otpInputs[i].value = totp[i];
+                            otpInputs[i].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        }}
+                        return 'totp_filled_multi';
+                    }} else if (otpInputs.length >= 1) {{
+                        otpInputs[0].value = totp;
+                        otpInputs[0].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        return 'totp_filled_single';
+                    }}
+                    return 'no_otp_input';
+                }})()
+            "#, two_fa.trim());
+
+            let cmd_totp = json!({
+                "id": 999904,
+                "sessionId": session_id,
+                "method": "Runtime.evaluate",
+                "params": {
+                    "expression": totp_script,
+                    "awaitPromise": true
+                }
+            });
+            let _ = tx.send(Message::Text(cmd_totp.to_string()));
+            info!("🔑 [Profile #{}] Đã tự động tính toán mã 2FA TOTP RFC 6238 và gửi vào form xác thực!", profile_id);
+        }
+    } else {
+        // Chưa liên kết tài khoản C69 -> Kiểm tra nếu chưa login thì điều hướng đến trang login để người dùng tiện đăng nhập
+        let redirect_script = r#"
+            (() => {
+                const hasCookie = document.cookie.includes('sessionid=');
+                const hasAvatar = !!(
+                    document.querySelector('[data-e2e="profile-icon"]') || 
+                    document.querySelector('img[alt*="avatar"]') || 
+                    document.querySelector('a[href*="/@"]') ||
+                    document.querySelector('[data-e2e="inbox-icon"]')
+                );
+                if (!hasCookie && !hasAvatar && !window.location.href.includes('/login')) {
+                    window.location.href = 'https://www.tiktok.com/login/phone-or-email/email?lang=en';
+                    return 'redirected_to_login';
+                }
+                return 'ok';
+            })()
+        "#;
+        let cmd_redir = json!({
+            "id": 999905,
+            "sessionId": session_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": redirect_script
+            }
+        });
+        let _ = tx.send(Message::Text(cmd_redir.to_string()));
+    }
 }

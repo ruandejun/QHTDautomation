@@ -77,13 +77,7 @@ def patch_setup_toolchain(src_root):
     path = os.path.join(src_root, "build", "toolchain", "win", "setup_toolchain.py")
     def transform(c):
         c = re.sub(r"SDK_VERSION\s*=\s*['\"][^'\"]+['\"]", f"SDK_VERSION = '{sdk_ver}'", c)
-        clean_env_code = "    for _k in ['include', 'lib']:\n      if _k in env:\n        env[_k] = ';'.join([_p for _p in env[_k].split(';') if os.path.exists(_p) or len(_p) == 0])\n"
-        if "clean_env_code" not in c and "def _ExtractNinjaEnvironment(" in c:
-            c = c.replace("def _ExtractNinjaEnvironment(env):", "def _ExtractNinjaEnvironment(env):\n" + clean_env_code)
-
-        target_check = "if not os.path.exists(part) and len(part) != 0:"
-        if target_check in c:
-            c = c.replace(target_check, "if False and not os.path.exists(part) and len(part) != 0:")
+        c = re.sub(r"if\s+not\s+os\.path\.exists\(part\)[^:]*:", "if False and not os.path.exists(part):", c)
         return c
 
     patch_file(path, "Patch Windows SDK Toolchain Path Check", transform)
