@@ -90,6 +90,10 @@ pub struct BrowserProfile {
     pub gpu_renderer: Option<String>,
     #[serde(default)]
     pub gpu_vendor: Option<String>,
+    #[serde(default)]
+    pub tiktok_account_id: Option<u64>,
+    #[serde(default)]
+    pub tiktok_username: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +136,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
         // ── Mun Anti Browser TikTok Nurture & C69 APIs ──
         .route("/api/browser/nurture/start", post(browser_nurture_start_handler))
+        .route("/api/browser/nurture/start-selected", post(browser_nurture_start_selected_handler))
+        .route("/api/browser/nurture/create-and-nurture", post(browser_nurture_create_and_nurture_handler))
+        .route("/api/browser/nurture/assign-account", post(browser_nurture_assign_account_handler))
         .route("/api/browser/nurture/stop", post(browser_nurture_stop_handler))
         .route("/api/browser/nurture/status", get(browser_nurture_status_handler))
         .route("/api/browser/c69/accounts", get(browser_c69_accounts_handler))
@@ -413,6 +420,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
         BrowserProfile {
             id: 1,
@@ -434,6 +443,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
         BrowserProfile {
             id: 2,
@@ -455,6 +466,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (AMD)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
         BrowserProfile {
             id: 3,
@@ -476,6 +489,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (Intel)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
         BrowserProfile {
             id: 4,
@@ -497,6 +512,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
         BrowserProfile {
             id: 5,
@@ -518,6 +535,8 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             profile_audio: serde_json::Value::Null,
             gpu_renderer: Some("ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)".into()),
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
+            tiktok_account_id: None,
+            tiktok_username: None,
         },
     ]
 }
@@ -746,6 +765,8 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
                 profile_audio: serde_json::Value::Null,
                 gpu_renderer: Some(rend.to_string()),
                 gpu_vendor: Some(vend.to_string()),
+                tiktok_account_id: None,
+                tiktok_username: None,
             }
         }
     };
@@ -787,6 +808,25 @@ pub struct BrowserNurtureStartPayload {
 }
 
 #[derive(Deserialize)]
+pub struct BrowserNurtureSelectedPayload {
+    pub profile_ids: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateAndNurturePayload {
+    pub c69_account_id: u64,
+    pub c69_username: String,
+    pub c69_password: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AssignAccountPayload {
+    pub profile_id: usize,
+    pub c69_account_id: Option<u64>,
+    pub c69_username: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct BrowserNurtureStopPayload {
     pub profile_id: usize,
 }
@@ -796,13 +836,13 @@ async fn browser_nurture_start_handler(
     Json(payload): Json<BrowserNurtureStartPayload>,
 ) -> Json<serde_json::Value> {
     let path = get_profiles_file_path();
-    let profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
         .unwrap_or_else(get_default_browser_profiles);
 
-    let target_prof = match profiles.into_iter().find(|p| p.id == payload.profile_id) {
-        Some(p) => p,
+    let target_idx = match profiles.iter().position(|p| p.id == payload.profile_id) {
+        Some(idx) => idx,
         None => {
             return Json(serde_json::json!({
                 "success": false,
@@ -810,6 +850,19 @@ async fn browser_nurture_start_handler(
             }));
         }
     };
+
+    // Nếu có truyền tài khoản C69 mới, cập nhật vào Profile để ghi nhớ
+    if payload.c69_account_id.is_some() || payload.c69_username.is_some() {
+        profiles[target_idx].tiktok_account_id = payload.c69_account_id;
+        if let Some(ref u) = payload.c69_username {
+            profiles[target_idx].tiktok_username = Some(u.clone());
+        }
+        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+            let _ = std::fs::write(&path, json_str);
+        }
+    }
+
+    let target_prof = profiles[target_idx].clone();
 
     let c69_acc = if let (Some(u), Some(p)) = (payload.c69_username, payload.c69_password) {
         Some(crate::browser_nurture::C69Account {
@@ -820,7 +873,13 @@ async fn browser_nurture_start_handler(
             note: None,
         })
     } else {
-        crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().and_then(|accs| accs.into_iter().next())
+        // Tìm tài khoản theo username lưu trong profile hoặc lấy từ danh sách C69
+        let all_accs = crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().unwrap_or_default();
+        if let Some(ref saved_u) = target_prof.tiktok_username {
+            all_accs.into_iter().find(|a| a.username == *saved_u)
+        } else {
+            all_accs.into_iter().next()
+        }
     };
 
     match state.browser_nurture.start_nurture(target_prof, c69_acc).await {
@@ -832,6 +891,162 @@ async fn browser_nurture_start_handler(
             "success": false,
             "message": e
         })),
+    }
+}
+
+async fn browser_nurture_start_selected_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<BrowserNurtureSelectedPayload>,
+) -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_else(get_default_browser_profiles);
+
+    let all_c69_accs = crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().unwrap_or_default();
+
+    // Thu thập các tài khoản đã bị gán cho profile nào đó
+    let mut used_acc_ids: std::collections::HashSet<u64> = profiles
+        .iter()
+        .filter_map(|p| p.tiktok_account_id)
+        .collect();
+
+    let mut started_count = 0;
+    let mut modified = false;
+
+    for pid in payload.profile_ids {
+        if let Some(idx) = profiles.iter().position(|p| p.id == pid) {
+            let prof = &mut profiles[idx];
+            let mut acc_to_use = None;
+
+            if let Some(aid) = prof.tiktok_account_id {
+                acc_to_use = all_c69_accs.iter().find(|a| a.id == aid).cloned();
+            } else if let Some(ref uname) = prof.tiktok_username {
+                acc_to_use = all_c69_accs.iter().find(|a| a.username == *uname).cloned();
+            }
+
+            // Nếu profile chưa có nick: chọn random 1 nick TikTok C69 chưa bị gán
+            if acc_to_use.is_none() {
+                if let Some(free_acc) = all_c69_accs.iter().find(|a| !used_acc_ids.contains(&a.id)) {
+                    prof.tiktok_account_id = Some(free_acc.id);
+                    prof.tiktok_username = Some(free_acc.username.clone());
+                    used_acc_ids.insert(free_acc.id);
+                    acc_to_use = Some(free_acc.clone());
+                    modified = true;
+                }
+            }
+
+            let prof_clone = prof.clone();
+            let _ = state.browser_nurture.start_nurture(prof_clone, acc_to_use).await;
+            started_count += 1;
+        }
+    }
+
+    if modified {
+        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+            let _ = std::fs::write(&path, json_str);
+        }
+    }
+
+    Json(serde_json::json!({
+        "success": true,
+        "count": started_count,
+        "message": format!("Đã kích hoạt nuôi TikTok cho {} profiles được chọn!", started_count)
+    }))
+}
+
+async fn browser_nurture_create_and_nurture_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateAndNurturePayload>,
+) -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_else(get_default_browser_profiles);
+
+    let next_id = profiles.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+    let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
+    let (rend, vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
+
+    let new_profile = BrowserProfile {
+        id: next_id,
+        name: format!("TikTok — {}", payload.c69_username),
+        engine_mode: Some("native".into()),
+        profile_user_agent: String::new(),
+        profile_os: "Windows".into(),
+        profile_resolution: "1920x1080".into(),
+        profile_cpu: 8,
+        profile_ram: 16,
+        proxy_string: String::new(),
+        proxy_type: "socks5".into(),
+        profile_start_url: "https://www.tiktok.com".into(),
+        canvas_seed: Some(rand::random::<u32>()),
+        audio_seed: Some(rand::random::<u32>()),
+        webrtc_mode: Some("proxy_only".into()),
+        profile_canvas: serde_json::Value::Null,
+        profile_webgl: serde_json::Value::Null,
+        profile_audio: serde_json::Value::Null,
+        gpu_renderer: Some(rend.to_string()),
+        gpu_vendor: Some(vend.to_string()),
+        tiktok_account_id: Some(payload.c69_account_id),
+        tiktok_username: Some(payload.c69_username.clone()),
+    };
+
+    profiles.push(new_profile.clone());
+    if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+        let _ = std::fs::write(&path, json_str);
+    }
+
+    let c69_acc = crate::browser_nurture::C69Account {
+        id: payload.c69_account_id,
+        username: payload.c69_username.clone(),
+        password: payload.c69_password,
+        status: None,
+        note: None,
+    };
+
+    match state.browser_nurture.start_nurture(new_profile, Some(c69_acc)).await {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "profile_id": next_id,
+            "message": format!("Đã tạo Profile #{} ({}) và bắt đầu nuôi TikTok!", next_id, payload.c69_username)
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "profile_id": next_id,
+            "message": e
+        })),
+    }
+}
+
+async fn browser_nurture_assign_account_handler(
+    Json(payload): Json<AssignAccountPayload>,
+) -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_else(get_default_browser_profiles);
+
+    if let Some(prof) = profiles.iter_mut().find(|p| p.id == payload.profile_id) {
+        prof.tiktok_account_id = payload.c69_account_id;
+        prof.tiktok_username = payload.c69_username.clone();
+
+        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+            let _ = std::fs::write(&path, json_str);
+        }
+
+        Json(serde_json::json!({
+            "success": true,
+            "message": format!("Đã gán tài khoản {} cho Profile #{}", payload.c69_username.as_deref().unwrap_or("None"), payload.profile_id)
+        }))
+    } else {
+        Json(serde_json::json!({
+            "success": false,
+            "message": format!("Không tìm thấy Profile #{}", payload.profile_id)
+        }))
     }
 }
 
@@ -1476,6 +1691,10 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <span class="nav-icon">🌐</span>
                     <span>Mun Anti Browser</span>
                 </li>
+                <li class="nav-item" onclick="switchNav('c69tiktok')">
+                    <span class="nav-icon">🎬</span>
+                    <span>Tài Khoản TikTok (C69)</span>
+                </li>
                 <li class="nav-item" onclick="switchNav('ios')">
                     <span class="nav-icon">🍏</span>
                     <span>iOS Automation</span>
@@ -1564,7 +1783,8 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <span id="core-status-badge"></span>
                 </div>
                 <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
-                    <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:5px 12px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi TikTok All</button>
+                    <button class="btn btn-primary" onclick="startNurtureSelectedProfiles()" style="background:linear-gradient(135deg, #06b6d4, #3b82f6); font-weight:700; font-size:11px; padding:5px 12px; color:#fff;" title="Chạy nuôi các profiles được tích chọn (tự gán nick random nếu chưa có)">🎬 Nuôi Profiles Đã Chọn</button>
+                    <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:5px 12px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi All</button>
                     <button class="btn btn-dark" onclick="stopNurtureAllProfiles()" style="border-color:#ef4444; color:#ef4444; font-size:11px; padding:5px 10px; font-weight:600;">⏹️ Dừng Nuôi All</button>
                     <button class="btn btn-dark" onclick="syncC69Profiles()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;" title="Đồng bộ cấu hình từ C69.us">☁️ Đồng Bộ C69</button>
                     <div style="display:flex; gap:4px; margin-left:4px;">
@@ -1582,8 +1802,9 @@ async fn dashboard_handler() -> Html<&'static str> {
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th style="width:36px; text-align:center;"><input type="checkbox" id="check-all-profiles" onchange="toggleSelectAllProfiles(this)"></th>
                         <th>ID</th>
-                        <th>Tên Profile</th>
+                        <th>Tên Profile & Nick TikTok</th>
                         <th>Engine Chống Detect</th>
                         <th>Hệ Điều Hành / User-Agent</th>
                         <th>Card GPU & Dấu Vân Tay</th>
@@ -1593,7 +1814,41 @@ async fn dashboard_handler() -> Html<&'static str> {
                     </tr>
                 </thead>
                 <tbody id="browser-profiles-body">
-                    <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
+                    <tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- VIEW: TÀI KHOẢN TIKTOK C69 (QUẢN LÝ & TỰ TẠO PROFILE RANDOM) -->
+        <div class="view-content" id="view-c69tiktok">
+            <div class="action-toolbar">
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
+                    <h2 style="font-size: 14px; font-weight: 700; color:#f0abfc;">🎬 Quản Lý Tài Khoản TikTok C69 & Tự Động Tạo Profile</h2>
+                    <span id="c69-acc-count" style="font-size: 11px; font-weight: 700; color: #38bdf8;"></span>
+                </div>
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
+                    <button class="btn btn-purple" onclick="startNurtureSelectedAccounts()" style="background:linear-gradient(135deg, #ec4899, #8b5cf6); font-weight:700; font-size:11px; padding:5px 12px; color:#fff; box-shadow:0 0 10px rgba(236,72,153,0.35);" title="Tự động tạo profile random và nuôi các nick được tích chọn">🎬 Nuôi Các Nick Đã Chọn (Tự Tạo Profile)</button>
+                    <button class="btn btn-dark" onclick="loadC69AccountsTab()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;">🔄 Làm Mới</button>
+                    <input type="text" class="search-input" placeholder="Tìm kiếm tài khoản / username..." id="c69-acc-search" oninput="filterC69Accounts()">
+                </div>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th style="width:36px; text-align:center;"><input type="checkbox" id="check-all-c69-accs" onchange="toggleSelectAllC69Accounts(this)"></th>
+                        <th>ID</th>
+                        <th>Tài Khoản TikTok (Username)</th>
+                        <th>Mật Khẩu</th>
+                        <th>Trạng Thái C69</th>
+                        <th>Ghi Chú</th>
+                        <th>Profile Đã Gán</th>
+                        <th>Trạng Thái Nuôi</th>
+                        <th>Thao Tác</th>
+                    </tr>
+                </thead>
+                <tbody id="c69-accounts-body">
+                    <tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Đang tải tài khoản từ C69...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1984,6 +2239,7 @@ async fn dashboard_handler() -> Html<&'static str> {
             if (view) view.classList.add('active');
 
             if (navId === 'browser') loadBrowserProfiles();
+            if (navId === 'c69tiktok') loadC69AccountsTab();
             if (navId === 'ios') loadIosDevices();
         }
 
@@ -2554,10 +2810,37 @@ async fn dashboard_handler() -> Html<&'static str> {
         // Tự động đồng bộ trạng thái thực tế mỗi 2 giây
         setInterval(syncActiveBrowserProfiles, 2000);
 
+        function toggleSelectAllProfiles(masterCb) {
+            document.querySelectorAll('.prof-checkbox').forEach(cb => cb.checked = masterCb.checked);
+        }
+
+        async function startNurtureSelectedProfiles() {
+            const selectedIds = Array.from(document.querySelectorAll('.prof-checkbox:checked')).map(cb => parseInt(cb.value));
+            if (selectedIds.length === 0) {
+                return alert("Vui lòng tích chọn ít nhất 1 profile để nuôi!");
+            }
+            if (!confirm(`Bắt đầu nuôi TikTok cho ${selectedIds.length} profiles đã chọn? (Profile chưa có tài khoản sẽ tự động được gán nick C69 ngẫu nhiên chưa sử dụng)`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/nurture/start-selected`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile_ids: selectedIds })
+                });
+                const d = await res.json();
+                alert(d.message || "Đã kích hoạt nuôi các profiles đã chọn!");
+                loadBrowserProfiles();
+            } catch (e) {
+                alert("Lỗi: " + e);
+            }
+        }
+
         function renderProfiles(profiles) {
             const tbody = document.getElementById('browser-profiles-body');
             if (profiles.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới" hoặc "Đồng Bộ C69".</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới" hoặc "Đồng Bộ C69".</td></tr>`;
                 return;
             }
 
@@ -2598,12 +2881,18 @@ async fn dashboard_handler() -> Html<&'static str> {
                     statusBadge = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>`;
                 }
 
+                const tiktokBadge = p.tiktok_username 
+                    ? `<div style="margin-top:4px;"><span style="background:rgba(217,70,239,0.15); border:1px solid #d946ef; color:#f0abfc; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">🎵 @${p.tiktok_username}</span></div>` 
+                    : `<div style="margin-top:4px;"><span style="color:#64748b; font-size:10px;">(Chưa gán nick TikTok)</span></div>`;
+
                 return `
                 <tr>
+                    <td style="text-align:center;"><input type="checkbox" class="prof-checkbox" value="${p.id}"></td>
                     <td><b>#${p.id}</b></td>
                     <td>
                         <b style="color:var(--primary); font-size:13px;">${p.name}</b>
                         <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Seed: <code>${p.canvas_seed || p.id}</code></div>
+                        ${tiktokBadge}
                     </td>
                     <td>${engineBadge}</td>
                     <td style="font-size: 11px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
@@ -2648,11 +2937,30 @@ async fn dashboard_handler() -> Html<&'static str> {
                 const data = await res.json();
                 if (data.success && data.accounts && data.accounts.length > 0) {
                     cachedC69Accounts = data.accounts;
-                    selectEl.innerHTML = data.accounts.map((acc, idx) => `
-                        <option value="${acc.id}" ${idx === (profileId % data.accounts.length) ? 'selected' : ''}>
-                            🔑 [ID:${acc.id}] ${acc.username} (${acc.status || 'Active'}) ${acc.note ? '— ' + acc.note : ''}
-                        </option>
-                    `).join('');
+
+                    // Bản đồ các tài khoản đã bị gán cho profile khác
+                    const usedAccMap = {};
+                    allProfiles.forEach(prof => {
+                        if (prof.id !== p.id && prof.tiktok_account_id) {
+                            usedAccMap[prof.tiktok_account_id] = prof.name;
+                        } else if (prof.id !== p.id && prof.tiktok_username) {
+                            const match = data.accounts.find(a => a.username === prof.tiktok_username);
+                            if (match) usedAccMap[match.id] = prof.name;
+                        }
+                    });
+
+                    selectEl.innerHTML = data.accounts.map(acc => {
+                        const isCurrentAssigned = (p.tiktok_account_id && p.tiktok_account_id === acc.id) || (p.tiktok_username && p.tiktok_username === acc.username);
+                        const isUsedByOther = usedAccMap[acc.id];
+
+                        if (isCurrentAssigned) {
+                            return `<option value="${acc.id}" selected style="color:#f0abfc; font-weight:bold;">⭐ [Đang Gán Profile Này] ${acc.username} (${acc.status || 'Active'})</option>`;
+                        } else if (isUsedByOther) {
+                            return `<option value="${acc.id}" disabled style="color:#64748b;">🚫 ${acc.username} (Đã gán cho ${isUsedByOther})</option>`;
+                        } else {
+                            return `<option value="${acc.id}">🟢 [Trống] ${acc.username} (${acc.status || 'Active'}) ${acc.note ? '— ' + acc.note : ''}</option>`;
+                        }
+                    }).join('');
                 } else {
                     selectEl.innerHTML = `<option value="">(Không tìm thấy tài khoản TikTok trên C69, dùng phiên đăng nhập sẵn có)</option>`;
                 }
@@ -2686,7 +2994,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 });
                 const d = await res.json();
                 alert(d.message || "Đã phát lệnh nuôi TikTok!");
-                syncActiveBrowserProfiles();
+                loadBrowserProfiles();
             } catch(e) {
                 alert("Lỗi: " + e);
             }
@@ -2756,6 +3064,158 @@ async fn dashboard_handler() -> Html<&'static str> {
             } catch(e) {
                 alert("Lỗi đồng bộ: " + e);
             }
+        }
+
+        // ── C69 TikTok Accounts Management Tab ───────────────────────────────
+        let c69AllAccounts = [];
+
+        async function loadC69AccountsTab() {
+            const tbody = document.getElementById('c69-accounts-body');
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">⏳ Đang nạp danh sách tài khoản từ server C69...</td></tr>`;
+
+            try {
+                const [resAccs, resProfs] = await Promise.all([
+                    fetch(`${API_BASE}/api/browser/c69/accounts`),
+                    fetch(`${API_BASE}/api/browser/profiles`)
+                ]);
+                const dAcc = await resAccs.json();
+                if (dAcc.success) {
+                    c69AllAccounts = dAcc.accounts || [];
+                }
+                allProfiles = await resProfs.json();
+                const countEl = document.getElementById('c69-acc-count');
+                if (countEl) countEl.innerText = `Tổng: ${c69AllAccounts.length} nick TikTok`;
+                filterC69Accounts();
+            } catch(e) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #ef4444;">Lỗi tải dữ liệu C69: ${e}</td></tr>`;
+            }
+        }
+
+        function filterC69Accounts() {
+            const q = (document.getElementById('c69-acc-search')?.value || '').toLowerCase().trim();
+            let filtered = c69AllAccounts;
+            if (q) {
+                filtered = filtered.filter(a => a.username.toLowerCase().includes(q) || (a.note && a.note.toLowerCase().includes(q)) || (a.id + '').includes(q));
+            }
+            renderC69Accounts(filtered);
+        }
+
+        function toggleSelectAllC69Accounts(masterCb) {
+            document.querySelectorAll('.c69-acc-checkbox').forEach(cb => cb.checked = masterCb.checked);
+        }
+
+        function renderC69Accounts(accounts) {
+            const tbody = document.getElementById('c69-accounts-body');
+            if (accounts.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Không có tài khoản nào phù hợp.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = accounts.map(acc => {
+                const assignedProf = allProfiles.find(p => p.tiktok_account_id === acc.id || p.tiktok_username === acc.username);
+                const isRunning = assignedProf ? activeProfileIds.has(assignedProf.id) : false;
+                const nurture = assignedProf ? nurtureStatuses[assignedProf.id] : null;
+                const isNurturing = nurture && nurture.is_running;
+
+                let profBadge = `<span style="color:#64748b; font-size:11px;">Chưa gán</span>`;
+                if (assignedProf) {
+                    profBadge = `<span style="background:rgba(0, 242, 254, 0.12); border:1px solid rgba(0, 242, 254, 0.35); color:var(--primary); padding:2px 8px; border-radius:6px; font-weight:700; font-size:11px; cursor:pointer;" onclick="switchNav('browser')" title="Xem Profile này trên Mun Anti Browser">
+                        Profile #${assignedProf.id}: ${assignedProf.name}
+                    </span>`;
+                }
+
+                let nurtureBadge = `<span class="badge-status-stopped">⚪ Chưa nuôi</span>`;
+                if (isNurturing) {
+                    nurtureBadge = `<span class="badge-status-running" style="background:rgba(217,70,239,0.15); border-color:#d946ef; color:#f0abfc;">
+                        <span class="pulse-dot" style="background:#d946ef;"></span>
+                        🎬 Nuôi FYP (${nurture.videos_watched} vids | ❤️ ${nurture.likes_given})
+                    </span>`;
+                }
+
+                return `
+                <tr>
+                    <td style="text-align:center;"><input type="checkbox" class="c69-acc-checkbox" value="${acc.id}"></td>
+                    <td><b>#${acc.id}</b></td>
+                    <td><b style="color:#f0abfc; font-size:13px;">@${acc.username}</b></td>
+                    <td><code>${acc.password ? '••••••••' : '<i style="color:#64748b;">(Không có pass)</i>'}</code></td>
+                    <td><span style="background:rgba(16, 185, 129, 0.12); color:#10b981; border:1px solid #10b981; padding:2px 6px; border-radius:4px; font-size:10px;">${acc.status || 'Active'}</span></td>
+                    <td style="font-size:11px; color:var(--text-muted);">${acc.note || '—'}</td>
+                    <td>${profBadge}</td>
+                    <td>${nurtureBadge}</td>
+                    <td>
+                        <div style="display:flex; gap:6px; align-items:center;">
+                            ${assignedProf
+                                ? (isNurturing
+                                    ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:11px; font-weight:700;" onclick="stopNurtureProfile(${assignedProf.id})">⏹️ Dừng Nuôi</button>`
+                                    : `<button class="btn btn-purple" style="padding:4px 8px; font-size:11px; font-weight:700; background:linear-gradient(135deg, #8b5cf6, #d946ef); color:#fff;" onclick="openNurtureModal(${assignedProf.id})">🎬 Nuôi TikTok</button>`
+                                  )
+                                : `<button class="btn btn-purple" style="padding:4px 10px; font-size:11px; font-weight:700; background:linear-gradient(135deg, #ec4899, #8b5cf6); color:#fff;" onclick="createProfileAndNurtureForAccount(${acc.id})" title="Tự động tạo profile mới với thông số random và chạy nuôi ngay">⚡ Tạo Profile & Nuôi</button>`
+                            }
+                            ${assignedProf ? (isRunning 
+                                ? `<button class="btn btn-dark" style="padding:4px 8px; font-size:11px; border-color:#ef4444; color:#ef4444;" onclick="stopBrowserProfile(${assignedProf.id})">🛑 Đóng</button>`
+                                : `<button class="btn btn-dark" style="padding:4px 8px; font-size:11px; border-color:var(--primary); color:var(--primary);" onclick="launchBrowserProfile(${assignedProf.id})">🚀 Mở</button>`
+                            ) : ''}
+                        </div>
+                    </td>
+                </tr>
+                `;
+            }).join('');
+        }
+
+        async function createProfileAndNurtureForAccount(accId) {
+            const acc = c69AllAccounts.find(a => a.id === accId);
+            if (!acc) return;
+
+            if (!confirm(`Tự động tạo 1 Profile mới với thông số Fingerprint Random và bắt đầu nuôi TikTok cho nick @${acc.username}?`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/nurture/create-and-nurture`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        c69_account_id: acc.id,
+                        c69_username: acc.username,
+                        c69_password: acc.password
+                    })
+                });
+                const d = await res.json();
+                alert(d.message || "Đã tạo profile và kích hoạt nuôi!");
+                loadC69AccountsTab();
+            } catch(e) {
+                alert("Lỗi: " + e);
+            }
+        }
+
+        async function startNurtureSelectedAccounts() {
+            const selectedIds = Array.from(document.querySelectorAll('.c69-acc-checkbox:checked')).map(cb => parseInt(cb.value));
+            if (selectedIds.length === 0) {
+                return alert("Vui lòng tích chọn ít nhất 1 tài khoản TikTok!");
+            }
+
+            if (!confirm(`Tự động tạo Profile Random và bắt đầu nuôi cho ${selectedIds.length} tài khoản đã chọn?`)) {
+                return;
+            }
+
+            let started = 0;
+            for (const id of selectedIds) {
+                const acc = c69AllAccounts.find(a => a.id === id);
+                if (acc) {
+                    await fetch(`${API_BASE}/api/browser/nurture/create-and-nurture`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            c69_account_id: acc.id,
+                            c69_username: acc.username,
+                            c69_password: acc.password
+                        })
+                    }).catch(() => {});
+                    started++;
+                }
+            }
+            alert(`Đã khởi tạo Profile và phát lệnh nuôi TikTok cho ${started} tài khoản!`);
+            loadC69AccountsTab();
         }
 
         async function toggleEngine(id) {
