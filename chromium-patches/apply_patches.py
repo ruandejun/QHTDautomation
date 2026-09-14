@@ -59,8 +59,8 @@ def patch_setup_toolchain(src_root):
     def transform(c):
         target_check = "if not os.path.exists(part) and len(part) != 0:"
         if target_check in c:
-            # Vo hieu hoa viec throw Exception khi 1 duong dan trong SDK khong ton tai
-            c = c.replace(target_check, "if False:  # QHTD: ignore missing runner sdk paths\n            if not os.path.exists(part):")
+            # Vo hieu hoa viec throw Exception khi 1 duong dan trong SDK khong ton tai (giu nguyen indent)
+            c = c.replace(target_check, "if False and not os.path.exists(part) and len(part) != 0:")
         return c
 
     return patch_file(path, "Patch Windows SDK Toolchain Path Check", transform)
