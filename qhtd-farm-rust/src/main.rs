@@ -1,11 +1,13 @@
 mod adb_manager;
 mod api;
+pub mod browser_nurture;
 pub mod cdp_browser;
 mod stream_manager;
 mod tiktok_nurture;
 
 use adb_manager::AdbManager;
 use api::{create_router, AppState};
+use browser_nurture::BrowserNurtureEngine;
 use stream_manager::StreamManager;
 use tiktok_nurture::TikTokNurtureEngine;
 
@@ -94,11 +96,13 @@ fn main() {
             let adb = Arc::new(AdbManager::new());
             let stream = Arc::new(StreamManager::new(adb.clone()));
             let nurture = Arc::new(TikTokNurtureEngine::new(adb.clone()));
+            let browser_nurture = Arc::new(BrowserNurtureEngine::new());
 
             let app_state = AppState {
                 adb: adb.clone(),
                 stream: stream.clone(),
                 nurture: nurture.clone(),
+                browser_nurture: browser_nurture.clone(),
             };
 
             let app = create_router(app_state);

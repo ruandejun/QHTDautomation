@@ -126,7 +126,7 @@ pub fn find_executable_for_engine(engine_mode: &str) -> (Option<PathBuf>, &'stat
 }
 
 /// Tìm một port TCP trống trên localhost
-fn get_free_port(start: u16) -> u16 {
+pub fn get_free_port(start: u16) -> u16 {
     for port in start..(start + 200) {
         if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
             drop(listener);

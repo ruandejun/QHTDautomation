@@ -16,6 +16,7 @@ pub struct AppState {
     pub adb: Arc<AdbManager>,
     pub stream: Arc<StreamManager>,
     pub nurture: Arc<TikTokNurtureEngine>,
+    pub browser_nurture: Arc<crate::browser_nurture::BrowserNurtureEngine>,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +130,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/active", get(get_active_browser_profiles_handler))
         .route("/api/browser/core-status", get(browser_core_status_handler))
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
+        // ── Mun Anti Browser TikTok Nurture & C69 APIs ──
+        .route("/api/browser/nurture/start", post(browser_nurture_start_handler))
+        .route("/api/browser/nurture/stop", post(browser_nurture_stop_handler))
+        .route("/api/browser/nurture/status", get(browser_nurture_status_handler))
+        .route("/api/browser/c69/accounts", get(browser_c69_accounts_handler))
+        .route("/api/browser/c69/sync-profiles", post(browser_c69_sync_profiles_handler))
         // ── iOS & IPATool APIs ──
         .route("/api/ios/devices", get(list_ios_devices_handler))
         .route("/api/ios/search-app", get(search_ios_app_handler))
@@ -767,6 +774,100 @@ async fn stop_browser_profile_handler(Json(payload): Json<serde_json::Value>) ->
 
 async fn get_active_browser_profiles_handler() -> Json<Vec<usize>> {
     Json(crate::cdp_browser::get_active_profile_ids())
+}
+
+// ── Mun Anti Browser TikTok Nurture & C69 Handlers ───────────────────────────
+
+#[derive(Deserialize)]
+pub struct BrowserNurtureStartPayload {
+    pub profile_id: usize,
+    pub c69_account_id: Option<u64>,
+    pub c69_username: Option<String>,
+    pub c69_password: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct BrowserNurtureStopPayload {
+    pub profile_id: usize,
+}
+
+async fn browser_nurture_start_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<BrowserNurtureStartPayload>,
+) -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    let profiles: Vec<BrowserProfile> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_else(get_default_browser_profiles);
+
+    let target_prof = match profiles.into_iter().find(|p| p.id == payload.profile_id) {
+        Some(p) => p,
+        None => {
+            return Json(serde_json::json!({
+                "success": false,
+                "message": format!("Không tìm thấy Profile #{}", payload.profile_id)
+            }));
+        }
+    };
+
+    let c69_acc = if let (Some(u), Some(p)) = (payload.c69_username, payload.c69_password) {
+        Some(crate::browser_nurture::C69Account {
+            id: payload.c69_account_id.unwrap_or(0),
+            username: u,
+            password: Some(p),
+            status: None,
+            note: None,
+        })
+    } else {
+        crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().and_then(|accs| accs.into_iter().next())
+    };
+
+    match state.browser_nurture.start_nurture(target_prof, c69_acc).await {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Đã kích hoạt chu trình nuôi TikTok C69 cho Profile #{}!", payload.profile_id)
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "message": e
+        })),
+    }
+}
+
+async fn browser_nurture_stop_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<BrowserNurtureStopPayload>,
+) -> Json<serde_json::Value> {
+    state.browser_nurture.stop_nurture(payload.profile_id);
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã dừng nuôi TikTok cho Profile #{}", payload.profile_id)
+    }))
+}
+
+async fn browser_nurture_status_handler(
+    State(state): State<AppState>,
+) -> Json<Vec<crate::browser_nurture::BrowserNurtureStatus>> {
+    Json(state.browser_nurture.get_all_statuses())
+}
+
+async fn browser_c69_accounts_handler() -> Json<serde_json::Value> {
+    match crate::browser_nurture::fetch_c69_tiktok_accounts().await {
+        Ok(accs) => Json(serde_json::json!({ "success": true, "accounts": accs })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e, "accounts": [] })),
+    }
+}
+
+async fn browser_c69_sync_profiles_handler() -> Json<serde_json::Value> {
+    let path = get_profiles_file_path();
+    match crate::browser_nurture::sync_c69_profiles_to_local(path).await {
+        Ok(count) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Đã đồng bộ thành công {} profiles mới từ server C69!", count)
+        })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
 }
 
 // ── iOS & IPATool Handlers ───────────────────────────────────────────────────
@@ -1463,7 +1564,10 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <span id="core-status-badge"></span>
                 </div>
                 <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
-                    <div style="display:flex; gap:4px;">
+                    <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:5px 12px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi TikTok All</button>
+                    <button class="btn btn-dark" onclick="stopNurtureAllProfiles()" style="border-color:#ef4444; color:#ef4444; font-size:11px; padding:5px 10px; font-weight:600;">⏹️ Dừng Nuôi All</button>
+                    <button class="btn btn-dark" onclick="syncC69Profiles()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;" title="Đồng bộ cấu hình từ C69.us">☁️ Đồng Bộ C69</button>
+                    <div style="display:flex; gap:4px; margin-left:4px;">
                         <button class="btn filter-btn active" onclick="setEngineFilter('all', this)" style="padding:4px 8px; font-size:10px;">Tất cả</button>
                         <button class="btn filter-btn" onclick="setEngineFilter('native', this)" style="padding:4px 8px; font-size:10px; color:#c084fc;">💎 Native C++</button>
                         <button class="btn filter-btn" onclick="setEngineFilter('js_stealth', this)" style="padding:4px 8px; font-size:10px; color:#38bdf8;">⚡ JS Stealth</button>
@@ -1657,6 +1761,58 @@ async fn dashboard_handler() -> Html<&'static str> {
                             <button class="btn btn-dark" onclick="closeEditFingerprintModal()">Hủy</button>
                             <button class="btn btn-primary" onclick="saveEditedFingerprint()">💾 Lưu Thay Đổi</button>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL NUÔI TIKTOK MUN ANTI-BROWSER KẾT HỢP C69 -->
+        <div id="modal-nurture-tiktok" class="modal-backdrop">
+            <div class="modal-dialog" style="max-width: 520px;">
+                <div class="modal-header">
+                    <h3 style="font-size:14px; font-weight:700; color:#f0abfc;">🎬 Nuôi TikTok Mun Anti-Browser kết hợp C69</h3>
+                    <button class="btn-close" onclick="closeNurtureModal()">✕</button>
+                </div>
+                <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+                    <input type="hidden" id="nurture-prof-id">
+                    <div style="background: rgba(217, 70, 239, 0.08); border: 1px solid rgba(217, 70, 239, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px;">
+                        <div style="font-weight:700; color:#fff;" id="nurture-modal-prof-name">Profile #...</div>
+                        <div style="color:var(--text-muted); font-size:11px; margin-top:2px;">Kích hoạt luồng xem video FYP, tự động thả tim & lướt chuyển bài như người thật.</div>
+                    </div>
+
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Chọn Tài Khoản TikTok từ C69.US:</label>
+                        <select id="nurture-c69-acc-select" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                            <option value="">⏳ Đang tải tài khoản từ C69...</option>
+                        </select>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Thời Gian Xem / Video:</label>
+                            <select id="nurture-watch-duration" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="8-20">8 - 20 giây (Tự nhiên)</option>
+                                <option value="5-12">5 - 12 giây (Nhanh)</option>
+                                <option value="15-35">15 - 35 giây (Xem sâu)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Tỷ Lệ Thả Tim (Like):</label>
+                            <select id="nurture-like-rate" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                                <option value="0.65">65% (Khuyên dùng)</option>
+                                <option value="0.40">40% (Ít tương tác)</option>
+                                <option value="0.85">85% (Tương tác mạnh)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 11px; color: var(--text-muted);">
+                        ⚡ <b>Cơ chế kết nối C69:</b> Tự động đăng nhập vào TikTok nếu profile chưa có cookie, sau đó lướt For You Page liên tục và tự động tích lũy tương tác.
+                    </div>
+
+                    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+                        <button class="btn btn-dark" onclick="closeNurtureModal()">Hủy</button>
+                        <button class="btn btn-purple" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; color:#fff;" onclick="submitStartNurture()">🚀 Bắt Đầu Nuôi TikTok</button>
                     </div>
                 </div>
             </div>
@@ -2335,17 +2491,25 @@ async fn dashboard_handler() -> Html<&'static str> {
 
         // ── Mun Anti Browser Management ──────────────────────────────────────
         let activeProfileIds = new Set();
+        let nurtureStatuses = {};
+        let cachedC69Accounts = [];
 
         async function loadBrowserProfiles() {
             try {
-                const [resProf, resActive] = await Promise.all([
+                const [resProf, resActive, resNurture] = await Promise.all([
                     fetch(`${API_BASE}/api/browser/profiles`),
-                    fetch(`${API_BASE}/api/browser/active`)
+                    fetch(`${API_BASE}/api/browser/active`),
+                    fetch(`${API_BASE}/api/browser/nurture/status`).catch(() => ({ ok: false }))
                 ]);
                 allProfiles = await resProf.json();
                 if (resActive.ok) {
                     const ids = await resActive.json();
                     activeProfileIds = new Set(ids);
+                }
+                if (resNurture.ok) {
+                    const nList = await resNurture.json();
+                    nurtureStatuses = {};
+                    nList.forEach(n => { nurtureStatuses[n.profile_id] = n; });
                 }
                 filterProfiles();
                 updateActiveCountBadge();
@@ -2357,21 +2521,21 @@ async fn dashboard_handler() -> Html<&'static str> {
 
         async function syncActiveBrowserProfiles() {
             try {
-                const res = await fetch(`${API_BASE}/api/browser/active`);
-                if (!res.ok) return;
-                const ids = await res.json();
-                const newSet = new Set(ids);
-                let changed = (newSet.size !== activeProfileIds.size);
-                if (!changed) {
-                    for (let id of ids) {
-                        if (!activeProfileIds.has(id)) { changed = true; break; }
-                    }
+                const [resActive, resNurture] = await Promise.all([
+                    fetch(`${API_BASE}/api/browser/active`),
+                    fetch(`${API_BASE}/api/browser/nurture/status`).catch(() => null)
+                ]);
+                if (resActive.ok) {
+                    const ids = await resActive.json();
+                    activeProfileIds = new Set(ids);
                 }
-                if (changed) {
-                    activeProfileIds = newSet;
-                    filterProfiles();
-                    updateActiveCountBadge();
+                if (resNurture && resNurture.ok) {
+                    const nList = await resNurture.json();
+                    nurtureStatuses = {};
+                    nList.forEach(n => { nurtureStatuses[n.profile_id] = n; });
                 }
+                filterProfiles();
+                updateActiveCountBadge();
             } catch (e) {
                 // Silently handle transient errors
             }
@@ -2393,12 +2557,15 @@ async fn dashboard_handler() -> Html<&'static str> {
         function renderProfiles(profiles) {
             const tbody = document.getElementById('browser-profiles-body');
             if (profiles.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới".</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới" hoặc "Đồng Bộ C69".</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = profiles.map(p => {
                 const isRunning = activeProfileIds.has(p.id);
+                const nurture = nurtureStatuses[p.id];
+                const isNurturing = nurture && nurture.is_running;
+
                 let gpuLabel = 'DirectX 11 GPU';
                 if (p.gpu_renderer) {
                     if (p.gpu_renderer.includes('RTX 3060')) gpuLabel = 'NVIDIA RTX 3060';
@@ -2409,6 +2576,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     else if (p.gpu_renderer.includes('RX 6700')) gpuLabel = 'AMD Radeon RX 6700 XT';
                     else if (p.gpu_renderer.includes('RX 7600')) gpuLabel = 'AMD Radeon RX 7600';
                     else if (p.gpu_renderer.includes('Iris')) gpuLabel = 'Intel Iris Xe Graphics';
+                    else if (p.gpu_renderer.includes('Mali')) gpuLabel = 'ARM Mali-G715 Immortalis';
                     else gpuLabel = p.gpu_renderer.split('(')[1]?.split(',')[1]?.trim() || p.gpu_renderer.slice(0, 25);
                 }
 
@@ -2418,6 +2586,16 @@ async fn dashboard_handler() -> Html<&'static str> {
                     engineBadge = `<span class="badge-engine-js" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Hybrid">⚡ JS Stealth</span>`;
                 } else if (mode === 'hybrid') {
                     engineBadge = `<span class="badge-engine-hybrid" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Native C++">🔥 Hybrid (2 Lớp)</span>`;
+                }
+
+                let statusBadge = `<span class="badge-status-stopped">⚪ Đã tắt</span>`;
+                if (isNurturing) {
+                    statusBadge = `<span class="badge-status-running" style="background:rgba(217,70,239,0.15); border-color:#d946ef; color:#f0abfc;">
+                        <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
+                        🎬 Nuôi FYP (${nurture.videos_watched} vids | ❤️ ${nurture.likes_given})
+                    </span>`;
+                } else if (isRunning) {
+                    statusBadge = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>`;
                 }
 
                 return `
@@ -2437,21 +2615,147 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise • Audio Noise • ${p.profile_cpu || 8} Cores / ${p.profile_ram || 16}GB</div>
                     </td>
                     <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type || 'socks5'}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
-                    <td>
-                        ${isRunning 
-                            ? `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>` 
-                            : `<span class="badge-status-stopped">⚪ Đã tắt</span>`}
-                    </td>
+                    <td>${statusBadge}</td>
                     <td style="white-space:nowrap;">
-                        ${isRunning
-                            ? `<button id="btn-action-${p.id}" class="btn btn-danger" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng Profile</button>`
-                            : `<button id="btn-action-${p.id}" class="btn btn-primary" style="padding: 5px 12px; font-size: 11px; font-weight:700;" onclick="launchBrowserProfile(${p.id})">🚀 Mở Browser</button>`
-                        }
-                        <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Tùy chỉnh Fingerprint" onclick="openEditFingerprintModal(${p.id})">🛠️</button>
-                        <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
+                        <div style="display:flex; gap:5px; align-items:center;">
+                            ${isNurturing
+                                ? `<button class="btn btn-danger" style="padding: 5px 10px; font-size: 11px; font-weight:700; background:linear-gradient(135deg, #ef4444, #dc2626);" onclick="stopNurtureProfile(${p.id})" title="${nurture.last_log || ''}">⏹️ Dừng Nuôi</button>`
+                                : `<button class="btn btn-purple" style="padding: 5px 10px; font-size: 11px; font-weight:700; background:linear-gradient(135deg, #8b5cf6, #d946ef); color:#fff; box-shadow:0 0 10px rgba(217,70,239,0.25);" onclick="openNurtureModal(${p.id})" title="Bắt đầu nuôi TikTok For You Page kết hợp C69">🎬 Nuôi TikTok C69</button>`
+                            }
+                            ${isRunning
+                                ? `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding: 5px 10px; font-size: 11px; font-weight:600; border-color:#ef4444; color:#ef4444;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng</button>`
+                                : `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding: 5px 10px; font-size: 11px; font-weight:600; border-color:var(--primary); color:var(--primary);" onclick="launchBrowserProfile(${p.id})">🚀 Mở</button>`
+                            }
+                            <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Tùy chỉnh Fingerprint" onclick="openEditFingerprintModal(${p.id})">🛠️</button>
+                            <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
+                        </div>
                     </td>
                 </tr>
             `}).join('');
+        }
+
+        async function openNurtureModal(profileId) {
+            const p = allProfiles.find(x => x.id === profileId);
+            if (!p) return;
+            document.getElementById('nurture-prof-id').value = profileId;
+            document.getElementById('nurture-modal-prof-name').innerText = `Profile #${p.id} — ${p.name}`;
+            const selectEl = document.getElementById('nurture-c69-acc-select');
+            selectEl.innerHTML = `<option value="">⏳ Đang tải tài khoản từ C69.us...</option>`;
+            document.getElementById('modal-nurture-tiktok').style.display = 'flex';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/c69/accounts`);
+                const data = await res.json();
+                if (data.success && data.accounts && data.accounts.length > 0) {
+                    cachedC69Accounts = data.accounts;
+                    selectEl.innerHTML = data.accounts.map((acc, idx) => `
+                        <option value="${acc.id}" ${idx === (profileId % data.accounts.length) ? 'selected' : ''}>
+                            🔑 [ID:${acc.id}] ${acc.username} (${acc.status || 'Active'}) ${acc.note ? '— ' + acc.note : ''}
+                        </option>
+                    `).join('');
+                } else {
+                    selectEl.innerHTML = `<option value="">(Không tìm thấy tài khoản TikTok trên C69, dùng phiên đăng nhập sẵn có)</option>`;
+                }
+            } catch(e) {
+                selectEl.innerHTML = `<option value="">(Lỗi kết nối C69: ${e})</option>`;
+            }
+        }
+
+        function closeNurtureModal() {
+            document.getElementById('modal-nurture-tiktok').style.display = 'none';
+        }
+
+        async function submitStartNurture() {
+            const profileId = parseInt(document.getElementById('nurture-prof-id').value);
+            const selectEl = document.getElementById('nurture-c69-acc-select');
+            const accId = selectEl ? parseInt(selectEl.value) : null;
+            const chosenAcc = cachedC69Accounts.find(a => a.id === accId);
+
+            closeNurtureModal();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/nurture/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id: profileId,
+                        c69_account_id: chosenAcc ? chosenAcc.id : null,
+                        c69_username: chosenAcc ? chosenAcc.username : null,
+                        c69_password: chosenAcc ? chosenAcc.password : null
+                    })
+                });
+                const d = await res.json();
+                alert(d.message || "Đã phát lệnh nuôi TikTok!");
+                syncActiveBrowserProfiles();
+            } catch(e) {
+                alert("Lỗi: " + e);
+            }
+        }
+
+        async function stopNurtureProfile(profileId) {
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/nurture/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile_id: profileId })
+                });
+                const d = await res.json();
+                syncActiveBrowserProfiles();
+            } catch(e) {
+                alert("Lỗi: " + e);
+            }
+        }
+
+        async function startNurtureAllProfiles() {
+            if (allProfiles.length === 0) return alert("Không có profile nào để nuôi!");
+            if (!confirm(`Bắt đầu nuôi TikTok cho toàn bộ ${allProfiles.length} profiles kết hợp C69?`)) return;
+
+            let accounts = [];
+            try {
+                const r = await fetch(`${API_BASE}/api/browser/c69/accounts`);
+                const d = await r.json();
+                if (d.success) accounts = d.accounts;
+            } catch(_) {}
+
+            for (let i = 0; i < allProfiles.length; i++) {
+                const p = allProfiles[i];
+                const acc = accounts.length > 0 ? accounts[i % accounts.length] : null;
+                fetch(`${API_BASE}/api/browser/nurture/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id: p.id,
+                        c69_account_id: acc ? acc.id : null,
+                        c69_username: acc ? acc.username : null,
+                        c69_password: acc ? acc.password : null
+                    })
+                }).catch(() => {});
+            }
+            alert(`Đã phát lệnh nuôi TikTok đồng loạt cho ${allProfiles.length} profiles!`);
+            setTimeout(syncActiveBrowserProfiles, 1500);
+        }
+
+        async function stopNurtureAllProfiles() {
+            for (const p of allProfiles) {
+                fetch(`${API_BASE}/api/browser/nurture/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ profile_id: p.id })
+                }).catch(() => {});
+            }
+            alert("Đã phát lệnh dừng nuôi cho tất cả profile!");
+            setTimeout(syncActiveBrowserProfiles, 1000);
+        }
+
+        async function syncC69Profiles() {
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/c69/sync-profiles`, { method: 'POST' });
+                const d = await res.json();
+                alert(d.message || "Đã đồng bộ profiles từ C69!");
+                loadBrowserProfiles();
+            } catch(e) {
+                alert("Lỗi đồng bộ: " + e);
+            }
         }
 
         async function toggleEngine(id) {
