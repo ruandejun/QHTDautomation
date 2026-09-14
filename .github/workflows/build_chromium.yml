@@ -45,13 +45,16 @@ jobs:
       - name: Fetch Chromium Source Tree (Shallow)
         shell: cmd
         run: |
+          git config --global http.postBuffer 1048576000
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 999999
           mkdir chromium_build
           cd chromium_build
-          call fetch.bat --no-history --nohooks chromium
+          call fetch.bat --no-history --nohooks chromium || (timeout /t 10 && call fetch.bat --no-history --nohooks chromium)
           cd src
           git fetch --depth 1 origin tag 128.0.6613.119
           git checkout -B build_qhtd tags/128.0.6613.119
-          call gclient sync -D --force --no-history
+          call gclient sync -D --force --no-history || (timeout /t 15 && call gclient sync -D --force --no-history)
 
       - name: Apply QHTD Anti-Detect C++ Patches
         shell: cmd
