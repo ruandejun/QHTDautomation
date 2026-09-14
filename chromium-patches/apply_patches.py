@@ -95,12 +95,16 @@ def patch_setup_toolchain(src_root):
             return c.replace('"//build/modules",', '# "//build/modules",')
         patch_file(root_gn, "Comment out //build/modules in root BUILD.gn", transform_root_gn)
 
-    # 4. Patch build/modules/BUILD.gn
+    # 4. Patch build/modules/BUILD.gn: bypass expand_directory on Windows
     mod_gn = os.path.join(src_root, "build", "modules", "BUILD.gn")
     if os.path.exists(mod_gn):
         def transform_mod(c):
-            return re.sub(r"expand_directory\([^)]+\)", "[]", c)
-        patch_file(mod_gn, "Replace expand_directory with empty list in build/modules/BUILD.gn", transform_mod)
+            return re.sub(
+                r"foreach\s*\(\s*include_flag\s*,\s*current_win_toolchain_data\.include_flags_I_list\s*\)\s*\{[\s\S]*?expand_directory[\s\S]*?\}",
+                "# Windows SDK expand_directory bypassed for CI",
+                c
+            )
+        patch_file(mod_gn, "Bypass Windows SDK expand_directory in build/modules/BUILD.gn", transform_mod)
 
     return True
 
