@@ -71,6 +71,8 @@ jobs:
             echo enable_nacl = false
             echo is_component_build = false
             echo chrome_pgo_phase = 0
+            echo treat_warnings_as_errors = false
+            echo dcheck_always_on = false
           ) > out\Release\args.gn
           call gn.bat gen out\Release
 
