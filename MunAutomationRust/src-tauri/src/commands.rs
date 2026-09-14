@@ -221,7 +221,7 @@ pub async fn start_nurture(
                 None,
             );
 
-            for v in 1..=config.videos_per_session {
+            for _v in 1..=config.videos_per_session {
                 if !is_running.load(Ordering::SeqCst) {
                     emit_log(&app, "WARN", "⛔ Đã nhận lệnh dừng nuôi.", None);
                     return;

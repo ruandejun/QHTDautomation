@@ -49,7 +49,6 @@ jobs:
         working-directory: MunAutomationRust
         run: |
           npm ci
-          npm install --save-dev @tauri-apps/cli@^2.0.0
           npm run build
 
       - name: Build Tauri Binary
