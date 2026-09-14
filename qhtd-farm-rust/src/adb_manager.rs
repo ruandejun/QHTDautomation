@@ -157,39 +157,10 @@ impl AdbManager {
 
     pub fn get_all_devices(&self) -> Vec<DeviceInfo> {
         let serials = self.list_device_serials();
-        if !serials.is_empty() {
-            return serials.into_iter().map(|(s, st)| self.get_device_detail(&s, &st)).collect();
+        if serials.is_empty() {
+            return Vec::new();
         }
-
-        // Nếu giàn 8 máy chưa bật gỡ lỗi USB hoặc đang chờ kết nối, trả về 8 slot Samsung Galaxy Farm
-        let demo_serials = [
-            "CE0918298272403101",
-            "CE051715C86D871F03",
-            "CE04171409D8062401",
-            "CE031713F138907A0C",
-            "CE03171371483C3C05",
-            "CE0117112DCCEC3404",
-            "CE0417145CE4A0E80C",
-            "CE041714A2D2211102",
-        ];
-
-        demo_serials
-            .iter()
-            .enumerate()
-            .map(|(idx, &sn)| DeviceInfo {
-                serial: sn.to_string(),
-                model: format!("Galaxy S20 Farm #{}", idx + 1),
-                brand: "Samsung".to_string(),
-                state: "device".to_string(),
-                battery: 90 - (idx as i32 * 3),
-                width: 720,
-                height: 1280,
-                android_version: "12".to_string(),
-                ip_address: format!("192.168.137.{}", 101 + idx),
-                is_streaming: true,
-                nurture_status: "Ready".to_string(),
-            })
-            .collect()
+        serials.into_iter().map(|(s, st)| self.get_device_detail(&s, &st)).collect()
     }
 
     pub fn get_prop(&self, serial: &str, prop: &str) -> Option<String> {

@@ -159,7 +159,10 @@ pub fn create_router(state: AppState) -> Router {
 // ── Android Farm Handlers ────────────────────────────────────────────────────
 
 async fn list_devices_handler(State(state): State<AppState>) -> Json<Vec<DeviceInfo>> {
-    let devices = state.adb.get_all_devices();
+    let adb = state.adb.clone();
+    let devices = tokio::task::spawn_blocking(move || {
+        adb.get_all_devices()
+    }).await.unwrap_or_default();
     Json(devices)
 }
 
@@ -1874,8 +1877,11 @@ async fn dashboard_handler() -> Html<&'static str> {
             </div>
 
             <div class="phone-grid" id="device-grid">
-                <div style="grid-column: 1 / -1; text-align: center; padding: 60px 0; color: var(--text-muted);">
-                    ⏳ Đang quét và nạp luồng stream giàn máy Samsung...
+                <div style="grid-column: 1 / -1; text-align: center; padding: 50px 20px; color: var(--text-muted);">
+                    <div style="font-size: 32px; margin-bottom: 10px;">📱</div>
+                    <div style="font-weight: 700; font-size: 14px; margin-bottom: 6px; color: #fff;">Đang quét thiết bị giàn máy Android qua ADB...</div>
+                    <div style="font-size: 12px; margin-bottom: 14px;">Nếu chưa cắm giàn máy, bạn có thể chuyển ngay sang tab Anti Browser.</div>
+                    <button class="btn btn-primary" style="padding: 7px 16px; font-size: 11px;" onclick="switchNav('browser')">🌐 Chuyển Sang Tab Anti Browser</button>
                 </div>
             </div>
         </div>
@@ -2362,10 +2368,11 @@ async fn dashboard_handler() -> Html<&'static str> {
         let activeWifiSerial = null;
 
         function switchNav(navId) {
+            try { localStorage.setItem('mun_active_tab', navId); } catch(e) {}
             document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
             document.querySelectorAll('.view-content').forEach(v => v.classList.remove('active'));
 
-            const item = Array.from(document.querySelectorAll('.nav-item')).find(el => el.getAttribute('onclick').includes(navId));
+            const item = Array.from(document.querySelectorAll('.nav-item')).find(el => el.getAttribute('onclick') && el.getAttribute('onclick').includes(navId));
             if (item) item.classList.add('active');
 
             const view = document.getElementById(`view-${navId}`);
@@ -2377,22 +2384,43 @@ async fn dashboard_handler() -> Html<&'static str> {
         }
 
         async function refreshAll() {
-            await refreshDevices();
+            // Không dùng await tuần tự để không chặn loadBrowserProfiles() nếu ADB đang quét
+            refreshDevices();
             loadBrowserProfiles();
             loadIosDevices();
         }
 
         async function refreshDevices() {
             try {
-                const res = await fetch(`${API_BASE}/api/devices`);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                const res = await fetch(`${API_BASE}/api/devices`, { signal: controller.signal });
+                clearTimeout(timeoutId);
+
                 const devices = await res.json();
-                currentDevices = devices;
-                document.getElementById('android-count').innerText = devices.length;
+                currentDevices = devices || [];
+                const countEl = document.getElementById('android-count');
+                if (countEl) countEl.innerText = currentDevices.length;
 
                 const grid = document.getElementById('device-grid');
-                if (devices.length === 0) {
-                    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 60px 0; color: var(--text-muted);">
-                        ℹ️ Chưa phát hiện thiết bị Android nào qua ADB.<br>Vui lòng cắm giàn Samsung vào USB và bật "Gỡ lỗi USB".
+                if (!grid) return;
+
+                if (currentDevices.length === 0) {
+                    // Dọn dẹp kết nối websocket cũ nếu có
+                    Object.keys(activeSockets).forEach(s => {
+                        if (activeSockets[s]) {
+                            try { activeSockets[s].close(); } catch(err) {}
+                            delete activeSockets[s];
+                        }
+                    });
+                    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                        <div style="font-size: 38px; margin-bottom: 12px;">📱</div>
+                        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px; color: #fff;">Chưa phát hiện thiết bị Samsung / Android nào qua ADB</div>
+                        <div style="font-size: 12px; margin-bottom: 18px; line-height: 1.6;">Vui lòng cắm giàn máy vào cổng USB và bật <b>"Gỡ lỗi USB"</b> (USB Debugging).<br>Bạn có thể chuyển ngay sang tab Anti Browser để quản lý và nuôi nick TikTok trên trình duyệt.</div>
+                        <div style="display: flex; gap: 10px; justify-content: center;">
+                            <button class="btn btn-primary" style="padding: 8px 18px; font-size: 12px;" onclick="switchNav('browser')">🌐 Chuyển Sang Tab Anti Browser</button>
+                            <button class="btn btn-dark" style="padding: 8px 18px; font-size: 12px;" onclick="refreshDevices()">🔄 Quét Lại Thiết Bị</button>
+                        </div>
                     </div>`;
                     return;
                 }
@@ -2429,7 +2457,21 @@ async fn dashboard_handler() -> Html<&'static str> {
                     setupStreamAndTouch(dev.serial, dev.width, dev.height);
                 });
             } catch (e) {
-                console.error(e);
+                console.warn('Lỗi quét thiết bị ADB:', e);
+                const countEl = document.getElementById('android-count');
+                if (countEl) countEl.innerText = '0';
+                const grid = document.getElementById('device-grid');
+                if (grid && (!currentDevices || currentDevices.length === 0)) {
+                    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
+                        <div style="font-size: 38px; margin-bottom: 12px;">⚠️</div>
+                        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px; color: #fff;">Chưa phát hiện thiết bị Android nào qua ADB</div>
+                        <div style="font-size: 12px; margin-bottom: 18px; line-height: 1.6;">Không thể kết nối hoặc chưa có thiết bị cắm vào máy tính.<br>Bạn có thể chuyển ngay sang tab Anti Browser để tiếp tục làm việc.</div>
+                        <div style="display: flex; gap: 10px; justify-content: center;">
+                            <button class="btn btn-primary" style="padding: 8px 18px; font-size: 12px;" onclick="switchNav('browser')">🌐 Chuyển Sang Tab Anti Browser</button>
+                            <button class="btn btn-dark" style="padding: 8px 18px; font-size: 12px;" onclick="refreshDevices()">🔄 Thử Lại</button>
+                        </div>
+                    </div>`;
+                }
             }
         }
 
@@ -3839,6 +3881,10 @@ async fn dashboard_handler() -> Html<&'static str> {
             alert(d.message || 'Đã phát lệnh xoay IP!');
         }
 
+        const savedTab = localStorage.getItem('mun_active_tab');
+        if (savedTab && savedTab !== 'farm') {
+            switchNav(savedTab);
+        }
         refreshAll();
         setInterval(refreshDevices, 8000);
     </script>
