@@ -58,9 +58,15 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\apply_patches.py .
 
+      - name: Clean Runner Windows SDK Environment Variables
+        shell: cmd
+        run: |
+          python -c "import os; [open(os.environ['GITHUB_ENV'], 'a').write(f'{k}={\";\".join([p for p in os.environ[k].split(\";\") if os.path.exists(p)])}\n') for k in ['INCLUDE', 'LIB'] if k in os.environ]"
+
       - name: Generate Build Configuration (GN args)
         shell: cmd
         run: |
+          python -c "import os; [open(os.environ['GITHUB_ENV'], 'a').write(f'{k}={\";\".join([p for p in os.environ[k].split(\";\") if os.path.exists(p)])}\n') for k in ['INCLUDE', 'LIB'] if k in os.environ]"
           cd chromium_build\src
           mkdir out\Release
           (

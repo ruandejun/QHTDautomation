@@ -57,13 +57,32 @@ def patch_setup_toolchain(src_root):
     path = os.path.join(src_root, "build", "toolchain", "win", "setup_toolchain.py")
     
     def transform(c):
+        # 1. Tu dong loc bo tat ca duong dan khong ton tai trong include va lib cua env dict
+        clean_env_code = "    for _k in ['include', 'lib']:\n      if _k in env:\n        env[_k] = ';'.join([_p for _p in env[_k].split(';') if os.path.exists(_p) or len(_p) == 0])\n"
+        if "clean_env_code" not in c and "def _ExtractNinjaEnvironment(" in c:
+            c = c.replace("def _ExtractNinjaEnvironment(env):", "def _ExtractNinjaEnvironment(env):\n" + clean_env_code)
+
         target_check = "if not os.path.exists(part) and len(part) != 0:"
         if target_check in c:
-            # Vo hieu hoa viec throw Exception khi 1 duong dan trong SDK khong ton tai (giu nguyen indent)
             c = c.replace(target_check, "if False and not os.path.exists(part) and len(part) != 0:")
         return c
 
     return patch_file(path, "Patch Windows SDK Toolchain Path Check", transform)
+
+def patch_build_modules(src_root):
+    """Khac phuc loi GN expand_directory kiem tra thu muc SDK phai ton tai o //build/modules/BUILD.gn:98"""
+    path = os.path.join(src_root, "build", "modules", "BUILD.gn")
+    if not os.path.exists(path):
+        return True
+    
+    def transform(c):
+        target = 'expand_directory(string_replace(include_flag, "/I", "", 1), true)'
+        if target in c:
+            c = c.replace(target, 'expand_directory(string_replace(include_flag, "/I", "", 1), false)')
+        return c
+
+    return patch_file(path, "Patch Build Modules Directory Check", transform)
+
 
 def patch_navigator(src_root):
     path = os.path.join(src_root, "third_party", "blink", "renderer", "core", "frame", "navigator.cc")
@@ -218,6 +237,7 @@ def main():
 
     # 2. Patch Windows SDK toolchain check
     patch_setup_toolchain(src_root)
+    patch_build_modules(src_root)
 
     # 3. Patch Blink C++ Sources
     ok1 = patch_navigator(src_root)

@@ -1,5 +1,6 @@
 use crate::api::BrowserProfile;
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::net::TcpListener;
@@ -11,6 +12,108 @@ use parking_lot::RwLock;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ParsedProxy {
+    pub scheme: String, // "socks5", "http", "https"
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl ParsedProxy {
+    pub fn server_arg(&self) -> String {
+        format!("{}://{}:{}", self.scheme, self.host, self.port)
+    }
+
+    pub fn to_proxy_string(&self) -> String {
+        match (&self.username, &self.password) {
+            (Some(u), Some(p)) if !u.is_empty() => {
+                format!("{}://{}:{}@{}:{}", self.scheme, u, p, self.host, self.port)
+            }
+            _ => format!("{}://{}:{}", self.scheme, self.host, self.port),
+        }
+    }
+}
+
+pub fn parse_proxy_string(raw: &str) -> Option<ParsedProxy> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Trường hợp 1: Có scheme (socks5:// hoặc http:// hoặc https://)
+    if let Some(pos) = s.find("://") {
+        let scheme = s[..pos].to_lowercase();
+        let rest = &s[pos + 3..];
+        if let Some(at_pos) = rest.find('@') {
+            let auth = &rest[..at_pos];
+            let host_port = &rest[at_pos + 1..];
+            let (user, pass) = if let Some(c_pos) = auth.find(':') {
+                (Some(auth[..c_pos].to_string()), Some(auth[c_pos + 1..].to_string()))
+            } else {
+                (Some(auth.to_string()), None)
+            };
+            let (host, port) = parse_host_port(host_port)?;
+            return Some(ParsedProxy { scheme, host, port, username: user, password: pass });
+        } else {
+            let (host, port) = parse_host_port(rest)?;
+            return Some(ParsedProxy { scheme, host, port, username: None, password: None });
+        }
+    }
+
+    // Trường hợp 2: Định dạng host:port:user:pass (rất phổ biến)
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() == 4 {
+        let host = parts[0].to_string();
+        let port = parts[1].parse::<u16>().ok()?;
+        let user = parts[2].to_string();
+        let pass = parts[3].to_string();
+        return Some(ParsedProxy {
+            scheme: "socks5".into(),
+            host,
+            port,
+            username: Some(user),
+            password: Some(pass),
+        });
+    }
+
+    // Trường hợp 3: user:pass@host:port (không có scheme)
+    if let Some(at_pos) = s.find('@') {
+        let auth = &s[..at_pos];
+        let host_port = &s[at_pos + 1..];
+        let (user, pass) = if let Some(c_pos) = auth.find(':') {
+            (Some(auth[..c_pos].to_string()), Some(auth[c_pos + 1..].to_string()))
+        } else {
+            (Some(auth.to_string()), None)
+        };
+        let (host, port) = parse_host_port(host_port)?;
+        return Some(ParsedProxy { scheme: "socks5".into(), host, port, username: user, password: pass });
+    }
+
+    // Trường hợp 4: host:port
+    if parts.len() == 2 {
+        let host = parts[0].to_string();
+        let port = parts[1].parse::<u16>().ok()?;
+        return Some(ParsedProxy { scheme: "socks5".into(), host, port, username: None, password: None });
+    }
+
+    None
+}
+
+fn parse_host_port(hp: &str) -> Option<(String, u16)> {
+    let clean = hp.trim_matches('/').trim();
+    let parts: Vec<&str> = clean.split(':').collect();
+    if parts.len() == 2 {
+        let host = parts[0].to_string();
+        let port = parts[1].parse::<u16>().ok()?;
+        Some((host, port))
+    } else {
+        None
+    }
+}
+
 
 static ACTIVE_PROFILES: OnceLock<RwLock<HashSet<usize>>> = OnceLock::new();
 
@@ -538,8 +641,63 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a);
     let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
-    if !profile.proxy_string.trim().is_empty() {
-        cmd.arg(format!("--proxy-server={}", profile.proxy_string.trim()));
+    if let Some(parsed_proxy) = parse_proxy_string(&profile.proxy_string) {
+        let server_arg = parsed_proxy.server_arg();
+        info!("🛡️ Cấu hình Proxy cho Profile #{}: {}", profile.id, server_arg);
+        cmd.arg(format!("--proxy-server={}", server_arg));
+
+        // WebRTC Leak Protection: Bắt buộc định tuyến WebRTC qua Proxy hoặc tắt non-proxied UDP
+        cmd.arg("--webrtc-ip-handling-policy=disable_non_proxied_udp")
+            .arg("--enforce-webrtc-ip-permission-check")
+            .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+
+        // Nếu proxy có xác thực Username / Password:
+        // Tự động sinh Chrome Proxy Auth Extension vào thư mục user_data_dir của profile
+        if let (Some(u), Some(p)) = (&parsed_proxy.username, &parsed_proxy.password) {
+            let ext_dir = user_data_dir.join("qhtd_proxy_auth_ext");
+            if let Ok(_) = std::fs::create_dir_all(&ext_dir) {
+                let manifest = r#"{
+  "version": "1.0.0",
+  "manifest_version": 2,
+  "name": "QHTD Anti-Detect Proxy Auth",
+  "permissions": [
+    "proxy",
+    "tabs",
+    "unlimitedStorage",
+    "storage",
+    "<all_urls>",
+    "webRequest",
+    "webRequestBlocking"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "minimum_chrome_version": "22.0.0"
+}"#;
+                let _ = std::fs::write(ext_dir.join("manifest.json"), manifest);
+
+                let bg_js = format!(
+                    r#"chrome.webRequest.onAuthRequired.addListener(
+    function(details) {{
+        return {{
+            authCredentials: {{
+                username: "{}",
+                password: "{}"
+            }}
+        }};
+    }},
+    {{urls: ["<all_urls>"]}},
+    ['blocking']
+);"#,
+                    u.replace('\\', "\\\\").replace('"', "\\\""),
+                    p.replace('\\', "\\\\").replace('"', "\\\"")
+                );
+                let _ = std::fs::write(ext_dir.join("background.js"), bg_js);
+
+                cmd.arg(format!("--load-extension={}", ext_dir.display()));
+                info!("🔐 Đã nạp Proxy Auth Extension cho Profile #{} (User: {})", profile.id, u);
+            }
+        }
     }
 
     // Các switches C++ Native Anti-Detect (Được nhận diện trực tiếp bởi QHTD Custom Chromium)

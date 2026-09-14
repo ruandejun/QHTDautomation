@@ -143,6 +143,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/nurture/status", get(browser_nurture_status_handler))
         .route("/api/browser/c69/accounts", get(browser_c69_accounts_handler))
         .route("/api/browser/c69/sync-profiles", post(browser_c69_sync_profiles_handler))
+        .route("/api/browser/c69/proxies", get(browser_c69_proxies_handler))
+        .route("/api/browser/proxy/test", post(browser_proxy_test_handler))
         // ── iOS & IPATool APIs ──
         .route("/api/ios/devices", get(list_ios_devices_handler))
         .route("/api/ios/search-app", get(search_ios_app_handler))
@@ -805,11 +807,14 @@ pub struct BrowserNurtureStartPayload {
     pub c69_account_id: Option<u64>,
     pub c69_username: Option<String>,
     pub c69_password: Option<String>,
+    pub proxy_string: Option<String>,
+    pub auto_assign_c69_proxy: Option<bool>,
 }
 
 #[derive(Deserialize)]
 pub struct BrowserNurtureSelectedPayload {
     pub profile_ids: Vec<usize>,
+    pub auto_assign_c69_proxy: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -817,6 +822,8 @@ pub struct CreateAndNurturePayload {
     pub c69_account_id: u64,
     pub c69_username: String,
     pub c69_password: Option<String>,
+    pub proxy_string: Option<String>,
+    pub auto_assign_c69_proxy: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -829,6 +836,11 @@ pub struct AssignAccountPayload {
 #[derive(Deserialize)]
 pub struct BrowserNurtureStopPayload {
     pub profile_id: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ProxyTestPayload {
+    pub proxy_string: String,
 }
 
 async fn browser_nurture_start_handler(
@@ -851,12 +863,35 @@ async fn browser_nurture_start_handler(
         }
     };
 
+    let mut modified = false;
+
     // Nếu có truyền tài khoản C69 mới, cập nhật vào Profile để ghi nhớ
     if payload.c69_account_id.is_some() || payload.c69_username.is_some() {
         profiles[target_idx].tiktok_account_id = payload.c69_account_id;
         if let Some(ref u) = payload.c69_username {
             profiles[target_idx].tiktok_username = Some(u.clone());
         }
+        modified = true;
+    }
+
+    // Xử lý cấu hình Proxy
+    if let Some(ref p_str) = payload.proxy_string {
+        if !p_str.trim().is_empty() {
+            profiles[target_idx].proxy_string = p_str.trim().to_string();
+            profiles[target_idx].proxy_type = "socks5".into();
+            modified = true;
+        }
+    } else if payload.auto_assign_c69_proxy.unwrap_or(false) && profiles[target_idx].proxy_string.trim().is_empty() {
+        let c69_proxies = crate::browser_nurture::load_c69_proxies();
+        if !c69_proxies.is_empty() {
+            let picked = &c69_proxies[payload.profile_id % c69_proxies.len()];
+            profiles[target_idx].proxy_string = picked.to_proxy_string();
+            profiles[target_idx].proxy_type = "socks5".into();
+            modified = true;
+        }
+    }
+
+    if modified {
         if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
             let _ = std::fs::write(&path, json_str);
         }
@@ -905,6 +940,8 @@ async fn browser_nurture_start_selected_handler(
         .unwrap_or_else(get_default_browser_profiles);
 
     let all_c69_accs = crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().unwrap_or_default();
+    let c69_proxies = crate::browser_nurture::load_c69_proxies();
+    let auto_proxy = payload.auto_assign_c69_proxy.unwrap_or(true);
 
     // Thu thập các tài khoản đã bị gán cho profile nào đó
     let mut used_acc_ids: std::collections::HashSet<u64> = profiles
@@ -914,6 +951,7 @@ async fn browser_nurture_start_selected_handler(
 
     let mut started_count = 0;
     let mut modified = false;
+    let mut proxy_cursor = 0;
 
     for pid in payload.profile_ids {
         if let Some(idx) = profiles.iter().position(|p| p.id == pid) {
@@ -935,6 +973,15 @@ async fn browser_nurture_start_selected_handler(
                     acc_to_use = Some(free_acc.clone());
                     modified = true;
                 }
+            }
+
+            // Nếu profile chưa có Proxy và bật auto_assign_c69_proxy:
+            if auto_proxy && prof.proxy_string.trim().is_empty() && !c69_proxies.is_empty() {
+                let picked = &c69_proxies[(prof.id + proxy_cursor) % c69_proxies.len()];
+                prof.proxy_string = picked.to_proxy_string();
+                prof.proxy_type = "socks5".into();
+                proxy_cursor += 1;
+                modified = true;
             }
 
             let prof_clone = prof.clone();
@@ -970,6 +1017,18 @@ async fn browser_nurture_create_and_nurture_handler(
     let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
     let (rend, vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
 
+    // Xác định Proxy cho profile mới
+    let c69_proxies = crate::browser_nurture::load_c69_proxies();
+    let auto_proxy = payload.auto_assign_c69_proxy.unwrap_or(true);
+    let final_proxy = if let Some(ref p) = payload.proxy_string {
+        if !p.trim().is_empty() { p.trim().to_string() } else { String::new() }
+    } else if auto_proxy && !c69_proxies.is_empty() {
+        let picked = &c69_proxies[next_id % c69_proxies.len()];
+        picked.to_proxy_string()
+    } else {
+        String::new()
+    };
+
     let new_profile = BrowserProfile {
         id: next_id,
         name: format!("TikTok — {}", payload.c69_username),
@@ -979,7 +1038,7 @@ async fn browser_nurture_create_and_nurture_handler(
         profile_resolution: "1920x1080".into(),
         profile_cpu: 8,
         profile_ram: 16,
-        proxy_string: String::new(),
+        proxy_string: final_proxy,
         proxy_type: "socks5".into(),
         profile_start_url: "https://www.tiktok.com".into(),
         canvas_seed: Some(rand::random::<u32>()),
@@ -1083,6 +1142,27 @@ async fn browser_c69_sync_profiles_handler() -> Json<serde_json::Value> {
         })),
         Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
     }
+}
+
+async fn browser_c69_proxies_handler() -> Json<serde_json::Value> {
+    let proxies = crate::browser_nurture::load_c69_proxies();
+    let count = proxies.len();
+    Json(serde_json::json!({
+        "success": true,
+        "count": count,
+        "proxies": proxies
+    }))
+}
+
+async fn browser_proxy_test_handler(
+    Json(payload): Json<ProxyTestPayload>,
+) -> Json<serde_json::Value> {
+    let (alive, latency, msg) = crate::browser_nurture::test_proxy_connection(&payload.proxy_string).await;
+    Json(serde_json::json!({
+        "success": alive,
+        "latency_ms": latency,
+        "message": msg
+    }))
 }
 
 // ── iOS & IPATool Handlers ───────────────────────────────────────────────────
@@ -1784,6 +1864,10 @@ async fn dashboard_handler() -> Html<&'static str> {
                 </div>
                 <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
                     <button class="btn btn-primary" onclick="startNurtureSelectedProfiles()" style="background:linear-gradient(135deg, #06b6d4, #3b82f6); font-weight:700; font-size:11px; padding:5px 12px; color:#fff;" title="Chạy nuôi các profiles được tích chọn (tự gán nick random nếu chưa có)">🎬 Nuôi Profiles Đã Chọn</button>
+                    <label style="font-size:11px; color:#38bdf8; display:flex; align-items:center; gap:4px; cursor:pointer; background:rgba(56,189,248,0.08); padding:3px 8px; border-radius:4px; border:1px solid rgba(56,189,248,0.25);" title="Tự động cấp phát Proxy từ C69 Pool cho các profile chưa có proxy khi chạy nuôi">
+                        <input type="checkbox" id="browser-auto-proxy-chk" checked>
+                        <span>🛡️ Auto Proxy C69</span>
+                    </label>
                     <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:5px 12px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi All</button>
                     <button class="btn btn-dark" onclick="stopNurtureAllProfiles()" style="border-color:#ef4444; color:#ef4444; font-size:11px; padding:5px 10px; font-weight:600;">⏹️ Dừng Nuôi All</button>
                     <button class="btn btn-dark" onclick="syncC69Profiles()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;" title="Đồng bộ cấu hình từ C69.us">☁️ Đồng Bộ C69</button>
@@ -1828,6 +1912,10 @@ async fn dashboard_handler() -> Html<&'static str> {
                 </div>
                 <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
                     <button class="btn btn-purple" onclick="startNurtureSelectedAccounts()" style="background:linear-gradient(135deg, #ec4899, #8b5cf6); font-weight:700; font-size:11px; padding:5px 12px; color:#fff; box-shadow:0 0 10px rgba(236,72,153,0.35);" title="Tự động tạo profile random và nuôi các nick được tích chọn">🎬 Nuôi Các Nick Đã Chọn (Tự Tạo Profile)</button>
+                    <label style="font-size:11px; color:#38bdf8; display:flex; align-items:center; gap:4px; cursor:pointer; background:rgba(56,189,248,0.08); padding:3px 8px; border-radius:4px; border:1px solid rgba(56,189,248,0.25);" title="Khi tích chọn, mỗi profile random được tạo ra sẽ tự động gán 1 proxy SOCKS5 từ C69 Pool">
+                        <input type="checkbox" id="c69-auto-proxy-chk" checked>
+                        <span>🛡️ Auto Proxy SOCKS5 C69</span>
+                    </label>
                     <button class="btn btn-dark" onclick="loadC69AccountsTab()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;">🔄 Làm Mới</button>
                     <input type="text" class="search-input" placeholder="Tìm kiếm tài khoản / username..." id="c69-acc-search" oninput="filterC69Accounts()">
                 </div>
@@ -2058,6 +2146,26 @@ async fn dashboard_handler() -> Html<&'static str> {
                                 <option value="0.40">40% (Ít tương tác)</option>
                                 <option value="0.85">85% (Tương tác mạnh)</option>
                             </select>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:flex; justify-content:space-between;">
+                            <span>Cấu Hình Proxy Cho Profile Nuôi:</span>
+                            <span id="nurture-proxy-status" style="font-size:10px; color:#10b981;"></span>
+                        </label>
+                        <select id="nurture-proxy-mode" onchange="toggleNurtureProxyInput()" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
+                            <option value="profile">🟢 Dùng Proxy hiện tại của Profile</option>
+                            <option value="c69_pool">🌐 Tự động cấp phát Proxy từ Pool C69 (250 SOCKS5 Live)</option>
+                            <option value="direct">⚡ Direct (Không dùng Proxy / Đi qua C69 Router TUN)</option>
+                            <option value="custom">✏️ Nhập Proxy tùy chỉnh (host:port hoặc socks5://...)</option>
+                        </select>
+                        <div id="nurture-custom-proxy-box" style="display:none; margin-top:6px;">
+                            <div style="display:flex; gap:6px;">
+                                <input id="nurture-custom-proxy-input" type="text" class="search-input" style="flex:1;" placeholder="socks5://user:pass@host:port hoặc host:port:user:pass">
+                                <button class="btn btn-dark" type="button" onclick="testCustomProxy()" style="font-size:11px; padding:6px 10px;">⚡ Test</button>
+                            </div>
+                            <div id="nurture-custom-proxy-test-result" style="font-size:10px; margin-top:3px; color:var(--text-muted);"></div>
                         </div>
                     </div>
 
@@ -2819,7 +2927,9 @@ async fn dashboard_handler() -> Html<&'static str> {
             if (selectedIds.length === 0) {
                 return alert("Vui lòng tích chọn ít nhất 1 profile để nuôi!");
             }
-            if (!confirm(`Bắt đầu nuôi TikTok cho ${selectedIds.length} profiles đã chọn? (Profile chưa có tài khoản sẽ tự động được gán nick C69 ngẫu nhiên chưa sử dụng)`)) {
+            const autoProxy = document.getElementById('browser-auto-proxy-chk')?.checked ?? true;
+            const proxyNote = autoProxy ? ", tự động cấp phát Proxy C69 nếu chưa có" : "";
+            if (!confirm(`Bắt đầu nuôi TikTok cho ${selectedIds.length} profiles đã chọn? (Profile chưa có tài khoản sẽ tự động được gán nick C69 ngẫu nhiên${proxyNote})`)) {
                 return;
             }
 
@@ -2827,7 +2937,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 const res = await fetch(`${API_BASE}/api/browser/nurture/start-selected`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ profile_ids: selectedIds })
+                    body: JSON.stringify({ profile_ids: selectedIds, auto_assign_c69_proxy: autoProxy })
                 });
                 const d = await res.json();
                 alert(d.message || "Đã kích hoạt nuôi các profiles đã chọn!");
@@ -2903,7 +3013,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <div style="font-size:11px; color:#38bdf8; font-weight:600;">🎮 ${gpuLabel}</div>
                         <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise • Audio Noise • ${p.profile_cpu || 8} Cores / ${p.profile_ram || 16}GB</div>
                     </td>
-                    <td>${p.proxy_string ? `<span style="color:#10b981;">${p.proxy_type || 'socks5'}://${p.proxy_string}</span>` : '<span style="color:var(--text-muted);">Direct</span>'}</td>
+                    <td>${p.proxy_string 
+                        ? `<div style="display:flex; align-items:center; gap:4px;"><span style="color:#10b981; font-weight:600; font-size:11px;" title="${p.proxy_string}">${p.proxy_string.length > 22 ? p.proxy_string.slice(0, 20) + '…' : p.proxy_string}</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; border-color:var(--border);" onclick="testSingleProxy('${p.proxy_string.replace(/'/g, "\\'")}', this)" title="Kiểm tra kết nối Proxy">⚡ Test</button></div>` 
+                        : `<div style="display:flex; align-items:center; gap:4px;"><span style="color:var(--text-muted); font-size:11px;">Direct</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; color:#38bdf8; border-color:rgba(56,189,248,0.3);" onclick="assignC69ProxyToProfile(${p.id})" title="Gán 1 proxy SOCKS5 từ C69 Pool">➕ Gán C69</button></div>`}</td>
                     <td>${statusBadge}</td>
                     <td style="white-space:nowrap;">
                         <div style="display:flex; gap:5px; align-items:center;">
@@ -2928,6 +3040,21 @@ async fn dashboard_handler() -> Html<&'static str> {
             if (!p) return;
             document.getElementById('nurture-prof-id').value = profileId;
             document.getElementById('nurture-modal-prof-name').innerText = `Profile #${p.id} — ${p.name}`;
+            
+            // Cập nhật hiển thị Proxy hiện tại
+            const proxyStatusEl = document.getElementById('nurture-proxy-status');
+            if (proxyStatusEl) {
+                if (p.proxy_string) {
+                    proxyStatusEl.innerText = `[Hiện tại: ${p.proxy_string.length > 25 ? p.proxy_string.slice(0, 22) + '...' : p.proxy_string}]`;
+                } else {
+                    proxyStatusEl.innerText = `[Hiện tại: Direct / Chưa gán]`;
+                }
+            }
+            document.getElementById('nurture-proxy-mode').value = 'profile';
+            document.getElementById('nurture-custom-proxy-box').style.display = 'none';
+            document.getElementById('nurture-custom-proxy-input').value = '';
+            document.getElementById('nurture-custom-proxy-test-result').innerHTML = '';
+
             const selectEl = document.getElementById('nurture-c69-acc-select');
             selectEl.innerHTML = `<option value="">⏳ Đang tải tài khoản từ C69.us...</option>`;
             document.getElementById('modal-nurture-tiktok').style.display = 'flex';
@@ -2969,6 +3096,92 @@ async fn dashboard_handler() -> Html<&'static str> {
             }
         }
 
+        function toggleNurtureProxyInput() {
+            const mode = document.getElementById('nurture-proxy-mode').value;
+            const box = document.getElementById('nurture-custom-proxy-box');
+            box.style.display = (mode === 'custom') ? 'block' : 'none';
+        }
+
+        async function testCustomProxy() {
+            const val = document.getElementById('nurture-custom-proxy-input').value.trim();
+            const resEl = document.getElementById('nurture-custom-proxy-test-result');
+            if (!val) {
+                resEl.innerHTML = `<span style="color:#ef4444;">Vui lòng nhập proxy trước khi test!</span>`;
+                return;
+            }
+            resEl.innerHTML = `<span style="color:var(--primary);">⏳ Đang kiểm tra kết nối tới proxy...</span>`;
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/proxy/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy_string: val })
+                });
+                const d = await res.json();
+                if (d.success) {
+                    resEl.innerHTML = `<span style="color:#10b981; font-weight:700;">✅ ${d.message}</span>`;
+                } else {
+                    resEl.innerHTML = `<span style="color:#ef4444;">❌ ${d.message}</span>`;
+                }
+            } catch(e) {
+                resEl.innerHTML = `<span style="color:#ef4444;">Lỗi: ${e}</span>`;
+            }
+        }
+
+        async function testSingleProxy(proxyStr, btn) {
+            if (!proxyStr) return;
+            const orig = btn.innerText;
+            btn.innerText = '⏳';
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/proxy/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy_string: proxyStr })
+                });
+                const d = await res.json();
+                if (d.success) {
+                    btn.innerText = `✅ ${d.latency_ms}ms`;
+                    btn.style.borderColor = '#10b981';
+                    btn.style.color = '#10b981';
+                } else {
+                    btn.innerText = '❌ Die';
+                    btn.style.borderColor = '#ef4444';
+                    btn.style.color = '#ef4444';
+                    alert(d.message);
+                }
+            } catch(e) {
+                btn.innerText = '⚠️ Lỗi';
+            }
+            setTimeout(() => { btn.innerText = orig; btn.style.borderColor = 'var(--border)'; btn.style.color = ''; }, 4000);
+        }
+
+        async function assignC69ProxyToProfile(profId) {
+            const p = allProfiles.find(x => x.id === profId);
+            if (!p) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/browser/c69/proxies`);
+                const d = await res.json();
+                if (d.success && d.proxies && d.proxies.length > 0) {
+                    const picked = d.proxies[p.id % d.proxies.length];
+                    const proxyStr = (picked.username && picked.password)
+                        ? `socks5://${picked.username}:${picked.password}@${picked.host}:${picked.port}`
+                        : `socks5://${picked.host}:${picked.port}`;
+                    p.proxy_string = proxyStr;
+                    p.proxy_type = 'socks5';
+                    await fetch(`${API_BASE}/api/browser/profiles`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(p)
+                    });
+                    loadBrowserProfiles();
+                    alert(`Đã gán Proxy C69 SOCKS5 (${picked.host}:${picked.port}) cho Profile #${p.id}!`);
+                } else {
+                    alert("Không tìm thấy Proxy trong C69 Pool.");
+                }
+            } catch(e) {
+                alert("Lỗi gán proxy: " + e);
+            }
+        }
+
         function closeNurtureModal() {
             document.getElementById('modal-nurture-tiktok').style.display = 'none';
         }
@@ -2978,6 +3191,18 @@ async fn dashboard_handler() -> Html<&'static str> {
             const selectEl = document.getElementById('nurture-c69-acc-select');
             const accId = selectEl ? parseInt(selectEl.value) : null;
             const chosenAcc = cachedC69Accounts.find(a => a.id === accId);
+
+            const proxyMode = document.getElementById('nurture-proxy-mode').value;
+            let customProxy = null;
+            let autoAssignC69Proxy = false;
+
+            if (proxyMode === 'c69_pool') {
+                autoAssignC69Proxy = true;
+            } else if (proxyMode === 'direct') {
+                customProxy = "";
+            } else if (proxyMode === 'custom') {
+                customProxy = document.getElementById('nurture-custom-proxy-input').value.trim();
+            }
 
             closeNurtureModal();
 
@@ -2989,7 +3214,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                         profile_id: profileId,
                         c69_account_id: chosenAcc ? chosenAcc.id : null,
                         c69_username: chosenAcc ? chosenAcc.username : null,
-                        c69_password: chosenAcc ? chosenAcc.password : null
+                        c69_password: chosenAcc ? chosenAcc.password : null,
+                        proxy_string: customProxy,
+                        auto_assign_c69_proxy: autoAssignC69Proxy
                     })
                 });
                 const d = await res.json();
@@ -3166,7 +3393,10 @@ async fn dashboard_handler() -> Html<&'static str> {
             const acc = c69AllAccounts.find(a => a.id === accId);
             if (!acc) return;
 
-            if (!confirm(`Tự động tạo 1 Profile mới với thông số Fingerprint Random và bắt đầu nuôi TikTok cho nick @${acc.username}?`)) {
+            const autoProxy = document.getElementById('c69-auto-proxy-chk')?.checked ?? true;
+            const proxyNote = autoProxy ? " (Kèm tự động cấp phát 1 Proxy SOCKS5 từ C69 Pool)" : "";
+
+            if (!confirm(`Tự động tạo 1 Profile mới với thông số Fingerprint Random và bắt đầu nuôi TikTok cho nick @${acc.username}?${proxyNote}`)) {
                 return;
             }
 
@@ -3177,7 +3407,8 @@ async fn dashboard_handler() -> Html<&'static str> {
                     body: JSON.stringify({
                         c69_account_id: acc.id,
                         c69_username: acc.username,
-                        c69_password: acc.password
+                        c69_password: acc.password,
+                        auto_assign_c69_proxy: autoProxy
                     })
                 });
                 const d = await res.json();
@@ -3194,7 +3425,10 @@ async fn dashboard_handler() -> Html<&'static str> {
                 return alert("Vui lòng tích chọn ít nhất 1 tài khoản TikTok!");
             }
 
-            if (!confirm(`Tự động tạo Profile Random và bắt đầu nuôi cho ${selectedIds.length} tài khoản đã chọn?`)) {
+            const autoProxy = document.getElementById('c69-auto-proxy-chk')?.checked ?? true;
+            const proxyNote = autoProxy ? " (Tự động cấp phát Proxy SOCKS5 riêng biệt cho từng Profile)" : "";
+
+            if (!confirm(`Tự động tạo Profile Random và bắt đầu nuôi cho ${selectedIds.length} tài khoản đã chọn?${proxyNote}`)) {
                 return;
             }
 
@@ -3208,7 +3442,8 @@ async fn dashboard_handler() -> Html<&'static str> {
                         body: JSON.stringify({
                             c69_account_id: acc.id,
                             c69_username: acc.username,
-                            c69_password: acc.password
+                            c69_password: acc.password,
+                            auto_assign_c69_proxy: autoProxy
                         })
                     }).catch(() => {});
                     started++;

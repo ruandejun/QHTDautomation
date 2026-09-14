@@ -298,8 +298,19 @@ impl BrowserNurtureEngine {
         let pid = profile.id;
         let port = get_free_port(9222 + (pid as u16 % 500));
 
-        // 1. Khởi chạy Profile Pure Rust CDP Browser
-        self.update_log(pid, "Đang nạp trình duyệt Anti-Detect với Mobile & C++ Shield...".to_string(), "Khởi động browser");
+        // 1. Khởi chạy Profile Pure Rust CDP Browser với Proxy Shield
+        let proxy_desc = if let Some(parsed) = crate::cdp_browser::parse_proxy_string(&profile.proxy_string) {
+            let auth_tag = if parsed.username.is_some() { " (Auth OK)" } else { "" };
+            format!("🛡️ Proxy: {}://{}:{}{}", parsed.scheme.to_uppercase(), parsed.host, parsed.port, auth_tag)
+        } else {
+            "⚡ Direct / Local Network".to_string()
+        };
+
+        self.update_log(
+            pid,
+            format!("Đang nạp Anti-Detect [{}] với Mobile & C++ Shield...", proxy_desc),
+            "Khởi động browser"
+        );
         if let Err(e) = launch_cdp_profile(&profile).await {
             self.set_error(pid, format!("Lỗi khởi chạy browser: {}", e));
             return;
@@ -749,3 +760,85 @@ pub async fn sync_c69_profiles_to_local(profiles_path: PathBuf) -> Result<usize,
 
     Ok(count_added)
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct C69Proxy {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub proxy_type: String,
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub status: Option<String>,
+    pub latency: Option<i32>,
+}
+
+impl C69Proxy {
+    pub fn to_proxy_string(&self) -> String {
+        match (&self.username, &self.password) {
+            (Some(u), Some(p)) if !u.is_empty() => {
+                format!("socks5://{}:{}@{}:{}", u, p, self.host, self.port)
+            }
+            _ => format!("socks5://{}:{}", self.host, self.port),
+        }
+    }
+}
+
+/// Nạp danh sách proxy SOCKS5 từ C69 Router config.json (250 proxies pool)
+pub fn load_c69_proxies() -> Vec<C69Proxy> {
+    let candidate_paths = [
+        "d:\\Workspace\\Python\\c69-router\\data\\config.json",
+        "../c69-router/data/config.json",
+        "c69-router/data/config.json",
+        "data/c69_proxies.json",
+    ];
+
+    for path_str in &candidate_paths {
+        let p = std::path::Path::new(path_str);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(p) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(arr) = val.get("proxies").and_then(|v| v.as_array()) {
+                        let mut proxies = Vec::new();
+                        for item in arr {
+                            if let Ok(proxy) = serde_json::from_value::<C69Proxy>(item.clone()) {
+                                proxies.push(proxy);
+                            }
+                        }
+                        if !proxies.is_empty() {
+                            return proxies;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Vec::new()
+}
+
+/// Kiểm tra kết nối TCP tới Proxy và đo độ trễ (latency ms)
+pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
+    let parsed = match crate::cdp_browser::parse_proxy_string(proxy_str) {
+        Some(p) => p,
+        None => return (false, 0, "Định dạng proxy không hợp lệ".to_string()),
+    };
+
+    let target = format!("{}:{}", parsed.host, parsed.port);
+    let start = std::time::Instant::now();
+
+    match tokio::time::timeout(
+        Duration::from_millis(4000),
+        tokio::net::TcpStream::connect(&target)
+    ).await {
+        Ok(Ok(_)) => {
+            let latency = start.elapsed().as_millis() as u64;
+            let msg = format!("Proxy Live (Độ trễ: {}ms)", latency);
+            (true, latency, msg)
+        }
+        Ok(Err(e)) => (false, 0, format!("Không thể kết nối đến {}: {}", target, e)),
+        Err(_) => (false, 0, format!("Kết nối đến {} bị timeout (> 4000ms)", target)),
+    }
+}
+
