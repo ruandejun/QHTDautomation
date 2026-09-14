@@ -35,21 +35,50 @@ def patch_file(filepath, description, transform_func):
     return True
 
 def ensure_lastchange(src_root):
-    """Tao san LASTCHANGE va LASTCHANGE.committime de tranh crash compute_build_timestamp.py"""
-    util_dir = os.path.join(src_root, "build", "util")
-    os.makedirs(util_dir, exist_ok=True)
-    lastchange_file = os.path.join(util_dir, "LASTCHANGE")
-    committime_file = os.path.join(util_dir, "LASTCHANGE.committime")
-    
-    if not os.path.exists(lastchange_file):
-        with open(lastchange_file, "w", encoding="utf-8") as f:
-            f.write("LASTCHANGE=128.0.6613.119-qhtd\n")
-        print(f"[SUCCESS] Created {lastchange_file}")
-        
-    if not os.path.exists(committime_file):
-        with open(committime_file, "w", encoding="utf-8") as f:
-            f.write("1725148800\n")
-        print(f"[SUCCESS] Created {committime_file}")
+    """Tao san LASTCHANGE va cac file version/hash can thiet de tranh Ninja thieu file dependency"""
+    files_to_create = [
+        # 1. Build util LASTCHANGE
+        (
+            os.path.join(src_root, "build", "util", "LASTCHANGE"),
+            "LASTCHANGE=128.0.6613.119-qhtd\n"
+        ),
+        (
+            os.path.join(src_root, "build", "util", "LASTCHANGE.committime"),
+            "1725148800\n"
+        ),
+        (
+            os.path.join(src_root, "build", "util", "LASTCHANGE.blink"),
+            "LASTCHANGE=128.0.6613.119\n"
+        ),
+        # 2. DAWN WebGPU dependencies (Fix ninja missing DAWN_VERSION error)
+        (
+            os.path.join(src_root, "gpu", "webgpu", "DAWN_VERSION"),
+            "128.0.6613.119\n"
+        ),
+        (
+            os.path.join(src_root, "gpu", "webgpu", "dawn_commit_hash.h"),
+            "#ifndef GPU_WEBGPU_DAWN_COMMIT_HASH_H_\n#define GPU_WEBGPU_DAWN_COMMIT_HASH_H_\n#define DAWN_COMMIT_HASH \"128.0.6613.119\"\n#endif\n"
+        ),
+        # 3. GPU Lists version
+        (
+            os.path.join(src_root, "gpu", "config", "gpu_lists_version.h"),
+            "#ifndef GPU_CONFIG_GPU_LISTS_VERSION_H_\n#define GPU_CONFIG_GPU_LISTS_VERSION_H_\n#define GPU_LISTS_VERSION \"128.0.6613.119\"\n#endif\n"
+        ),
+        # 4. Skia commit hash
+        (
+            os.path.join(src_root, "skia", "ext", "skia_commit_hash.h"),
+            "#ifndef SKIA_EXT_SKIA_COMMIT_HASH_H_\n#define SKIA_EXT_SKIA_COMMIT_HASH_H_\n#define SKIA_COMMIT_HASH \"128.0.6613.119\"\n#endif\n"
+        ),
+    ]
+
+    for filepath, content in files_to_create:
+        parent = os.path.dirname(filepath)
+        os.makedirs(parent, exist_ok=True)
+        # Luon ghi hoac cap nhat de dam bao Ninja co file voi timestamp hop le
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"[SUCCESS] Created/Updated: {filepath}")
+
     return True
 
 def find_installed_windows_sdk():

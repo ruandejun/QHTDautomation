@@ -10,9 +10,28 @@ def find_installed_windows_sdk():
                 return versions[-1]
     return "10.0.22621.0"
 
+def ensure_version_files(src_root="."):
+    files = [
+        (os.path.join(src_root, "build", "util", "LASTCHANGE"), "LASTCHANGE=128.0.6613.119-qhtd\n"),
+        (os.path.join(src_root, "build", "util", "LASTCHANGE.committime"), "1725148800\n"),
+        (os.path.join(src_root, "build", "util", "LASTCHANGE.blink"), "LASTCHANGE=128.0.6613.119\n"),
+        (os.path.join(src_root, "gpu", "webgpu", "DAWN_VERSION"), "128.0.6613.119\n"),
+        (os.path.join(src_root, "gpu", "webgpu", "dawn_commit_hash.h"), "#ifndef GPU_WEBGPU_DAWN_COMMIT_HASH_H_\n#define GPU_WEBGPU_DAWN_COMMIT_HASH_H_\n#define DAWN_COMMIT_HASH \"128.0.6613.119\"\n#endif\n"),
+        (os.path.join(src_root, "gpu", "config", "gpu_lists_version.h"), "#ifndef GPU_CONFIG_GPU_LISTS_VERSION_H_\n#define GPU_CONFIG_GPU_LISTS_VERSION_H_\n#define GPU_LISTS_VERSION \"128.0.6613.119\"\n#endif\n"),
+        (os.path.join(src_root, "skia", "ext", "skia_commit_hash.h"), "#ifndef SKIA_EXT_SKIA_COMMIT_HASH_H_\n#define SKIA_EXT_SKIA_COMMIT_HASH_H_\n#define SKIA_COMMIT_HASH \"128.0.6613.119\"\n#endif\n"),
+    ]
+    for filepath, content in files:
+        parent = os.path.dirname(filepath)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"[GenerateArgs] Version file verified: {filepath}")
+
 def main():
     sdk_ver = find_installed_windows_sdk()
     print(f"[GenerateArgs] Detected Windows SDK: {sdk_ver}")
+    ensure_version_files(".")
 
     os.makedirs("out/Release", exist_ok=True)
     args_content = f"""is_debug = false

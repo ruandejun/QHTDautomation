@@ -76,6 +76,7 @@ jobs:
         shell: cmd
         run: |
           cd chromium_build\src
+          python ..\..\chromium-patches\generate_args.py
           call ninja.bat -C out\Release chrome
 
       - name: Package Portable Chromium

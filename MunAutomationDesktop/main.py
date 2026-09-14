@@ -16,6 +16,7 @@ import requests
 import socket
 import subprocess
 import asyncio
+import threading
 
 # Đảm bảo import được ipatool cho dù ứng dụng được chạy từ thư mục nào
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
