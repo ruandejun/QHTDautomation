@@ -3,6 +3,7 @@ run-name: Build Custom Anti-Detect Chromium (${{ github.ref_name }})
 
 on:
   push:
+    branches: [ main ]
     tags:
       - 'chr-v*'
   workflow_dispatch:
