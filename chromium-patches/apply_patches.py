@@ -279,7 +279,7 @@ def patch_canvas(src_root):
 
     def transform(c):
         if "base/command_line.h" not in c:
-            c = '#include "base/command_line.h"\n#include "base/strings/string_number_conversions.h"\n#include <algorithm>\n' + c
+            c = '#include "base/command_line.h"\n#include "base/strings/string_number_conversions.h"\n#include <algorithm>\n#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_view.h"\n' + c
 
         if "qhtd-canvas-noise" not in c:
             target = "return image_data;"
@@ -320,7 +320,7 @@ def patch_webgl(src_root):
 
     def transform(c):
         if "base/command_line.h" not in c:
-            c = '#include "base/command_line.h"\n' + c
+            c = '#include "base/command_line.h"\n#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"\n' + c
 
         if "qhtd-webgl-renderer" not in c:
             # Patch UNMASKED_RENDERER_WEBGL
@@ -353,7 +353,7 @@ def patch_audio(src_root):
 
     def transform(c):
         if "base/command_line.h" not in c:
-            c = '#include "base/command_line.h"\n#include "base/strings/string_number_conversions.h"\n' + c
+            c = '#include "base/command_line.h"\n#include "base/strings/string_number_conversions.h"\n#include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"\n' + c
 
         if "qhtd-audio-noise" not in c:
             target = "return NotShared<DOMFloat32Array>(channels_[channel_index].Get());"

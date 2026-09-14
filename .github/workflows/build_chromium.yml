@@ -79,8 +79,15 @@ jobs:
         shell: cmd
         run: |
           cd chromium_build\src
+          python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call ninja.bat -C out\Release chrome
+          call ninja.bat -C out\Release chrome || (
+            echo ================== COMPILATION ERROR LOG ==================
+            if exist out\Release\.ninja_log (
+              type out\Release\.ninja_log | python -c "import sys; lines=sys.stdin.readlines(); [print(l.strip()) for l in lines[-40:]]"
+            )
+            exit 1
+          )
 
       - name: Package Portable Chromium
         shell: powershell
