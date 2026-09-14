@@ -3113,6 +3113,8 @@ async fn dashboard_handler() -> Html<&'static str> {
                     </td>
                 </tr>
             `}).join('');
+        }
+
         async function submitOtpForProfile(profileId) {
             const input = document.getElementById(`otp-inp-${profileId}`);
             if (!input || !input.value.trim()) {
