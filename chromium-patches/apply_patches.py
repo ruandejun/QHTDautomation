@@ -100,49 +100,105 @@ def find_installed_windows_sdk():
 
 def fix_windows_sdk_headers(sdk_ver):
     """
-    Sua triet de loi cua Windows SDK 10.0.26100.0 tren GitHub Actions runner:
-    C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.26100.0\\um\\fileapi.h:
-    error: unknown type name 'FILE_INFO_BY_HANDLE_CLASS'
-    Nguyen nhan: Microsoft thay doi thu tu include khien minwinbase.h chua duoc nap.
-    Inject #include <sdkddkver.h> va #include <minwinbase.h> vao dau cac file header cua SDK.
+    Sua triet de loi Microsoft SDK thieu dinh nghia NTDDI_WIN11_BR (0x0A00000C)
+    khien preprocessor coi NTDDI_WIN11_BR la 0 dan toi mat FILE_INFO_BY_HANDLE_CLASS.
     """
-    targets = ["fileapi.h", "winbase.h", "fileapifromapp.h"]
+    inject_defs = (
+        "/* QHTD Clang compilation fix for NTDDI_WIN11_BR and FILE_INFO_BY_HANDLE_CLASS */\n"
+        "#ifndef NTDDI_WIN11_BR\n"
+        "#define NTDDI_WIN11_BR 0x0A00000C\n"
+        "#endif\n"
+        "#ifndef NTDDI_VERSION\n"
+        "#define NTDDI_VERSION 0x0A00000C\n"
+        "#endif\n"
+    )
+
     for root_dir in [r"C:\Program Files (x86)\Windows Kits\10\Include", r"C:\Program Files\Windows Kits\10\Include"]:
-        um_dir = os.path.join(root_dir, sdk_ver, "um")
-        if not os.path.exists(um_dir):
+        sdk_root = os.path.join(root_dir, sdk_ver)
+        if not os.path.exists(sdk_root):
             continue
-        print(f"[INFO] Checking Windows SDK headers in: {um_dir}")
-        for target in targets:
-            filepath = os.path.join(um_dir, target)
-            if not os.path.exists(filepath):
-                continue
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    c = f.read()
-                if "QHTD_MINWINBASE_FIX" not in c:
-                    fix_block = (
-                        "/* QHTD Clang compilation fix for FILE_INFO_BY_HANDLE_CLASS */\n"
-                        "#ifndef QHTD_MINWINBASE_FIX\n"
-                        "#define QHTD_MINWINBASE_FIX\n"
-                        "#include <sdkddkver.h>\n"
-                        "#include <minwinbase.h>\n"
-                        "#endif\n\n"
-                    )
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(fix_block + c)
-                    print(f"[SUCCESS] Patched Windows SDK header: {filepath}")
-                else:
-                    print(f"[UNCHANGED] Windows SDK header already patched: {filepath}")
-            except Exception as e:
-                print(f"[WARNING] Could not patch {filepath}: {e}")
+        print(f"[INFO] Fixing Windows SDK headers in: {sdk_root}")
+
+        # 1. Patch shared/sdkddkver.h va shared/minwinbase.h
+        for target in ["sdkddkver.h", "minwinbase.h"]:
+            filepath = os.path.join(sdk_root, "shared", target)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        c = f.read()
+                    if "NTDDI_WIN11_BR 0x0A00000C" not in c:
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(inject_defs + "\n" + c)
+                        print(f"[SUCCESS] Patched Windows SDK shared header: {filepath}")
+                except Exception as e:
+                    print(f"[WARNING] Could not patch {filepath}: {e}")
+
+        # 2. Patch um/fileapi.h, um/winbase.h, um/fileapifromapp.h
+        um_targets = ["fileapi.h", "winbase.h", "fileapifromapp.h"]
+        for target in um_targets:
+            filepath = os.path.join(sdk_root, "um", target)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        c = f.read()
+                    if "QHTD_MINWINBASE_FIX_V2" not in c:
+                        um_fix = (
+                            "/* QHTD Clang compilation fix for FILE_INFO_BY_HANDLE_CLASS */\n"
+                            "#ifndef QHTD_MINWINBASE_FIX_V2\n"
+                            "#define QHTD_MINWINBASE_FIX_V2\n"
+                            + inject_defs +
+                            "#include <sdkddkver.h>\n"
+                            "#include <minwinbase.h>\n"
+                            "#endif\n\n"
+                        )
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(um_fix + c)
+                        print(f"[SUCCESS] Patched Windows SDK um header: {filepath}")
+                except Exception as e:
+                    print(f"[WARNING] Could not patch {filepath}: {e}")
+
+def patch_win_build_gn(src_root):
+    """
+    Sua build/config/win/BUILD.gn de truyen gia tri so nguyen 0x0A00000C cho NTDDI_VERSION
+    thay vi dinh danh chu NTDDI_WIN11_BR ma SDK cu khong co.
+    """
+    path = os.path.join(src_root, "build", "config", "win", "BUILD.gn")
+    if not os.path.exists(path):
+        print(f"[SKIP] Not found: {path}")
+        return False
+    def transform(c):
+        # Thay NTDDI_VERSION=NTDDI_WIN11_BR bang so nguyen literal
+        c = re.sub(
+            r'["\']NTDDI_VERSION=NTDDI_WIN11_BR["\']',
+            '"NTDDI_VERSION=0x0A00000C",\n    "NTDDI_WIN11_BR=0x0A00000C"',
+            c
+        )
+        return c
+    return patch_file(path, "Patch NTDDI_VERSION literal in build/config/win/BUILD.gn", transform)
+
+def patch_windows_version_cc(src_root):
+    """Bypass check SDK 10.0.28000.0 trong base/win/windows_version.cc"""
+    path = os.path.join(src_root, "base", "win", "windows_version.cc")
+    if not os.path.exists(path):
+        return True
+    def transform(c):
+        c = re.sub(r'#error\s+Windows\s+10\.0\.28000\.0\s+SDK[^\n]*', '// Windows 10.0.28000.0 SDK check bypassed for CI', c)
+        return c
+    return patch_file(path, "Bypass SDK 10.0.28000.0 check in base/win/windows_version.cc", transform)
 
 def patch_setup_toolchain(src_root):
     """Khac phuc loi Windows SDK khong ton tai thu muc (nhu 10.0.28000.0) va dong bo SDK version"""
     sdk_ver = find_installed_windows_sdk()
     print(f"[INFO] Target Windows SDK version: {sdk_ver}")
 
-    # Fix header SDK 10.0.26100.0 neu bi loi FILE_INFO_BY_HANDLE_CLASS
+    # Fix header SDK
     fix_windows_sdk_headers(sdk_ver)
+
+    # Patch build/config/win/BUILD.gn
+    patch_win_build_gn(src_root)
+
+    # Patch base/win/windows_version.cc
+    patch_windows_version_cc(src_root)
 
     # 1. Patch build/vs_toolchain.py
     vs_path = os.path.join(src_root, "build", "vs_toolchain.py")

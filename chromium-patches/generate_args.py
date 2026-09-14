@@ -18,33 +18,68 @@ def find_installed_windows_sdk():
     return "10.0.22621.0"
 
 def fix_windows_sdk_headers(sdk_ver):
-    """Sua triet de loi Microsoft SDK 10.0.26100.0 tren GitHub Actions runner: FILE_INFO_BY_HANDLE_CLASS"""
-    targets = ["fileapi.h", "winbase.h", "fileapifromapp.h"]
+    """Sua triet de loi Microsoft SDK thieu dinh nghia NTDDI_WIN11_BR (0x0A00000C)"""
+    inject_defs = (
+        "/* QHTD Clang compilation fix for NTDDI_WIN11_BR and FILE_INFO_BY_HANDLE_CLASS */\n"
+        "#ifndef NTDDI_WIN11_BR\n"
+        "#define NTDDI_WIN11_BR 0x0A00000C\n"
+        "#endif\n"
+        "#ifndef NTDDI_VERSION\n"
+        "#define NTDDI_VERSION 0x0A00000C\n"
+        "#endif\n"
+    )
     for root_dir in [r"C:\Program Files (x86)\Windows Kits\10\Include", r"C:\Program Files\Windows Kits\10\Include"]:
-        um_dir = os.path.join(root_dir, sdk_ver, "um")
-        if not os.path.exists(um_dir):
+        sdk_root = os.path.join(root_dir, sdk_ver)
+        if not os.path.exists(sdk_root):
             continue
-        for target in targets:
-            filepath = os.path.join(um_dir, target)
-            if not os.path.exists(filepath):
-                continue
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    c = f.read()
-                if "QHTD_MINWINBASE_FIX" not in c:
-                    fix_block = (
-                        "/* QHTD Clang compilation fix for FILE_INFO_BY_HANDLE_CLASS */\n"
-                        "#ifndef QHTD_MINWINBASE_FIX\n"
-                        "#define QHTD_MINWINBASE_FIX\n"
-                        "#include <sdkddkver.h>\n"
-                        "#include <minwinbase.h>\n"
-                        "#endif\n\n"
-                    )
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(fix_block + c)
-                    print(f"[SUCCESS] Patched Windows SDK header: {filepath}")
-            except Exception as e:
-                print(f"[WARNING] Could not patch {filepath}: {e}")
+        for target in ["sdkddkver.h", "minwinbase.h"]:
+            filepath = os.path.join(sdk_root, "shared", target)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        c = f.read()
+                    if "NTDDI_WIN11_BR 0x0A00000C" not in c:
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(inject_defs + "\n" + c)
+                        print(f"[GenerateArgs] Patched SDK shared: {filepath}")
+                except Exception as e:
+                    print(f"[WARNING] Could not patch {filepath}: {e}")
+
+        for target in ["fileapi.h", "winbase.h", "fileapifromapp.h"]:
+            filepath = os.path.join(sdk_root, "um", target)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        c = f.read()
+                    if "QHTD_MINWINBASE_FIX_V2" not in c:
+                        um_fix = (
+                            "/* QHTD Clang compilation fix for FILE_INFO_BY_HANDLE_CLASS */\n"
+                            "#ifndef QHTD_MINWINBASE_FIX_V2\n"
+                            "#define QHTD_MINWINBASE_FIX_V2\n"
+                            + inject_defs +
+                            "#include <sdkddkver.h>\n"
+                            "#include <minwinbase.h>\n"
+                            "#endif\n\n"
+                        )
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(um_fix + c)
+                        print(f"[GenerateArgs] Patched SDK um: {filepath}")
+                except Exception as e:
+                    print(f"[WARNING] Could not patch {filepath}: {e}")
+
+def patch_win_build_gn(src_root="."):
+    path = os.path.join(src_root, "build", "config", "win", "BUILD.gn")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                c = f.read()
+            import re
+            c = re.sub(r'["\']NTDDI_VERSION=NTDDI_WIN11_BR["\']', '"NTDDI_VERSION=0x0A00000C",\n    "NTDDI_WIN11_BR=0x0A00000C"', c)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(c)
+            print(f"[GenerateArgs] Patched NTDDI_VERSION in {path}")
+        except Exception as e:
+            print(f"[WARNING] Could not patch {path}: {e}")
 
 def ensure_version_files(src_root="."):
     files = [
@@ -68,6 +103,7 @@ def main():
     sdk_ver = find_installed_windows_sdk()
     print(f"[GenerateArgs] Detected Windows SDK: {sdk_ver}")
     fix_windows_sdk_headers(sdk_ver)
+    patch_win_build_gn(".")
     ensure_version_files(".")
 
     os.makedirs("out/Release", exist_ok=True)
