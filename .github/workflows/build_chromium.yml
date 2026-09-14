@@ -81,33 +81,40 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call ninja.bat -C out\Release chrome || (
-            echo ================== COMPILATION ERROR LOG ==================
-            if exist out\Release\.ninja_log (
-              type out\Release\.ninja_log | python -c "import sys; lines=sys.stdin.readlines(); [print(l.strip()) for l in lines[-40:]]"
-            )
+          call ninja.bat -C out\Release chrome > ninja_build.log 2>&1 || (
+            echo ================== COMPILATION ERROR LOG (TAIL 80) ==================
+            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-80:]]"
             exit 1
           )
 
       - name: Package Portable Chromium
+        if: always()
         shell: powershell
         run: |
+          if (Test-Path "chromium_build\src\ninja_build.log") {
+            Copy-Item "chromium_build\src\ninja_build.log" "ninja_build.log"
+          }
           $outDir = "chromium_build\src\out\Release"
-          $packDir = "qhtd-browser-portable"
-          New-Item -ItemType Directory -Path $packDir
-          Copy-Item "$outDir\chrome.exe" "$packDir\qhtd-browser.exe"
-          Copy-Item "$outDir\*.dll" "$packDir\"
-          Copy-Item "$outDir\*.pak" "$packDir\"
-          Copy-Item "$outDir\icudtl.dat" "$packDir\"
-          Copy-Item "$outDir\v8_context_snapshot.bin" "$packDir\"
-          if (Test-Path "$outDir\locales") { Copy-Item "$outDir\locales" "$packDir\" -Recurse }
-          Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
+          if (Test-Path "$outDir\chrome.exe") {
+            $packDir = "qhtd-browser-portable"
+            New-Item -ItemType Directory -Path $packDir
+            Copy-Item "$outDir\chrome.exe" "$packDir\qhtd-browser.exe"
+            Copy-Item "$outDir\*.dll" "$packDir\"
+            Copy-Item "$outDir\*.pak" "$packDir\"
+            Copy-Item "$outDir\icudtl.dat" "$packDir\"
+            Copy-Item "$outDir\v8_context_snapshot.bin" "$packDir\"
+            if (Test-Path "$outDir\locales") { Copy-Item "$outDir\locales" "$packDir\" -Recurse }
+            Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
+          }
 
       - name: Upload Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qhtd-browser-windows-x64
-          path: qhtd-browser-windows-x64.zip
+          path: |
+            qhtd-browser-windows-x64.zip
+            ninja_build.log
 
       - name: Create GitHub Release & Upload Artifact
         uses: softprops/action-gh-release@v2
