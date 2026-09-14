@@ -21,9 +21,15 @@ pub struct C69Account {
     pub id: u64,
     pub username: String,
     #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
-    pub status: Option<String>,
+    pub two_factor_auth: Option<String>,
+    #[serde(default)]
+    pub cookies: Option<String>,
+    #[serde(default)]
+    pub status: Option<serde_json::Value>,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -38,6 +44,10 @@ pub struct BrowserNurtureStatus {
     pub likes_given: u32,
     pub is_running: bool,
     pub last_log: String,
+    #[serde(default)]
+    pub waiting_otp: bool,
+    #[serde(default)]
+    pub challenge_type: Option<String>,
 }
 
 // ── Native Rust CDP Client ───────────────────────────────────────────────────
@@ -193,6 +203,33 @@ impl CdpClient {
         .await?;
         Ok(())
     }
+
+    pub async fn get_all_cookies(&self) -> Result<serde_json::Value, String> {
+        let resp = self.call("Network.getCookies", json!({ "urls": ["https://www.tiktok.com", "https://tiktok.com"] })).await?;
+        let cookies = resp.get("result").and_then(|r| r.get("cookies")).cloned().unwrap_or(json!([]));
+        Ok(cookies)
+    }
+
+    pub async fn set_cookies(&self, cookies: &serde_json::Value) -> Result<(), String> {
+        if let Some(arr) = cookies.as_array() {
+            for c in arr {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let value = c.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                let domain = c.get("domain").and_then(|v| v.as_str()).unwrap_or(".tiktok.com");
+                let path = c.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+                if !name.is_empty() {
+                    let _ = self.call("Network.setCookie", json!({
+                        "name": name,
+                        "value": value,
+                        "domain": domain,
+                        "path": path,
+                        "secure": true
+                    })).await;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Browser Nurture Engine ───────────────────────────────────────────────────
@@ -201,6 +238,7 @@ impl CdpClient {
 pub struct BrowserNurtureEngine {
     tasks: Arc<RwLock<HashMap<usize, Arc<AtomicBool>>>>,
     statuses: Arc<RwLock<HashMap<usize, BrowserNurtureStatus>>>,
+    otp_queue: Arc<Mutex<HashMap<usize, String>>>,
 }
 
 impl BrowserNurtureEngine {
@@ -208,6 +246,31 @@ impl BrowserNurtureEngine {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             statuses: Arc::new(RwLock::new(HashMap::new())),
+            otp_queue: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn submit_otp(&self, profile_id: usize, otp: String) {
+        self.otp_queue.lock().insert(profile_id, otp);
+    }
+
+    pub fn take_otp(&self, profile_id: usize) -> Option<String> {
+        self.otp_queue.lock().remove(&profile_id)
+    }
+
+    pub fn update_challenge(&self, profile_id: usize, challenge_type: &str, log_msg: String) {
+        if let Some(st) = self.statuses.write().get_mut(&profile_id) {
+            st.waiting_otp = true;
+            st.challenge_type = Some(challenge_type.to_string());
+            st.status = format!("Chờ mã {}", challenge_type);
+            st.last_log = log_msg;
+        }
+    }
+
+    pub fn clear_challenge(&self, profile_id: usize) {
+        if let Some(st) = self.statuses.write().get_mut(&profile_id) {
+            st.waiting_otp = false;
+            st.challenge_type = None;
         }
     }
 
@@ -278,6 +341,8 @@ impl BrowserNurtureEngine {
             likes_given: 0,
             is_running: true,
             last_log: "Bắt đầu chu trình nuôi TikTok kết hợp C69...".to_string(),
+            waiting_otp: false,
+            challenge_type: None,
         };
         self.statuses.write().insert(profile_id, initial_status);
 
@@ -365,7 +430,18 @@ impl BrowserNurtureEngine {
             }
         }
 
-        // 4. KIỂM TRA ĐĂNG NHẬP TIKTOK NGHIÊM NGẶT
+        // 4. KIỂM TRA & NẠP COOKIES NẾU CÓ
+        if let Some(ref acc) = c69_acc {
+            if let Some(ref c_str) = acc.cookies {
+                if !c_str.trim().is_empty() {
+                    if let Ok(c_json) = serde_json::from_str::<serde_json::Value>(c_str) {
+                        self.update_log(pid, "Nạp cookies đăng nhập có sẵn từ C69...".to_string(), "Nạp Cookies");
+                        let _ = cdp.set_cookies(&c_json).await;
+                    }
+                }
+            }
+        }
+
         self.update_log(pid, "Mở TikTok để kiểm tra phiên đăng nhập...".to_string(), "Kiểm tra đăng nhập");
         let _ = cdp.navigate("https://www.tiktok.com").await;
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -401,13 +477,19 @@ impl BrowserNurtureEngine {
             };
 
             let pwd = acc.password.as_deref().unwrap_or("");
-            self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản C69: {}", acc.username), "Tiến hành đăng nhập");
+            let login_identity = if let Some(ref email) = acc.email {
+                if email.contains('@') { email.clone() } else { acc.username.clone() }
+            } else {
+                acc.username.clone()
+            };
+
+            self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản: {}", login_identity), "Tiến hành đăng nhập");
 
             let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
             tokio::time::sleep(Duration::from_secs(6)).await;
             if !run_flag.load(Ordering::Relaxed) { return; }
 
-            // Nhập Username
+            // Nhập Username / Email
             let find_user_expr = r#"(() => {
                 const u = document.querySelector('input[name="username"]') || 
                           document.querySelector('input[placeholder*="Email"]') || 
@@ -431,7 +513,7 @@ impl BrowserNurtureEngine {
                 }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = cdp.insert_text(&acc.username).await;
+            let _ = cdp.insert_text(&login_identity).await;
             tokio::time::sleep(Duration::from_millis(600)).await;
             if !run_flag.load(Ordering::Relaxed) { return; }
 
@@ -460,7 +542,7 @@ impl BrowserNurtureEngine {
             tokio::time::sleep(Duration::from_millis(800)).await;
             if !run_flag.load(Ordering::Relaxed) { return; }
 
-            // Lấy tọa độ nút Log In thật và click
+            // Click nút Log In
             let find_btn_expr = r#"(() => {
                 const btn = document.querySelector('button[type="submit"]') || 
                             Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
@@ -482,47 +564,17 @@ impl BrowserNurtureEngine {
                 let _ = cdp.dispatch_mouse_click(200.0, 390.0).await;
             }
 
-            self.update_log(pid, format!("Đã kích hoạt bấm nút Đăng Nhập cho: {}. Đang xác thực...", acc.username), "Chờ xác thực đăng nhập");
+            self.update_log(pid, format!("Đã kích hoạt bấm nút Đăng Nhập cho: {}. Đang xác thực...", login_identity), "Chờ xác thực");
 
-            // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Login Verification Loop - tối đa 60 giây) ──
+            // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
             let mut login_confirmed = false;
-            for sec in 1..=30 {
+            let mut totp_submitted = false;
+
+            for cycle in 1..=90 {
                 if !run_flag.load(Ordering::Relaxed) { return; }
                 tokio::time::sleep(Duration::from_secs(2)).await;
 
-                // Kiểm tra Captcha
-                let captcha_expr = r#"(() => {
-                    const c = document.querySelector('#captcha_container') || 
-                              document.querySelector('.secsdk-captcha-drag-icon') || 
-                              document.querySelector('[class*="captcha"]') || 
-                              document.querySelector('.verify-wrap') || 
-                              document.querySelector('iframe[src*="captcha"]');
-                    return !!c;
-                })()"#;
-                let has_captcha = cdp.evaluate(captcha_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
-                if has_captcha {
-                    self.update_log(
-                        pid, 
-                        format!("⚠️ Phát hiện Captcha TikTok! Vui lòng kéo captcha trên cửa sổ trình duyệt (chu kỳ {}/30)...", sec), 
-                        "Chờ giải Captcha"
-                    );
-                }
-
-                // Kiểm tra thông báo lỗi
-                let err_expr = r#"(() => {
-                    const err = document.querySelector('.tiktok-input-error') || 
-                                document.querySelector('[role="alert"]') || 
-                                document.querySelector('[class*="error-container"]') ||
-                                document.querySelector('[class*="error-message"]');
-                    return err ? err.innerText.trim() : '';
-                })()"#;
-                let err_text = cdp.evaluate(err_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
-                if !err_text.is_empty() {
-                    self.set_error(pid, format!("❌ Đăng nhập TikTok thất bại: {}", err_text));
-                    return;
-                }
-
-                // Kiểm tra đăng nhập thành công
+                // 1. Kiểm tra đăng nhập thành công
                 let login_ok_expr = r#"(() => {
                     const hasCookie = document.cookie.includes('sessionid=');
                     const hasAvatar = !!(
@@ -539,17 +591,178 @@ impl BrowserNurtureEngine {
                     login_confirmed = true;
                     break;
                 }
+
+                // 2. Kiểm tra Captcha
+                let captcha_expr = r#"(() => {
+                    const c = document.querySelector('#captcha_container') || 
+                              document.querySelector('.secsdk-captcha-drag-icon') || 
+                              document.querySelector('[class*="captcha"]') || 
+                              document.querySelector('.verify-wrap') || 
+                              document.querySelector('iframe[src*="captcha"]');
+                    return !!c;
+                })()"#;
+                let has_captcha = cdp.evaluate(captcha_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                if has_captcha {
+                    self.update_challenge(pid, "Captcha", format!("⚠️ Phát hiện Captcha TikTok! Vui lòng kéo captcha trên cửa sổ trình duyệt (chu kỳ {}/90)...", cycle));
+                }
+
+                // 3. Kiểm tra thông báo lỗi sai mật khẩu / tài khoản
+                let err_expr = r#"(() => {
+                    const err = document.querySelector('.tiktok-input-error') || 
+                                document.querySelector('[role="alert"]') || 
+                                document.querySelector('[class*="error-container"]') ||
+                                document.querySelector('[class*="error-message"]');
+                    return err ? err.innerText.trim() : '';
+                })()"#;
+                let err_text = cdp.evaluate(err_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                if !err_text.is_empty() && !err_text.to_lowercase().contains("enter") {
+                    self.set_error(pid, format!("❌ Đăng nhập TikTok thất bại: {}", err_text));
+                    return;
+                }
+
+                // 4. Kiểm tra thách thức 2FA / Email Code / SMS Code
+                let challenge_detect_expr = r#"(() => {
+                    const bodyText = (document.body ? document.body.innerText : '').toLowerCase();
+                    const is2fa = bodyText.includes('2-step verification') || 
+                                  bodyText.includes('authenticator app') || 
+                                  bodyText.includes('enter the 6-digit code generated');
+                    const isEmail = bodyText.includes('enter 6-digit code') || 
+                                    bodyText.includes('sent a code to') || 
+                                    bodyText.includes('code sent to') ||
+                                    bodyText.includes('verify with email') ||
+                                    bodyText.includes('email verification') ||
+                                    bodyText.includes('we sent a code');
+                    const isPhone = bodyText.includes('enter sms code') || 
+                                    bodyText.includes('sent an sms') ||
+                                    bodyText.includes('sms verification');
+
+                    const sendBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                        const t = b.innerText.toLowerCase();
+                        return (t.includes('send code') || t.includes('gửi mã')) && !b.disabled;
+                    });
+
+                    return JSON.stringify({
+                        is_2fa: is2fa,
+                        is_email: isEmail,
+                        is_phone: isPhone,
+                        has_send_btn: !!sendBtn
+                    });
+                })()"#;
+
+                if let Ok(ch_val) = cdp.evaluate(challenge_detect_expr).await {
+                    if let Some(ch_str) = ch_val.as_str() {
+                        if let Ok(ch) = serde_json::from_str::<serde_json::Value>(ch_str) {
+                            let is_2fa = ch.get("is_2fa").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_email = ch.get("is_email").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_phone = ch.get("is_phone").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let has_send_btn = ch.get("has_send_btn").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                            // Tự động bấm Send Code nếu có nút gửi mã
+                            if has_send_btn {
+                                let click_send_expr = r#"(() => {
+                                    const sendBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                                        const t = b.innerText.toLowerCase();
+                                        return (t.includes('send code') || t.includes('gửi mã')) && !b.disabled;
+                                    });
+                                    if (sendBtn) { sendBtn.click(); return true; }
+                                    return false;
+                                })()"#;
+                                let _ = cdp.evaluate(click_send_expr).await;
+                                self.update_log(pid, "Đã tự động nhấn nút 'Send Code' để yêu cầu gửi mã xác thực về Email/SMS...".to_string(), "Đã gửi mã");
+                            }
+
+                            // Tự động xử lý 2FA nếu có Secret Key
+                            if is_2fa && !totp_submitted {
+                                if let Some(ref sec_key) = acc.two_factor_auth {
+                                    let clean_sec = sec_key.trim();
+                                    if clean_sec.len() >= 8 {
+                                        let gen_totp_expr = format!(r#"
+                                            (async () => {{
+                                                const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+                                                let bits = '';
+                                                const clean = '{}'.replace(/[\s=-]/g, '').toUpperCase();
+                                                for (let i = 0; i < clean.length; i++) {{
+                                                    const val = base32chars.indexOf(clean[i]);
+                                                    if (val >= 0) bits += val.toString(2).padStart(5, '0');
+                                                }}
+                                                const bytes = new Uint8Array(Math.floor(bits.length / 8));
+                                                for (let i = 0; i < bytes.length; i++) {{
+                                                    bytes[i] = parseInt(bits.substr(i * 8, 8), 2);
+                                                }}
+                                                const epoch = Math.floor(Date.now() / 1000);
+                                                const counter = Math.floor(epoch / 30);
+                                                const counterBuffer = new ArrayBuffer(8);
+                                                const counterView = new DataView(counterBuffer);
+                                                counterView.setUint32(4, counter, false);
+                                                const key = await crypto.subtle.importKey('raw', bytes, {{ name: 'HMAC', hash: {{ name: 'SHA-1' }} }}, false, ['sign']);
+                                                const sig = await crypto.subtle.sign('HMAC', key, counterBuffer);
+                                                const sigBytes = new Uint8Array(sig);
+                                                const offset = sigBytes[sigBytes.length - 1] & 0x0f;
+                                                const code = ((sigBytes[offset] & 0x7f) << 24 | (sigBytes[offset + 1] & 0xff) << 16 | (sigBytes[offset + 2] & 0xff) << 8 | (sigBytes[offset + 3] & 0xff)) % 1000000;
+                                                return code.toString().padStart(6, '0');
+                                            }})()
+                                        "#, clean_sec);
+                                        if let Ok(val) = cdp.evaluate(&gen_totp_expr).await {
+                                            if let Some(totp) = val.as_str() {
+                                                if totp.len() == 6 {
+                                                    self.update_log(pid, format!("🔑 Tìm thấy 2FA Secret C69! Đang tự động điền mã TOTP: {}...", totp), "Tự giải 2FA");
+                                                    let _ = fill_and_submit_otp(&cdp, totp).await;
+                                                    totp_submitted = true;
+                                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Cập nhật trạng thái chờ nhập mã xác thực
+                            if is_email || is_phone || (is_2fa && !totp_submitted) {
+                                let c_type = if is_email { "Email OTP" } else if is_phone { "SMS OTP" } else { "2FA" };
+                                self.update_challenge(
+                                    pid, 
+                                    c_type, 
+                                    format!("🔑 TikTok yêu cầu mã xác thực {}! Bạn có thể nhập mã OTP trực tiếp trên Dashboard hoặc trên trình duyệt (Thời gian còn {}s)...", c_type, (90 - cycle) * 2)
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // 5. Kiểm tra mã OTP gửi từ Web Dashboard
+                if let Some(user_otp) = self.take_otp(pid) {
+                    self.update_log(pid, format!("🚀 Đã nhận mã OTP '{}' từ Dashboard! Đang điền vào TikTok...", user_otp), "Điền mã OTP");
+                    let _ = fill_and_submit_otp(&cdp, &user_otp).await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
             }
 
             if !login_confirmed {
                 self.set_error(
                     pid, 
-                    "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 60s) hoặc chưa vượt qua Captcha. Hệ thống dừng lại, không chuyển qua lướt video.".to_string()
+                    "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 180s) hoặc chưa hoàn tất Captcha / Mã OTP xác thực. Dừng lại an toàn.".to_string()
                 );
                 return;
             }
 
-            self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đang chuyển sang Feed FYP...".to_string(), "Đăng nhập thành công");
+            self.clear_challenge(pid);
+
+            // Thu thập Cookies đăng nhập và lưu lại
+            if let Ok(cookies_val) = cdp.get_all_cookies().await {
+                let cookies_str = cookies_val.to_string();
+                if let Some(ref a) = c69_acc {
+                    if a.id > 0 {
+                        let aid = a.id;
+                        let un = a.username.clone();
+                        let cs = cookies_str.clone();
+                        tokio::spawn(async move {
+                            let _ = sync_cookies_to_c69(aid, cs, un).await;
+                        });
+                    }
+                }
+            }
+
+            self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đã lưu phiên Cookies. Đang chuyển sang Feed FYP...".to_string(), "Đăng nhập thành công");
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
 
@@ -644,6 +857,83 @@ impl BrowserNurtureEngine {
     }
 }
 
+/// Điền mã OTP vào ô nhập (hỗ trợ cả 6 ô ký tự riêng biệt và 1 ô tổng hợp) và bấm nút xác nhận
+async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
+    let clean_otp = otp.trim();
+    let fill_expr = format!(r#"
+        (() => {{
+            const otp = '{}';
+            const digitInputs = Array.from(document.querySelectorAll('input[maxlength="1"], input[data-index]'));
+            if (digitInputs.length >= 4) {{
+                for (let i = 0; i < digitInputs.length && i < otp.length; i++) {{
+                    digitInputs[i].focus();
+                    digitInputs[i].value = otp[i];
+                    digitInputs[i].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    digitInputs[i].dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+                return true;
+            }}
+            const singleInp = document.querySelector('input[placeholder*="code"]') ||
+                              document.querySelector('input[placeholder*="Code"]') ||
+                              document.querySelector('input[maxlength="6"]') ||
+                              document.querySelector('input[type="tel"]');
+            if (singleInp) {{
+                singleInp.focus();
+                singleInp.click();
+                singleInp.value = otp;
+                singleInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                singleInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
+            }}
+            return false;
+        }})()
+    "#, clean_otp);
+
+    let filled = cdp.evaluate(&fill_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let submit_expr = r#"
+        (() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const btn = buttons.find(b => {
+                const t = b.innerText.trim().toLowerCase();
+                return (t.includes('log in') || t.includes('verify') || t.includes('next') || t.includes('confirm') || t.includes('xác nhận') || t.includes('tiếp tục')) && !b.disabled;
+            });
+            if (btn) {
+                btn.click();
+                return true;
+            }
+            return false;
+        })()
+    "#;
+    let _ = cdp.evaluate(submit_expr).await;
+    filled
+}
+
+/// Đồng bộ Cookies lên C69 Server sau khi đăng nhập thành công
+pub async fn sync_cookies_to_c69(acc_id: u64, cookies_json: String, username: String) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/update-cookies/", DEFAULT_C69_API_URL, acc_id);
+    let payload = json!({
+        "cookies": cookies_json,
+        "username": username
+    });
+    let resp = client.post(&url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi gửi cookies lên C69: {}", e))?;
+
+    if resp.status().is_success() {
+        info!("✅ Đã đồng bộ Cookies thành công lên C69 cho tài khoản #{}", acc_id);
+        Ok(())
+    } else {
+        Err(format!("C69 update-cookies HTTP {}", resp.status()))
+    }
+}
+
 /// Lấy danh sách tài khoản TikTok từ C69 Backend API
 pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
     let client = reqwest::Client::new();
@@ -668,13 +958,19 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
     for item in results {
         if let Some(u) = item.get("username").and_then(|v| v.as_str()) {
             let id = item.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
             let pwd = item.get("password").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let st = item.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let two_fa = item.get("two_factor_auth").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let st = item.get("status").cloned();
             let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
             accounts.push(C69Account {
                 id,
                 username: u.to_string(),
+                email,
                 password: pwd,
+                two_factor_auth: two_fa,
+                cookies,
                 status: st,
                 note: nt,
             });

@@ -141,6 +141,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/nurture/assign-account", post(browser_nurture_assign_account_handler))
         .route("/api/browser/nurture/stop", post(browser_nurture_stop_handler))
         .route("/api/browser/nurture/status", get(browser_nurture_status_handler))
+        .route("/api/browser/nurture/:id/submit-otp", post(browser_nurture_submit_otp_handler))
         .route("/api/browser/c69/accounts", get(browser_c69_accounts_handler))
         .route("/api/browser/c69/sync-profiles", post(browser_c69_sync_profiles_handler))
         .route("/api/browser/c69/proxies", get(browser_c69_proxies_handler))
@@ -904,6 +905,9 @@ async fn browser_nurture_start_handler(
             id: payload.c69_account_id.unwrap_or(0),
             username: u,
             password: Some(p),
+            two_factor_auth: None,
+            email: None,
+            cookies: None,
             status: None,
             note: None,
         })
@@ -1062,6 +1066,9 @@ async fn browser_nurture_create_and_nurture_handler(
         id: payload.c69_account_id,
         username: payload.c69_username.clone(),
         password: payload.c69_password,
+        two_factor_auth: None,
+        email: None,
+        cookies: None,
         status: None,
         note: None,
     };
@@ -1124,6 +1131,24 @@ async fn browser_nurture_status_handler(
     State(state): State<AppState>,
 ) -> Json<Vec<crate::browser_nurture::BrowserNurtureStatus>> {
     Json(state.browser_nurture.get_all_statuses())
+}
+
+#[derive(Deserialize)]
+pub struct SubmitOtpPayload {
+    pub otp: String,
+}
+
+async fn browser_nurture_submit_otp_handler(
+    State(state): State<AppState>,
+    Path(profile_id): Path<usize>,
+    Json(payload): Json<SubmitOtpPayload>,
+) -> Json<serde_json::Value> {
+    let otp = payload.otp.trim().to_string();
+    state.browser_nurture.submit_otp(profile_id, otp.clone());
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã chuyển mã OTP '{}' tới Profile #{}!", otp, profile_id)
+    }))
 }
 
 async fn browser_c69_accounts_handler() -> Json<serde_json::Value> {
@@ -2983,10 +3008,23 @@ async fn dashboard_handler() -> Html<&'static str> {
 
                 let statusBadge = `<span class="badge-status-stopped">⚪ Đã tắt</span>`;
                 if (isNurturing) {
-                    statusBadge = `<span class="badge-status-running" style="background:rgba(217,70,239,0.15); border-color:#d946ef; color:#f0abfc;">
-                        <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
-                        🎬 Nuôi FYP (${nurture.videos_watched} vids | ❤️ ${nurture.likes_given})
-                    </span>`;
+                    if (nurture.waiting_otp) {
+                        statusBadge = `<div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+                            <span class="badge-status-running" style="background:rgba(234,179,8,0.2); border:1px solid #eab308; color:#fde047; font-weight:700; font-size:10px; padding:2px 6px; border-radius:4px;">
+                                <span class="pulse-dot" style="background:#eab308; box-shadow:0 0 8px #eab308;"></span>
+                                🔑 ${nurture.status || 'Chờ mã OTP'}
+                            </span>
+                            <div style="display:flex; gap:3px;">
+                                <input type="text" id="otp-inp-${p.id}" placeholder="Mã 6 số" maxlength="6" style="width:70px; padding:2px 4px; font-size:11px; background:#0f172a; border:1px solid #eab308; color:#fff; border-radius:3px; text-align:center;">
+                                <button class="btn btn-warning" style="padding:2px 6px; font-size:10px; font-weight:700; background:#eab308; color:#000; border-radius:3px; cursor:pointer;" onclick="submitOtpForProfile(${p.id})">Gửi</button>
+                            </div>
+                        </div>`;
+                    } else {
+                        statusBadge = `<span class="badge-status-running" style="background:rgba(217,70,239,0.15); border-color:#d946ef; color:#f0abfc;">
+                            <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
+                            🎬 Nuôi FYP (${nurture.videos_watched} vids | ❤️ ${nurture.likes_given})
+                        </span>`;
+                    }
                 } else if (isRunning) {
                     statusBadge = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>`;
                 }
@@ -3033,6 +3071,25 @@ async fn dashboard_handler() -> Html<&'static str> {
                     </td>
                 </tr>
             `}).join('');
+        async function submitOtpForProfile(profileId) {
+            const input = document.getElementById(`otp-inp-${profileId}`);
+            if (!input || !input.value.trim()) {
+                alert('Vui lòng nhập mã OTP 6 chữ số!');
+                return;
+            }
+            const otp = input.value.trim();
+            try {
+                const resp = await fetch(`${API_BASE}/api/browser/nurture/${profileId}/submit-otp`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ otp: otp })
+                });
+                const d = await resp.json();
+                alert(d.message || 'Đã gửi mã OTP vào trình duyệt!');
+                input.value = '';
+            } catch(e) {
+                alert('Lỗi gửi OTP: ' + e);
+            }
         }
 
         async function openNurtureModal(profileId) {

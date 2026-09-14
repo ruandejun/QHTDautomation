@@ -52,12 +52,31 @@ def ensure_lastchange(src_root):
         print(f"[SUCCESS] Created {committime_file}")
     return True
 
+def find_installed_windows_sdk():
+    for root_dir in [r"C:\Program Files (x86)\Windows Kits\10\Include", r"C:\Program Files\Windows Kits\10\Include"]:
+        if os.path.exists(root_dir):
+            versions = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d)) and d.startswith("10.0.")]
+            if versions:
+                versions.sort(key=lambda s: [int(u) for u in s.split('.') if u.isdigit()])
+                return versions[-1]
+    return "10.0.22621.0"
+
 def patch_setup_toolchain(src_root):
-    """Khac phuc loi Windows SDK khong ton tai thu muc (nhu 10.0.28000.0) trong environment variable include/lib"""
+    """Khac phuc loi Windows SDK khong ton tai thu muc (nhu 10.0.28000.0) va dong bo SDK version"""
+    sdk_ver = find_installed_windows_sdk()
+    print(f"[INFO] Target Windows SDK version: {sdk_ver}")
+
+    # 1. Patch build/vs_toolchain.py
+    vs_path = os.path.join(src_root, "build", "vs_toolchain.py")
+    if os.path.exists(vs_path):
+        def transform_vs(c):
+            return re.sub(r"SDK_VERSION\s*=\s*['\"][^'\"]+['\"]", f"SDK_VERSION = '{sdk_ver}'", c)
+        patch_file(vs_path, f"Set vs_toolchain SDK_VERSION to {sdk_ver}", transform_vs)
+
+    # 2. Patch build/toolchain/win/setup_toolchain.py
     path = os.path.join(src_root, "build", "toolchain", "win", "setup_toolchain.py")
-    
     def transform(c):
-        # 1. Tu dong loc bo tat ca duong dan khong ton tai trong include va lib cua env dict
+        c = re.sub(r"SDK_VERSION\s*=\s*['\"][^'\"]+['\"]", f"SDK_VERSION = '{sdk_ver}'", c)
         clean_env_code = "    for _k in ['include', 'lib']:\n      if _k in env:\n        env[_k] = ';'.join([_p for _p in env[_k].split(';') if os.path.exists(_p) or len(_p) == 0])\n"
         if "clean_env_code" not in c and "def _ExtractNinjaEnvironment(" in c:
             c = c.replace("def _ExtractNinjaEnvironment(env):", "def _ExtractNinjaEnvironment(env):\n" + clean_env_code)
@@ -67,21 +86,23 @@ def patch_setup_toolchain(src_root):
             c = c.replace(target_check, "if False and not os.path.exists(part) and len(part) != 0:")
         return c
 
-    return patch_file(path, "Patch Windows SDK Toolchain Path Check", transform)
+    patch_file(path, "Patch Windows SDK Toolchain Path Check", transform)
 
-def patch_build_modules(src_root):
-    """Khac phuc loi GN expand_directory kiem tra thu muc SDK phai ton tai o //build/modules/BUILD.gn:98"""
-    path = os.path.join(src_root, "build", "modules", "BUILD.gn")
-    if not os.path.exists(path):
-        return True
-    
-    def transform(c):
-        target = 'expand_directory(string_replace(include_flag, "/I", "", 1), true)'
-        if target in c:
-            c = c.replace(target, 'expand_directory(string_replace(include_flag, "/I", "", 1), false)')
-        return c
+    # 3. Patch root BUILD.gn to remove //build/modules
+    root_gn = os.path.join(src_root, "BUILD.gn")
+    if os.path.exists(root_gn):
+        def transform_root_gn(c):
+            return c.replace('"//build/modules",', '# "//build/modules",')
+        patch_file(root_gn, "Comment out //build/modules in root BUILD.gn", transform_root_gn)
 
-    return patch_file(path, "Patch Build Modules Directory Check", transform)
+    # 4. Patch build/modules/BUILD.gn
+    mod_gn = os.path.join(src_root, "build", "modules", "BUILD.gn")
+    if os.path.exists(mod_gn):
+        def transform_mod(c):
+            return re.sub(r"expand_directory\([^)]+\)", "[]", c)
+        patch_file(mod_gn, "Replace expand_directory with empty list in build/modules/BUILD.gn", transform_mod)
+
+    return True
 
 
 def patch_navigator(src_root):
@@ -237,7 +258,6 @@ def main():
 
     # 2. Patch Windows SDK toolchain check
     patch_setup_toolchain(src_root)
-    patch_build_modules(src_root)
 
     # 3. Patch Blink C++ Sources
     ok1 = patch_navigator(src_root)
