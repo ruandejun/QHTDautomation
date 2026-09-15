@@ -81,10 +81,21 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call ninja.bat -C out\Release chrome > ninja_build.log 2>&1 || (
-            echo ================== COMPILATION ERROR LOG (TAIL 80) ==================
-            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-80:]]"
-            exit 1
+          call ninja.bat -C out\Release chrome > ninja_build.log 2>&1
+        continue-on-error: true
+
+      - name: Print Ninja Error Log on Failure
+        if: always()
+        shell: cmd
+        run: |
+          cd chromium_build\src
+          if not exist out\Release\chrome.exe (
+            echo ================== COMPILATION ERROR DUMP ==================
+            python -c "import os; log='out/Release/.ninja_log'; print('Ninja log exists:', os.path.exists(log))"
+            if exist ninja_build.log (
+              python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-150:]]"
+            )
+            echo ============================================================
           )
 
       - name: Package Portable Chromium

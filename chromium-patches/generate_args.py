@@ -116,6 +116,8 @@ is_component_build = false
 chrome_pgo_phase = 0
 treat_warnings_as_errors = false
 dcheck_always_on = false
+v8_symbol_level = 0
+enable_iterator_debugging = false
 windows_sdk_version = "{sdk_ver}"
 """
     with open("out/Release/args.gn", "w", encoding="utf-8") as f:
