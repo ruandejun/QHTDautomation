@@ -89,14 +89,16 @@ jobs:
         shell: cmd
         run: |
           cd chromium_build\src
-          if not exist out\Release\chrome.exe (
-            echo ================== COMPILATION ERROR DUMP ==================
-            python -c "import os; log='out/Release/.ninja_log'; print('Ninja log exists:', os.path.exists(log))"
-            if exist ninja_build.log (
-              python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-150:]]"
-            )
-            echo ============================================================
+          echo ================== CHECK CHROME OUTPUT ==================
+          dir out\Release\chrome.exe 2>nul || echo chrome.exe NOT FOUND
+          echo ================== COMPILATION ERROR DUMP ==================
+          if exist ninja_build.log (
+            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines if 'error:' in l.lower()][-60:]"
+            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-100:]]"
+          ) else (
+            echo ninja_build.log not found!
           )
+          echo ============================================================
 
       - name: Package Portable Chromium
         if: always()
