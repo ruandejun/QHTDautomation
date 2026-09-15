@@ -116,6 +116,10 @@ jobs:
             Copy-Item "$outDir\v8_context_snapshot.bin" "$packDir\"
             if (Test-Path "$outDir\locales") { Copy-Item "$outDir\locales" "$packDir\" -Recurse }
             Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
+            Write-Host "SUCCESS: Packaged qhtd-browser-windows-x64.zip successfully!"
+          } else {
+            Write-Error "FATAL: $outDir\chrome.exe does not exist! Compilation failed."
+            exit 1
           }
 
       - name: Upload Artifact

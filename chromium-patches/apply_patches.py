@@ -234,6 +234,69 @@ def patch_setup_toolchain(src_root):
             )
         patch_file(mod_gn, "Bypass Windows SDK expand_directory in build/modules/BUILD.gn", transform_mod)
 
+def patch_crypto_boringssl(src_root):
+    """
+    Sua triet de xung dot macro X509_NAME giua Windows SDK (wincrypt.h) va BoringSSL (openssl/base.h).
+    Windows wincrypt.h define X509_NAME ((LPCSTR) 7), lam hong typedef struct X509_name_st X509_NAME.
+    """
+    print("[INFO] Patching crypto & boringssl headers for Windows SDK compatibility...")
+
+    # 1. Patch third_party/boringssl/src/include/openssl/base.h
+    base_h = os.path.join(src_root, "third_party", "boringssl", "src", "include", "openssl", "base.h")
+    if os.path.exists(base_h):
+        def transform_base_h(c):
+            if "/* QHTD X509_NAME wincrypt undef guard */" not in c:
+                target = "typedef struct X509_name_st X509_NAME;"
+                guard = (
+                    "/* QHTD X509_NAME wincrypt undef guard */\n"
+                    "#if defined(X509_NAME)\n#undef X509_NAME\n#endif\n"
+                    "#if defined(X509_CERT_PAIR)\n#undef X509_CERT_PAIR\n#endif\n"
+                    "#if defined(X509_EXTENSIONS)\n#undef X509_EXTENSIONS\n#endif\n"
+                    "#if defined(PKCS7_SIGNER_INFO)\n#undef PKCS7_SIGNER_INFO\n#endif\n"
+                )
+                if target in c:
+                    c = c.replace(target, guard + target)
+            return c
+        patch_file(base_h, "BoringSSL base.h wincrypt macro undef guard", transform_base_h)
+
+    # 2. Patch crypto/scoped_cng_types.h
+    scoped_cng = os.path.join(src_root, "crypto", "scoped_cng_types.h")
+    if os.path.exists(scoped_cng):
+        def transform_scoped(c):
+            if "/* QHTD undef wincrypt macros */" not in c:
+                target = "#include <wincrypt.h>"
+                undefs = (
+                    "#include <wincrypt.h>\n"
+                    "/* QHTD undef wincrypt macros */\n"
+                    "#if defined(X509_NAME)\n#undef X509_NAME\n#endif\n"
+                    "#if defined(X509_CERT_PAIR)\n#undef X509_CERT_PAIR\n#endif\n"
+                    "#if defined(X509_EXTENSIONS)\n#undef X509_EXTENSIONS\n#endif\n"
+                    "#if defined(PKCS7_SIGNER_INFO)\n#undef PKCS7_SIGNER_INFO\n#endif\n"
+                )
+                if target in c:
+                    c = c.replace(target, undefs)
+            return c
+        patch_file(scoped_cng, "crypto/scoped_cng_types.h undef wincrypt macros", transform_scoped)
+
+    # 3. Patch crypto/unexportable_key_win.cc
+    unexp_key = os.path.join(src_root, "crypto", "unexportable_key_win.cc")
+    if os.path.exists(unexp_key):
+        def transform_unexp(c):
+            if "/* QHTD undef wincrypt macros */" not in c:
+                target = "#include <ncrypt.h>"
+                undefs = (
+                    "#include <ncrypt.h>\n"
+                    "/* QHTD undef wincrypt macros */\n"
+                    "#if defined(X509_NAME)\n#undef X509_NAME\n#endif\n"
+                    "#if defined(X509_CERT_PAIR)\n#undef X509_CERT_PAIR\n#endif\n"
+                    "#if defined(X509_EXTENSIONS)\n#undef X509_EXTENSIONS\n#endif\n"
+                    "#if defined(PKCS7_SIGNER_INFO)\n#undef PKCS7_SIGNER_INFO\n#endif\n"
+                )
+                if target in c:
+                    c = c.replace(target, undefs)
+            return c
+        patch_file(unexp_key, "crypto/unexportable_key_win.cc undef wincrypt macros", transform_unexp)
+
     return True
 
 
@@ -391,7 +454,10 @@ def main():
     # 2. Patch Windows SDK toolchain check
     patch_setup_toolchain(src_root)
 
-    # 3. Patch Blink C++ Sources
+    # 3. Patch Crypto & BoringSSL Windows SDK collisions
+    patch_crypto_boringssl(src_root)
+
+    # 4. Patch Blink C++ Sources
     ok1 = patch_navigator(src_root)
     ok2 = patch_canvas(src_root)
     ok3 = patch_webgl(src_root)
