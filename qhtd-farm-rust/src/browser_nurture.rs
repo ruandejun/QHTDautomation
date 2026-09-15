@@ -230,6 +230,27 @@ impl CdpClient {
         }
         Ok(())
     }
+
+    pub async fn set_cookies_from_string(&self, cookie_str: &str) -> Result<(), String> {
+        let pairs: Vec<&str> = cookie_str.split(';').collect();
+        for p in pairs {
+            let trimmed = p.trim();
+            if let Some((k, v)) = trimmed.split_once('=') {
+                let k_trim = k.trim();
+                let v_trim = v.trim();
+                if !k_trim.is_empty() {
+                    let _ = self.call("Network.setCookie", json!({
+                        "name": k_trim,
+                        "value": v_trim,
+                        "domain": ".tiktok.com",
+                        "path": "/",
+                        "secure": true
+                    })).await;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Browser Nurture Engine ───────────────────────────────────────────────────
@@ -433,10 +454,14 @@ impl BrowserNurtureEngine {
         // 4. KIỂM TRA & NẠP COOKIES NẾU CÓ
         if let Some(ref acc) = c69_acc {
             if let Some(ref c_str) = acc.cookies {
-                if !c_str.trim().is_empty() {
-                    if let Ok(c_json) = serde_json::from_str::<serde_json::Value>(c_str) {
-                        self.update_log(pid, "Nạp cookies đăng nhập có sẵn từ C69...".to_string(), "Nạp Cookies");
+                let trimmed_c = c_str.trim();
+                if !trimmed_c.is_empty() {
+                    if let Ok(c_json) = serde_json::from_str::<serde_json::Value>(trimmed_c) {
+                        self.update_log(pid, "Nạp cookies JSON đăng nhập từ C69...".to_string(), "Nạp Cookies");
                         let _ = cdp.set_cookies(&c_json).await;
+                    } else if trimmed_c.contains('=') {
+                        self.update_log(pid, "Nạp cookies String đăng nhập từ C69...".to_string(), "Nạp Cookies");
+                        let _ = cdp.set_cookies_from_string(trimmed_c).await;
                     }
                 }
             }
@@ -456,7 +481,8 @@ impl BrowserNurtureEngine {
                 document.querySelector('a[href*="/@"]') ||
                 document.querySelector('[data-e2e="inbox-icon"]')
             );
-            return hasCookie || hasAvatar;
+            const notInLogin = !window.location.href.includes('/login');
+            return hasAvatar || (hasCookie && notInLogin);
         })()"#;
 
         let already_logged_in = cdp.evaluate(check_session_expr).await.ok()
@@ -530,7 +556,7 @@ impl BrowserNurtureEngine {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = cdp.insert_text(&login_identity).await;
-            tokio::time::sleep(Duration::from_millis(600)).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
             if !run_flag.load(Ordering::Relaxed) { return; }
 
             // Nhập Password
@@ -555,21 +581,45 @@ impl BrowserNurtureEngine {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = cdp.insert_text(pwd).await;
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
             if !run_flag.load(Ordering::Relaxed) { return; }
 
-            // Click nút Log In
-            let find_btn_expr = r#"(() => {
-                const btn = document.querySelector('button[type="submit"]') || 
-                            Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
-                if (btn) {
-                    const r = btn.getBoundingClientRect();
-                    return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
-                }
-                return '';
-            })()"#;
+            // Đồng bộ React Synthetic Events & Mở khóa nút Log in
+            let sync_react_expr = format!(r#"
+                (() => {{
+                    function setReactVal(input, val) {{
+                        if (!input) return false;
+                        const proto = window.HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                        setter.call(input, val);
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return true;
+                    }}
+                    const u = document.querySelector('input[name="username"]') || 
+                              document.querySelector('input[placeholder*="Email"]') || 
+                              document.querySelector('input[placeholder*="Username"]') ||
+                              document.querySelector('input[type="text"]');
+                    const p = document.querySelector('input[type="password"]');
+                    if (u) setReactVal(u, "{}");
+                    if (p) setReactVal(p, "{}");
 
-            let btn_pos = cdp.evaluate(find_btn_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                    const btn = document.querySelector('button[type="submit"]') || 
+                                Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
+                    if (btn) {{
+                        btn.disabled = false;
+                        btn.removeAttribute('disabled');
+                        const r = btn.getBoundingClientRect();
+                        return JSON.stringify({{x: r.left + r.width/2, y: r.top + r.height/2}});
+                    }}
+                    return '';
+                }})()
+            "#, login_identity.replace('\\', "\\\\").replace('"', "\\\""), pwd.replace('\\', "\\\\").replace('"', "\\\""));
+
+            let btn_pos = cdp.evaluate(&sync_react_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            // Click nút Log in bằng cả chuột CDP và trigger click DOM
             if !btn_pos.is_empty() {
                 if let Ok(c) = serde_json::from_str::<serde_json::Value>(&btn_pos) {
                     let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(200.0);
@@ -579,6 +629,18 @@ impl BrowserNurtureEngine {
             } else {
                 let _ = cdp.dispatch_mouse_click(200.0, 390.0).await;
             }
+
+            let _ = cdp.evaluate(r#"(() => {
+                const btn = document.querySelector('button[type="submit"]') || 
+                            Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
+                if (btn) {
+                    btn.disabled = false;
+                    btn.removeAttribute('disabled');
+                    btn.click();
+                    return true;
+                }
+                return false;
+            })()"#).await;
 
             self.update_log(pid, format!("Đã kích hoạt bấm nút Đăng Nhập cho: {}. Đang xác thực...", login_identity), "Chờ xác thực");
 
