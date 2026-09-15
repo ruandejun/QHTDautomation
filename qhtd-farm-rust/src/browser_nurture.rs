@@ -442,11 +442,18 @@ impl BrowserNurtureEngine {
             }
         };
 
-        // Nếu chưa có c69_acc truyền vào nhưng profile đã gắn tiktok_username, thử tìm tài khoản C69 khớp
+        // Nếu chưa có c69_acc truyền vào nhưng profile đã gắn tiktok_account_id hoặc tiktok_username, thử tìm tài khoản C69 khớp
+        if c69_acc.is_none() {
+            if let Some(aid) = profile.tiktok_account_id {
+                if let Ok(acc) = fetch_c69_account_by_id(aid).await {
+                    c69_acc = Some(acc);
+                }
+            }
+        }
         if c69_acc.is_none() {
             if let Some(ref saved_u) = profile.tiktok_username {
                 if let Ok(accounts) = fetch_c69_tiktok_accounts().await {
-                    c69_acc = accounts.into_iter().find(|a| a.username == *saved_u);
+                    c69_acc = accounts.into_iter().find(|a| a.username.eq_ignore_ascii_case(saved_u));
                 }
             }
         }
@@ -533,121 +540,109 @@ impl BrowserNurtureEngine {
                 self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản: {}", login_identity), "Tiến hành đăng nhập");
 
             let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            if !run_flag.load(Ordering::Relaxed) { return; }
 
-            // Nhập Username / Email
-            let find_user_expr = r#"(() => {
-                const u = document.querySelector('input[name="username"]') || 
-                          document.querySelector('input[placeholder*="Email"]') || 
-                          document.querySelector('input[placeholder*="Username"]') ||
-                          document.querySelector('input[type="text"]');
-                if (u) {
-                    u.focus();
-                    u.click();
-                    const r = u.getBoundingClientRect();
-                    return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
-                }
-                return '';
-            })()"#;
+            let mut form_found_and_submitted = false;
+            for form_try in 1..=15 {
+                if !run_flag.load(Ordering::Relaxed) { return; }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                self.update_log(pid, format!("Đang tìm kiếm form đăng nhập TikTok (lần {}/15)...", form_try), "Tìm form đăng nhập");
 
-            let user_pos = cdp.evaluate(find_user_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
-            if !user_pos.is_empty() {
-                if let Ok(c) = serde_json::from_str::<serde_json::Value>(&user_pos) {
-                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(200.0);
-                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(280.0);
-                    let _ = cdp.dispatch_mouse_click(x, y).await;
+                let detect_and_fill_script = format!(r#"
+                    (() => {{
+                        // 1. Nếu đang ở màn hình chọn phương thức login chung, click vào "Use phone / email / username"
+                        const methodBtn = Array.from(document.querySelectorAll('div, a, button, p, span')).find(el => {{
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return t === 'use phone / email / username' || t === 'sử dụng số điện thoại / email / tên người dùng';
+                        }});
+                        if (methodBtn && methodBtn.offsetParent !== null) {{
+                            methodBtn.click();
+                        }}
+
+                        // 2. Nếu đang ở tab Phone, click chuyển sang tab "Log in with email or username"
+                        const emailTab = Array.from(document.querySelectorAll('a, button, span, div')).find(el => {{
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return t === 'log in with email or username' || t === 'đăng nhập bằng email hoặc tên người dùng';
+                        }});
+                        if (emailTab && emailTab.offsetParent !== null) {{
+                            emailTab.click();
+                        }}
+
+                        function setReactVal(input, val) {{
+                            if (!input) return false;
+                            input.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                            input.focus();
+                            const proto = window.HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                            setter.call(input, val);
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+
+                        const u = document.querySelector('input[name="username"]') || 
+                                  document.querySelector('input[placeholder*="Email"]') || 
+                                  document.querySelector('input[placeholder*="Username"]') ||
+                                  document.querySelector('input[type="text"]');
+                        const p = document.querySelector('input[type="password"]');
+
+                        if (u && p) {{
+                            setReactVal(u, "{}");
+                            setReactVal(p, "{}");
+
+                            const btn = document.querySelector('button[type="submit"]') || 
+                                        Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
+                            if (btn) {{
+                                btn.disabled = false;
+                                btn.removeAttribute('disabled');
+                                const r = btn.getBoundingClientRect();
+                                return JSON.stringify({{
+                                    found: true,
+                                    x: r.left + r.width/2,
+                                    y: r.top + r.height/2
+                                }});
+                            }}
+                            return JSON.stringify({{ found: true, x: 0.0, y: 0.0 }});
+                        }}
+                        return JSON.stringify({{ found: false }});
+                    }})()
+                "#, login_identity.replace('\\', "\\\\").replace('"', "\\\""), pwd.replace('\\', "\\\\").replace('"', "\\\""));
+
+                let res_str = cdp.evaluate(&detect_and_fill_script).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&res_str) {
+                    if val.get("found").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        let x = val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let y = val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        if x > 0.0 && y > 0.0 {
+                            let _ = cdp.dispatch_mouse_click(x, y).await;
+                        }
+
+                        // Kích hoạt thêm submit form và btn.click()
+                        let _ = cdp.evaluate(r#"(() => {
+                            const btn = document.querySelector('button[type="submit"]') || 
+                                        Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
+                            if (btn) {
+                                btn.disabled = false;
+                                btn.removeAttribute('disabled');
+                                btn.click();
+                            }
+                            const form = document.querySelector('form');
+                            if (form) {
+                                try { form.requestSubmit(); } catch(e) {}
+                            }
+                        })()"#).await;
+
+                        self.update_log(pid, format!("✅ Đã tìm thấy form, tự động điền tài khoản: {} và click nút Log in!", login_identity), "Đã click Log in");
+                        form_found_and_submitted = true;
+                        break;
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = cdp.insert_text(&login_identity).await;
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            if !run_flag.load(Ordering::Relaxed) { return; }
 
-            // Nhập Password
-            let find_pwd_expr = r#"(() => {
-                const p = document.querySelector('input[type="password"]');
-                if (p) {
-                    p.focus();
-                    p.click();
-                    const r = p.getBoundingClientRect();
-                    return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
-                }
-                return '';
-            })()"#;
-
-            let pwd_pos = cdp.evaluate(find_pwd_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
-            if !pwd_pos.is_empty() {
-                if let Ok(c) = serde_json::from_str::<serde_json::Value>(&pwd_pos) {
-                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(200.0);
-                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(330.0);
-                    let _ = cdp.dispatch_mouse_click(x, y).await;
-                }
+            if !form_found_and_submitted {
+                self.update_log(pid, "⚠️ Không tìm thấy ô nhập Email/Mật khẩu trên trang login TikTok sau 15s. Vui lòng kiểm tra cửa sổ trình duyệt!".to_string(), "Chờ đăng nhập");
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = cdp.insert_text(pwd).await;
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            if !run_flag.load(Ordering::Relaxed) { return; }
-
-            // Đồng bộ React Synthetic Events & Mở khóa nút Log in
-            let sync_react_expr = format!(r#"
-                (() => {{
-                    function setReactVal(input, val) {{
-                        if (!input) return false;
-                        const proto = window.HTMLInputElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                        setter.call(input, val);
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                    const u = document.querySelector('input[name="username"]') || 
-                              document.querySelector('input[placeholder*="Email"]') || 
-                              document.querySelector('input[placeholder*="Username"]') ||
-                              document.querySelector('input[type="text"]');
-                    const p = document.querySelector('input[type="password"]');
-                    if (u) setReactVal(u, "{}");
-                    if (p) setReactVal(p, "{}");
-
-                    const btn = document.querySelector('button[type="submit"]') || 
-                                Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
-                    if (btn) {{
-                        btn.disabled = false;
-                        btn.removeAttribute('disabled');
-                        const r = btn.getBoundingClientRect();
-                        return JSON.stringify({{x: r.left + r.width/2, y: r.top + r.height/2}});
-                    }}
-                    return '';
-                }})()
-            "#, login_identity.replace('\\', "\\\\").replace('"', "\\\""), pwd.replace('\\', "\\\\").replace('"', "\\\""));
-
-            let btn_pos = cdp.evaluate(&sync_react_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
-            tokio::time::sleep(Duration::from_millis(300)).await;
-
-            // Click nút Log in bằng cả chuột CDP và trigger click DOM
-            if !btn_pos.is_empty() {
-                if let Ok(c) = serde_json::from_str::<serde_json::Value>(&btn_pos) {
-                    let x = c.get("x").and_then(|v| v.as_f64()).unwrap_or(200.0);
-                    let y = c.get("y").and_then(|v| v.as_f64()).unwrap_or(390.0);
-                    let _ = cdp.dispatch_mouse_click(x, y).await;
-                }
-            } else {
-                let _ = cdp.dispatch_mouse_click(200.0, 390.0).await;
-            }
-
-            let _ = cdp.evaluate(r#"(() => {
-                const btn = document.querySelector('button[type="submit"]') || 
-                            Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
-                if (btn) {
-                    btn.disabled = false;
-                    btn.removeAttribute('disabled');
-                    btn.click();
-                    return true;
-                }
-                return false;
-            })()"#).await;
-
-            self.update_log(pid, format!("Đã kích hoạt bấm nút Đăng Nhập cho: {}. Đang xác thực...", login_identity), "Chờ xác thực");
 
             // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
             let mut login_confirmed = false;
@@ -1038,10 +1033,49 @@ pub async fn sync_cookies_to_c69(acc_id: u64, cookies_json: String, username: St
     }
 }
 
+/// Lấy chi tiết tài khoản TikTok từ C69 Backend API theo Account ID
+pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, account_id);
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối server C69: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Server C69 trả về mã lỗi: {}", resp.status()));
+    }
+
+    let item: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi giải mã JSON C69: {}", e))?;
+    let u = item.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = item.get("id").and_then(|v| v.as_u64()).unwrap_or(account_id);
+    let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let pwd = item.get("password").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let two_fa = item.get("two_factor_auth").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let st = item.get("status").cloned();
+    let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    Ok(C69Account {
+        id,
+        username: u,
+        email,
+        password: pwd,
+        two_factor_auth: two_fa,
+        cookies,
+        status: st,
+        note: nt,
+    })
+}
+
 /// Lấy danh sách tài khoản TikTok từ C69 Backend API
 pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/dashboard/api/accounts/?type=tiktok&page_size=100", DEFAULT_C69_API_URL);
+    let url = format!("{}/dashboard/api/accounts/?type=tiktok&limit=100", DEFAULT_C69_API_URL);
 
     let resp = client
         .get(&url)

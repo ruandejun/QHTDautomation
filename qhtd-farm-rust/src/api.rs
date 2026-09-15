@@ -918,13 +918,22 @@ async fn browser_nurture_start_handler(
             note: None,
         })
     } else {
-        // Tìm tài khoản theo username lưu trong profile hoặc lấy từ danh sách C69
-        let all_accs = crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().unwrap_or_default();
-        if let Some(ref saved_u) = target_prof.tiktok_username {
-            all_accs.into_iter().find(|a| a.username == *saved_u)
-        } else {
-            all_accs.into_iter().next()
+        // Tìm tài khoản theo account ID hoặc username lưu trong profile hoặc lấy từ danh sách C69
+        let mut acc = None;
+        if let Some(aid) = target_prof.tiktok_account_id {
+            if let Ok(a) = crate::browser_nurture::fetch_c69_account_by_id(aid).await {
+                acc = Some(a);
+            }
         }
+        if acc.is_none() {
+            let all_accs = crate::browser_nurture::fetch_c69_tiktok_accounts().await.ok().unwrap_or_default();
+            if let Some(ref saved_u) = target_prof.tiktok_username {
+                acc = all_accs.into_iter().find(|a| a.username.eq_ignore_ascii_case(saved_u));
+            } else {
+                acc = all_accs.into_iter().next();
+            }
+        }
+        acc
     };
 
     match state.browser_nurture.start_nurture(target_prof, c69_acc).await {
@@ -970,8 +979,13 @@ async fn browser_nurture_start_selected_handler(
 
             if let Some(aid) = prof.tiktok_account_id {
                 acc_to_use = all_c69_accs.iter().find(|a| a.id == aid).cloned();
+                if acc_to_use.is_none() {
+                    if let Ok(a) = crate::browser_nurture::fetch_c69_account_by_id(aid).await {
+                        acc_to_use = Some(a);
+                    }
+                }
             } else if let Some(ref uname) = prof.tiktok_username {
-                acc_to_use = all_c69_accs.iter().find(|a| a.username == *uname).cloned();
+                acc_to_use = all_c69_accs.iter().find(|a| a.username.eq_ignore_ascii_case(uname)).cloned();
             }
 
             // Nếu profile chưa có nick: chọn random 1 nick TikTok C69 chưa bị gán
