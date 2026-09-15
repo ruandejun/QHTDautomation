@@ -111,13 +111,15 @@ def main():
 is_official_build = false
 symbol_level = 0
 blink_symbol_level = 0
+v8_symbol_level = 0
 enable_nacl = false
 is_component_build = false
 chrome_pgo_phase = 0
 treat_warnings_as_errors = false
 dcheck_always_on = false
-v8_symbol_level = 0
 enable_iterator_debugging = false
+exclude_unwind_tables = true
+enable_resource_allowlist_generation = false
 windows_sdk_version = "{sdk_ver}"
 """
     with open("out/Release/args.gn", "w", encoding="utf-8") as f:

@@ -22,6 +22,18 @@ jobs:
       contents: write
 
     steps:
+      - name: Maximize Runner Disk Space
+        shell: powershell
+        run: |
+          Write-Host "Free disk space before cleanup:"
+          Get-PSDrive C | Select-Object Used,Free
+          # Remove Android, Java, .NET SDKs to free up ~30GB
+          Remove-Item -Recurse -Force "C:\ProgramData\Microsoft\AndroidNDK" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\hostedtoolcache\windows\Java*" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\hostedtoolcache\windows\Ruby*" -ErrorAction SilentlyContinue
+          Write-Host "Free disk space after cleanup:"
+          Get-PSDrive C | Select-Object Used,Free
+
       - name: Checkout QHTD Repository
         uses: actions/checkout@v4
 
@@ -81,24 +93,19 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call ninja.bat -C out\Release chrome > ninja_build.log 2>&1
-        continue-on-error: true
+          call ninja.bat -C out\Release chrome
 
       - name: Print Ninja Error Log on Failure
-        if: always()
+        if: failure()
         shell: cmd
         run: |
           cd chromium_build\src
-          echo ================== CHECK CHROME OUTPUT ==================
+          echo ================== COMPILATION FAILED ==================
           dir out\Release\chrome.exe 2>nul || echo chrome.exe NOT FOUND
-          echo ================== COMPILATION ERROR DUMP ==================
-          if exist ninja_build.log (
-            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines if 'error:' in l.lower()][-60:]"
-            python -c "with open('ninja_build.log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-100:]]"
-          ) else (
-            echo ninja_build.log not found!
+          if exist out\Release\.ninja_log (
+            python -c "with open('out/Release/.ninja_log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-50:]]"
           )
-          echo ============================================================
+          echo =======================================================
 
       - name: Package Portable Chromium
         if: always()
