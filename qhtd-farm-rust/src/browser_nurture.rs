@@ -472,17 +472,22 @@ impl BrowserNurtureEngine {
         tokio::time::sleep(Duration::from_secs(5)).await;
         if !run_flag.load(Ordering::Relaxed) { return; }
 
-        // Kiểm tra xem đã đăng nhập chưa
+        // Kiểm tra xem đã đăng nhập chưa (Chỉ xác nhận đã login khi có Avatar và KHÔNG có nút Log In trên trang)
         let check_session_expr = r#"(() => {
-            const hasCookie = document.cookie.includes('sessionid=');
             const hasAvatar = !!(
                 document.querySelector('[data-e2e="profile-icon"]') || 
                 document.querySelector('img[alt*="avatar"]') || 
-                document.querySelector('a[href*="/@"]') ||
+                document.querySelector('a[href*="/@"]') || 
                 document.querySelector('[data-e2e="inbox-icon"]')
             );
-            const notInLogin = !window.location.href.includes('/login');
-            return hasAvatar || (hasCookie && notInLogin);
+            const hasLoginBtn = !!(
+                document.querySelector('#header-login-button') ||
+                Array.from(document.querySelectorAll('button, a')).some(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                })
+            );
+            return hasAvatar && !hasLoginBtn;
         })()"#;
 
         let already_logged_in = cdp.evaluate(check_session_expr).await.ok()
@@ -654,15 +659,21 @@ impl BrowserNurtureEngine {
 
                 // 1. Kiểm tra đăng nhập thành công
                 let login_ok_expr = r#"(() => {
-                    const hasCookie = document.cookie.includes('sessionid=');
                     const hasAvatar = !!(
                         document.querySelector('[data-e2e="profile-icon"]') || 
                         document.querySelector('img[alt*="avatar"]') || 
                         document.querySelector('a[href*="/@"]') ||
                         document.querySelector('[data-e2e="inbox-icon"]')
                     );
+                    const hasLoginBtn = !!(
+                        document.querySelector('#header-login-button') ||
+                        Array.from(document.querySelectorAll('button, a')).some(el => {
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                        })
+                    );
                     const notInLogin = !window.location.href.includes('/login');
-                    return (hasCookie || hasAvatar) && notInLogin;
+                    return (hasAvatar || (document.cookie.includes('sessionid=') && !hasLoginBtn)) && notInLogin;
                 })()"#;
                 let is_ok = cdp.evaluate(login_ok_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
                 if is_ok {
@@ -684,8 +695,22 @@ impl BrowserNurtureEngine {
                     self.update_challenge(pid, "Captcha", format!("⚠️ Phát hiện Captcha TikTok! Vui lòng kéo captcha trên cửa sổ trình duyệt (chu kỳ {}/90)...", cycle));
                 }
 
-                // 3. Kiểm tra thông báo lỗi sai mật khẩu / tài khoản
+                // 3. Kiểm tra thông báo lỗi sai mật khẩu / tài khoản / rate limit toàn diện
                 let err_expr = r#"(() => {
+                    const bodyText = (document.body ? document.body.innerText : '');
+                    if (bodyText.includes('Maximum number of attempts reached') || bodyText.includes('Try again later')) {
+                        return 'Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)';
+                    }
+                    if (bodyText.includes('Incorrect username or password') || bodyText.includes('wrong password')) {
+                        return 'Sai tên đăng nhập hoặc mật khẩu';
+                    }
+                    if (bodyText.includes('Account does not exist')) {
+                        return 'Tài khoản không tồn tại trên TikTok';
+                    }
+                    if (bodyText.includes('Too many attempts')) {
+                        return 'Quá nhiều lần thử thất bại';
+                    }
+
                     const err = document.querySelector('.tiktok-input-error') || 
                                 document.querySelector('[role="alert"]') || 
                                 document.querySelector('[class*="error-container"]') ||

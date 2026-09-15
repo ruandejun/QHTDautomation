@@ -1039,23 +1039,34 @@ async fn check_and_handle_tiktok_login_cdp(
     };
 
     if let Some(acc) = c69_acc {
-        let username_str = acc.username.clone();
+        let login_target = if let Some(ref em) = acc.email {
+            if em.contains('@') { em.clone() } else { acc.username.clone() }
+        } else {
+            acc.username.clone()
+        };
         let pwd_str = acc.password.clone().unwrap_or_default();
         let two_fa = acc.two_factor_auth.clone().unwrap_or_default();
 
-        info!("👤 [Profile #{}] Đã gắn tài khoản C69: @{}. Kiểm tra phiên đăng nhập...", profile_id, username_str);
+        info!("👤 [Profile #{}] Đã gắn tài khoản C69: {}. Kiểm tra phiên đăng nhập...", profile_id, login_target);
 
         // Script kiểm tra và tự động điền form đăng nhập nếu chưa login
         let login_script = format!(r#"
             (async () => {{
-                const hasCookie = document.cookie.includes('sessionid=');
                 const hasAvatar = !!(
                     document.querySelector('[data-e2e="profile-icon"]') || 
                     document.querySelector('img[alt*="avatar"]') || 
                     document.querySelector('a[href*="/@"]') ||
                     document.querySelector('[data-e2e="inbox-icon"]')
                 );
-                if (hasCookie || hasAvatar) {{
+                const hasLoginBtn = !!(
+                    document.querySelector('#header-login-button') ||
+                    Array.from(document.querySelectorAll('button, a')).some(el => {{
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                    }})
+                );
+
+                if (hasAvatar && !hasLoginBtn) {{
                     console.log('QHTD: Tài khoản TikTok đã đăng nhập sẵn!');
                     if (window.location.href.includes('/login')) {{
                         window.location.href = 'https://www.tiktok.com/foryou';
@@ -1070,7 +1081,21 @@ async fn check_and_handle_tiktok_login_cdp(
                     return 'redirecting_to_login';
                 }}
 
-                // Nếu đã ở trang login, tự động điền thông tin tài khoản
+                // Nếu đã ở trang login, tự động điền thông tin tài khoản bằng React Synthetic setter
+                function setReactVal(input, val) {{
+                    if (!input) return;
+                    input.focus();
+                    const proto = window.HTMLInputElement.prototype;
+                    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (desc && desc.set) {{
+                        desc.set.call(input, val);
+                    }} else {{
+                        input.value = val;
+                    }}
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+
                 const uInp = document.querySelector('input[name="username"]') || 
                              document.querySelector('input[placeholder*="Email"]') || 
                              document.querySelector('input[placeholder*="Username"]') ||
@@ -1078,26 +1103,25 @@ async fn check_and_handle_tiktok_login_cdp(
                 const pInp = document.querySelector('input[type="password"]');
 
                 if (uInp && pInp) {{
-                    uInp.focus();
-                    uInp.value = '{}';
-                    uInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    uInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    
-                    pInp.focus();
-                    pInp.value = '{}';
-                    pInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    pInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    setReactVal(uInp, '{}');
+                    setReactVal(pInp, '{}');
 
                     const submitBtn = document.querySelector('button[type="submit"]') || 
                                       Array.from(document.querySelectorAll('button')).find(b => b.innerText.trim().toLowerCase().includes('log in'));
-                    if (submitBtn && !submitBtn.disabled) {{
-                        setTimeout(() => submitBtn.click(), 800);
+                    if (submitBtn) {{
+                        submitBtn.disabled = false;
+                        submitBtn.removeAttribute('disabled');
+                        setTimeout(() => {{
+                            submitBtn.click();
+                            const form = document.querySelector('form');
+                            if (form) {{ try {{ form.requestSubmit(); }} catch(e) {{}} }}
+                        }}, 600);
                         return 'form_submitted';
                     }}
                 }}
                 return 'waiting_login_fields';
             }})()
-        "#, username_str.replace('\'', "\\'"), pwd_str.replace('\'', "\\'"));
+        "#, login_target.replace('\\', "\\\\").replace('\'', "\\'").replace('"', "\\\""), pwd_str.replace('\\', "\\\\").replace('\'', "\\'").replace('"', "\\\""));
 
         let cmd_exec = json!({
             "id": 999902,
