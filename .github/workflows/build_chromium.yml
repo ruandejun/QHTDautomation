@@ -93,7 +93,11 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call ninja.bat -C out\Release chrome
+          call ninja.bat -C out\Release chrome || (
+            echo ================== FIRST COMPILATION STOPPED - RETRYING WITH DETAILED CLANG LOG ==================
+            call ninja.bat -C out\Release chrome -j 2
+            exit 1
+          )
 
       - name: Print Ninja Error Log on Failure
         if: failure()
