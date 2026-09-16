@@ -94,6 +94,14 @@ pub struct BrowserProfile {
     pub tiktok_account_id: Option<u64>,
     #[serde(default)]
     pub tiktok_username: Option<String>,
+    #[serde(default)]
+    pub last_nurture_status: Option<String>, // "Đã nuôi thành công", "Rate limit (Chờ 1h)", "Lỗi nuôi", v.v.
+    #[serde(default)]
+    pub last_nurture_time: Option<String>, // "YYYY-MM-DD HH:mm:ss"
+    #[serde(default)]
+    pub last_nurture_error: Option<String>, // Chi tiết lỗi nếu có
+    #[serde(default)]
+    pub retry_after_epoch: Option<u64>, // UNIX timestamp được phép chạy lại (cho lỗi maximum attempts)
 }
 
 #[derive(Deserialize)]
@@ -428,6 +436,10 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
         BrowserProfile {
             id: 1,
@@ -451,6 +463,10 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
         BrowserProfile {
             id: 2,
@@ -474,6 +490,10 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (AMD)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
         BrowserProfile {
             id: 3,
@@ -497,6 +517,10 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (Intel)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
         BrowserProfile {
             id: 4,
@@ -520,6 +544,10 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
         BrowserProfile {
             id: 5,
@@ -543,11 +571,15 @@ pub fn get_default_browser_profiles() -> Vec<BrowserProfile> {
             gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
             tiktok_account_id: None,
             tiktok_username: None,
+            last_nurture_status: None,
+            last_nurture_time: None,
+            last_nurture_error: None,
+            retry_after_epoch: None,
         },
     ]
 }
 
-fn get_profiles_file_path() -> PathBuf {
+pub fn get_profiles_file_path() -> PathBuf {
     let candidates = [
         PathBuf::from(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles.json"),
         PathBuf::from("MunAutomationDesktop").join("browser_profiles.json"),
@@ -560,6 +592,45 @@ fn get_profiles_file_path() -> PathBuf {
         }
     }
     candidates[0].clone()
+}
+
+pub fn update_profile_nurture_status(
+    profile_id: usize,
+    status: &str,
+    error: Option<&str>,
+    retry_after_secs: Option<u64>,
+) {
+    let path = get_profiles_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            let mut updated = false;
+            let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let now_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            for p in &mut profiles {
+                if p.id == profile_id {
+                    p.last_nurture_status = Some(status.to_string());
+                    p.last_nurture_time = Some(now_str.clone());
+                    p.last_nurture_error = error.map(|s| s.to_string());
+                    if let Some(secs) = retry_after_secs {
+                        p.retry_after_epoch = Some(now_epoch + secs);
+                    } else if status.contains("thành công") {
+                        p.retry_after_epoch = None;
+                    }
+                    updated = true;
+                    break;
+                }
+            }
+            if updated {
+                if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+                    let _ = std::fs::write(&path, json_str);
+                }
+            }
+        }
+    }
 }
 
 async fn list_browser_profiles_handler() -> Json<Vec<BrowserProfile>> {
@@ -776,6 +847,10 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
                 gpu_vendor: Some(vend.to_string()),
                 tiktok_account_id: None,
                 tiktok_username: None,
+                last_nurture_status: None,
+                last_nurture_time: None,
+                last_nurture_error: None,
+                retry_after_epoch: None,
             }
         }
     };
@@ -906,6 +981,25 @@ async fn browser_nurture_start_handler(
 
     let target_prof = profiles[target_idx].clone();
 
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Kiểm tra nếu profile đang bị TikTok giới hạn đăng nhập (chờ 1h)
+    if let Some(retry_epoch) = target_prof.retry_after_epoch {
+        if retry_epoch > now_epoch {
+            let remain_mins = (retry_epoch - now_epoch + 59) / 60;
+            return Json(serde_json::json!({
+                "success": false,
+                "message": format!(
+                    "⚠️ Profile #{} đang trong thời gian chờ giãn cách (Maximum attempts). Vui lòng chờ thêm {} phút (đủ 1 giờ) trước khi login lại để tránh bị TikTok khóa tài khoản!",
+                    payload.profile_id, remain_mins
+                )
+            }));
+        }
+    }
+
     let c69_acc = if let (Some(u), Some(p)) = (payload.c69_username, payload.c69_password) {
         Some(crate::browser_nurture::C69Account {
             id: payload.c69_account_id.unwrap_or(0),
@@ -962,6 +1056,11 @@ async fn browser_nurture_start_selected_handler(
     let c69_proxies = crate::browser_nurture::load_c69_proxies();
     let auto_proxy = payload.auto_assign_c69_proxy.unwrap_or(true);
 
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
     // Thu thập các tài khoản đã bị gán cho profile nào đó
     let mut used_acc_ids: std::collections::HashSet<u64> = profiles
         .iter()
@@ -969,12 +1068,23 @@ async fn browser_nurture_start_selected_handler(
         .collect();
 
     let mut started_count = 0;
+    let mut skipped_rate_limited = Vec::new();
     let mut modified = false;
     let mut proxy_cursor = 0;
 
     for pid in payload.profile_ids {
         if let Some(idx) = profiles.iter().position(|p| p.id == pid) {
             let prof = &mut profiles[idx];
+
+            // Bỏ qua nếu profile đang trong thời gian chờ 1h
+            if let Some(retry_epoch) = prof.retry_after_epoch {
+                if retry_epoch > now_epoch {
+                    let remain_mins = (retry_epoch - now_epoch + 59) / 60;
+                    skipped_rate_limited.push((pid, remain_mins));
+                    continue;
+                }
+            }
+
             let mut acc_to_use = None;
 
             if let Some(aid) = prof.tiktok_account_id {
@@ -1020,10 +1130,20 @@ async fn browser_nurture_start_selected_handler(
         }
     }
 
+    let skip_msg = if !skipped_rate_limited.is_empty() {
+        let details = skipped_rate_limited.iter()
+            .map(|(id, m)| format!("#{} (chờ {}p)", id, m))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" Đã bỏ qua {} profile đang chờ giãn cách 1h: [{}].", skipped_rate_limited.len(), details)
+    } else {
+        String::new()
+    };
+
     Json(serde_json::json!({
         "success": true,
         "count": started_count,
-        "message": format!("Đã kích hoạt nuôi TikTok cho {} profiles được chọn!", started_count)
+        "message": format!("Đã kích hoạt nuôi TikTok cho {} profiles được chọn!{}", started_count, skip_msg)
     }))
 }
 
@@ -1075,6 +1195,10 @@ async fn browser_nurture_create_and_nurture_handler(
         gpu_vendor: Some(vend.to_string()),
         tiktok_account_id: Some(payload.c69_account_id),
         tiktok_username: Some(payload.c69_username.clone()),
+        last_nurture_status: None,
+        last_nurture_time: None,
+        last_nurture_error: None,
+        retry_after_epoch: None,
     };
 
     profiles.push(new_profile.clone());
@@ -2229,6 +2353,8 @@ async fn dashboard_handler() -> Html<&'static str> {
                         <div style="color:var(--text-muted); font-size:11px; margin-top:2px;">Kích hoạt luồng xem video FYP, tự động thả tim & lướt chuyển bài như người thật.</div>
                     </div>
 
+                    <div id="nurture-modal-rate-limit-warning" style="display:none; background:rgba(249,115,22,0.15); border:1px solid #f97316; color:#fdba74; border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.5;"></div>
+
                     <div>
                         <label style="font-size:11px; color:var(--text-muted); margin-bottom:4px; display:block;">Chọn Tài Khoản TikTok từ C69.US:</label>
                         <select id="nurture-c69-acc-select" style="width:100%; background:var(--bg-card-hover); border:1px solid var(--border); color:#fff; padding:8px; border-radius:6px; font-size:12px;">
@@ -3123,7 +3249,11 @@ async fn dashboard_handler() -> Html<&'static str> {
                     engineBadge = `<span class="badge-engine-hybrid" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Native C++">🔥 Hybrid (2 Lớp)</span>`;
                 }
 
-                let statusBadge = `<span class="badge-status-stopped">⚪ Đã tắt</span>`;
+                let statusBadge = `<span class="badge-status-stopped">⚪ Chưa nuôi</span>`;
+                const nowEpoch = Math.floor(Date.now() / 1000);
+                const isRateLimited = p.retry_after_epoch && p.retry_after_epoch > nowEpoch;
+                const remainMins = isRateLimited ? Math.ceil((p.retry_after_epoch - nowEpoch) / 60) : 0;
+
                 if (isNurturing) {
                     if (nurture.waiting_otp) {
                         statusBadge = `<div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
@@ -3144,6 +3274,31 @@ async fn dashboard_handler() -> Html<&'static str> {
                     }
                 } else if (isRunning) {
                     statusBadge = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>`;
+                } else if (isRateLimited) {
+                    statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || 'Maximum attempts reached').replace(/"/g, '&quot;')}">
+                        <span style="background:rgba(249,115,22,0.2); border:1px solid #f97316; color:#fdba74; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                            ⏳ Chờ 1h (còn ${remainMins}p)
+                        </span>
+                        <span style="font-size:9px; color:#fb923c;">${p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : ''} • Limit login</span>
+                    </div>`;
+                } else if (p.last_nurture_status) {
+                    if (p.last_nurture_status.includes('thành công')) {
+                        statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || 'Đã nuôi thành công').replace(/"/g, '&quot;')}">
+                            <span style="background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#6ee7b7; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                ✅ Đã nuôi OK
+                            </span>
+                            <span style="font-size:9px; color:#94a3b8;">${p.last_nurture_time ? p.last_nurture_time.slice(5, 16) : ''}</span>
+                        </div>`;
+                    } else {
+                        statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || p.last_nurture_status).replace(/"/g, '&quot;')}">
+                            <span style="background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#fca5a5; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                ❌ ${p.last_nurture_status}
+                            </span>
+                            <span style="font-size:9px; color:#ef4444; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                ${p.last_nurture_error ? p.last_nurture_error.slice(0, 24) + '…' : (p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : '')}
+                            </span>
+                        </div>`;
+                    }
                 }
 
                 const tiktokBadge = p.tiktok_username 
@@ -3230,6 +3385,34 @@ async fn dashboard_handler() -> Html<&'static str> {
             document.getElementById('nurture-custom-proxy-box').style.display = 'none';
             document.getElementById('nurture-custom-proxy-input').value = '';
             document.getElementById('nurture-custom-proxy-test-result').innerHTML = '';
+
+            // Cập nhật cảnh báo rate limit hoặc lịch sử nuôi nếu có
+            const warnBox = document.getElementById('nurture-modal-rate-limit-warning');
+            if (warnBox) {
+                const nowSec = Math.floor(Date.now() / 1000);
+                if (p.retry_after_epoch && p.retry_after_epoch > nowSec) {
+                    const m = Math.ceil((p.retry_after_epoch - nowSec) / 60);
+                    warnBox.style.display = 'block';
+                    warnBox.style.background = 'rgba(249, 115, 22, 0.18)';
+                    warnBox.style.borderColor = '#f97316';
+                    warnBox.style.color = '#fdba74';
+                    warnBox.innerHTML = `⚠️ <b>Khuyến cáo giãn cách 1 giờ:</b> Profile này vừa gặp lỗi <i>Maximum number of attempts</i> lúc ${p.last_nurture_time || ''}. Cần chờ thêm <b>${m} phút</b> nữa (đủ 1h) trước khi đăng nhập lại để tránh TikTok tính spam và kéo dài thời gian phạt!`;
+                } else if (p.last_nurture_error) {
+                    warnBox.style.display = 'block';
+                    warnBox.style.background = 'rgba(239, 68, 68, 0.12)';
+                    warnBox.style.borderColor = '#ef4444';
+                    warnBox.style.color = '#fca5a5';
+                    warnBox.innerHTML = `ℹ️ <b>Lịch sử lần nuôi trước:</b> ${p.last_nurture_status || 'Gặp lỗi'} (${p.last_nurture_time || ''})<br><span style="font-size:11px; color:#cbd5e1;">${p.last_nurture_error}</span>`;
+                } else if (p.last_nurture_status && p.last_nurture_status.includes('thành công')) {
+                    warnBox.style.display = 'block';
+                    warnBox.style.background = 'rgba(16, 185, 129, 0.12)';
+                    warnBox.style.borderColor = '#10b981';
+                    warnBox.style.color = '#6ee7b7';
+                    warnBox.innerHTML = `✅ <b>Lần nuôi trước thành công:</b> ${p.last_nurture_time || ''} (${p.last_nurture_error || 'Đã lướt FYP'})`;
+                } else {
+                    warnBox.style.display = 'none';
+                }
+            }
 
             const selectEl = document.getElementById('nurture-c69-acc-select');
             selectEl.innerHTML = `<option value="">⏳ Đang tải tài khoản từ C69.us...</option>`;

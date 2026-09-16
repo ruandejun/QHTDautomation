@@ -340,6 +340,21 @@ impl BrowserNurtureEngine {
             return Err(format!("Profile #{} đang chạy nuôi TikTok rồi!", profile_id));
         }
 
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if let Some(retry_epoch) = profile.retry_after_epoch {
+            if retry_epoch > now_epoch {
+                let remain_mins = (retry_epoch - now_epoch + 59) / 60;
+                return Err(format!(
+                    "Profile #{} đang bị giới hạn đăng nhập (Maximum attempts). Vui lòng chờ thêm {} phút (đủ 1 giờ) trước khi login lại!",
+                    profile_id, remain_mins
+                ));
+            }
+        }
+
         let run_flag = Arc::new(AtomicBool::new(true));
         self.tasks.write().insert(profile_id, run_flag.clone());
 
@@ -915,11 +930,15 @@ impl BrowserNurtureEngine {
         }
 
         // Hoàn tất hoặc dừng
+        let summary = format!("Đã xem {} video, thả tim {} lượt", watched_count, likes_count);
         self.update_log(
             pid, 
-            format!("Chu trình nuôi hoàn tất. Tổng đã xem: {} video, thả tim: {} lượt.", watched_count, likes_count), 
+            format!("Chu trình nuôi hoàn tất. Tổng {}.", summary), 
             "Đã dừng"
         );
+        if watched_count > 0 {
+            crate::api::update_profile_nurture_status(pid, "Đã nuôi thành công", Some(&summary), None);
+        }
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
             st.status = "Đã dừng".to_string();
@@ -945,9 +964,22 @@ impl BrowserNurtureEngine {
 
     fn set_error(&self, pid: usize, err: String) {
         error!("❌ [Profile #{}] Lỗi nuôi TikTok: {}", pid, err);
+        let err_lower = err.to_lowercase();
+        let is_max_attempts = err_lower.contains("maximum number of attempts") 
+            || err_lower.contains("try again later")
+            || err_lower.contains("too many attempts");
+
+        let (status_label, retry_after, short_st) = if is_max_attempts {
+            ("Rate limit (Chờ 1h)", Some(3600), "Chờ 1h")
+        } else {
+            ("Lỗi nuôi", None, "Lỗi")
+        };
+
+        crate::api::update_profile_nurture_status(pid, status_label, Some(&err), retry_after);
+
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
-            st.status = "Lỗi".to_string();
+            st.status = short_st.to_string();
             st.last_log = err;
         }
         if let Some(f) = self.tasks.read().get(&pid) {
@@ -1181,6 +1213,10 @@ pub async fn sync_c69_profiles_to_local(profiles_path: PathBuf) -> Result<usize,
                 gpu_vendor: Some("Google Inc. (NVIDIA)".into()),
                 tiktok_account_id: None,
                 tiktok_username: None,
+                last_nurture_status: None,
+                last_nurture_time: None,
+                last_nurture_error: None,
+                retry_after_epoch: None,
             });
             count_added += 1;
         }

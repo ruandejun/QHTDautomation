@@ -20,7 +20,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16555,
-    "tiktok_username": "quang.minh.i58"
+    "tiktok_username": "quang.minh.i58",
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-16 10:41:43",
+    "last_nurture_error": "Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
+    "retry_after_epoch": 1789533703
   },
   {
     "id": 1,
@@ -134,8 +138,8 @@
     "profile_audio": null,
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
-    "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_account_id": 16810,
+    "tiktok_username": "2_monicafmroquio"
   },
   {
     "id": 6,
