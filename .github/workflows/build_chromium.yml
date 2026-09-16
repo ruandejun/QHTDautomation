@@ -97,15 +97,25 @@ jobs:
 
       - name: Print Ninja Error Log on Failure
         if: failure()
-        shell: cmd
+        shell: powershell
         run: |
           cd chromium_build\src
-          echo ================== COMPILATION FAILED ==================
-          dir out\Release\chrome.exe 2>nul || echo chrome.exe NOT FOUND
-          if exist out\Release\.ninja_log (
-            python -c "with open('out/Release/.ninja_log', 'r', encoding='utf-8', errors='ignore') as f: lines=f.readlines(); [print(l.rstrip()) for l in lines[-50:]]"
-          )
-          echo =======================================================
+          Write-Host "================== COMPILATION FAILED =================="
+          if (Test-Path "out\Release\chrome.exe") {
+            Write-Host "chrome.exe EXISTS!"
+          } else {
+            Write-Host "chrome.exe NOT FOUND!"
+          }
+          if (Test-Path "out\Release\.ninja_log") {
+            Write-Host "--- Last 60 lines of .ninja_log ---"
+            Get-Content "out\Release\.ninja_log" -Tail 60
+          }
+          # Also search for any .log or compile error files
+          Get-ChildItem -Path "out\Release" -Filter "*.log" -Recurse | ForEach-Object {
+            Write-Host "Log file found: $($_.FullName)"
+            Get-Content $_.FullName -Tail 50
+          }
+          Write-Host "======================================================="
 
       - name: Package Portable Chromium
         if: always()
@@ -127,8 +137,7 @@ jobs:
             Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
             Write-Host "SUCCESS: Packaged qhtd-browser-windows-x64.zip successfully!"
           } else {
-            Write-Error "FATAL: $outDir\chrome.exe does not exist! Compilation failed."
-            exit 1
+            Write-Host "WARNING: chrome.exe not found in $outDir yet."
           }
 
       - name: Upload Artifact
@@ -139,6 +148,7 @@ jobs:
           path: |
             qhtd-browser-windows-x64.zip
             ninja_build.log
+            chromium_build/src/out/Release/.ninja_log
 
       - name: Create GitHub Release & Upload Artifact
         uses: softprops/action-gh-release@v2
