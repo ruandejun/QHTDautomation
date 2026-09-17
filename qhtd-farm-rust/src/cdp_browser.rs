@@ -694,6 +694,184 @@ pub fn stop_cdp_profile(profile_id: usize) {
     mark_profile_inactive(profile_id);
 }
 
+/// Khởi chạy Local SOCKS5 Bridge trong Tokio background để Chrome kết nối không cần pass
+/// và Bridge tự động thực hiện xác thực RFC 1929 SOCKS5 với upstream remote proxy.
+pub async fn spawn_socks5_bridge(
+    remote_host: String,
+    remote_port: u16,
+    remote_user: Option<String>,
+    remote_pass: Option<String>,
+) -> Result<(u16, tokio::sync::oneshot::Sender<()>), String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Không thể mở local port cho proxy bridge: {}", e))?;
+    let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    break;
+                }
+                accept_res = listener.accept() => {
+                    match accept_res {
+                        Ok((client_stream, _)) => {
+                            let r_host = remote_host.clone();
+                            let r_port = remote_port;
+                            let r_user = remote_user.clone();
+                            let r_pass = remote_pass.clone();
+                            tokio::spawn(async move {
+                                let _ = handle_socks5_bridge_client(client_stream, r_host, r_port, r_user, r_pass).await;
+                            });
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+    });
+
+    Ok((local_port, shutdown_tx))
+}
+
+async fn handle_socks5_bridge_client(
+    mut client: tokio::net::TcpStream,
+    remote_host: String,
+    remote_port: u16,
+    remote_user: Option<String>,
+    remote_pass: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // 1. Chrome -> Bridge: Handshake
+    let mut ver_methods = [0u8; 256];
+    let n = client.read(&mut ver_methods).await?;
+    if n < 2 || ver_methods[0] != 0x05 {
+        return Ok(());
+    }
+    // Accept NO AUTHENTICATION (0x05, 0x00)
+    client.write_all(&[0x05, 0x00]).await?;
+
+    // 2. Chrome -> Bridge: Connect Request
+    let mut req_hdr = [0u8; 4];
+    client.read_exact(&mut req_hdr).await?;
+    if req_hdr[0] != 0x05 || req_hdr[1] != 0x01 {
+        return Ok(());
+    }
+    let atyp = req_hdr[3];
+    let mut full_req = req_hdr.to_vec();
+    match atyp {
+        0x01 => {
+            let mut buf = [0u8; 6];
+            client.read_exact(&mut buf).await?;
+            full_req.extend_from_slice(&buf);
+        }
+        0x03 => {
+            let mut len_byte = [0u8; 1];
+            client.read_exact(&mut len_byte).await?;
+            full_req.push(len_byte[0]);
+            let mut domain_and_port = vec![0u8; len_byte[0] as usize + 2];
+            client.read_exact(&mut domain_and_port).await?;
+            full_req.extend_from_slice(&domain_and_port);
+        }
+        0x04 => {
+            let mut buf = [0u8; 18];
+            client.read_exact(&mut buf).await?;
+            full_req.extend_from_slice(&buf);
+        }
+        _ => return Ok(()),
+    }
+
+    // 3. Connect to remote upstream SOCKS5 server
+    let target = format!("{}:{}", remote_host, remote_port);
+    let mut upstream = match tokio::time::timeout(
+        Duration::from_secs(12),
+        tokio::net::TcpStream::connect(&target)
+    ).await {
+        Ok(Ok(s)) => s,
+        _ => {
+            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+            return Ok(());
+        }
+    };
+
+    // 4. Negotiate authentication with upstream
+    if let (Some(u), Some(p)) = (remote_user, remote_pass) {
+        upstream.write_all(&[0x05, 0x01, 0x02]).await?;
+        let mut method_choice = [0u8; 2];
+        upstream.read_exact(&mut method_choice).await?;
+        if method_choice[0] != 0x05 || method_choice[1] != 0x02 {
+            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+            return Ok(());
+        }
+
+        let mut auth_buf = Vec::with_capacity(3 + u.len() + p.len());
+        auth_buf.push(0x01);
+        auth_buf.push(u.len() as u8);
+        auth_buf.extend_from_slice(u.as_bytes());
+        auth_buf.push(p.len() as u8);
+        auth_buf.extend_from_slice(p.as_bytes());
+        upstream.write_all(&auth_buf).await?;
+
+        let mut auth_resp = [0u8; 2];
+        upstream.read_exact(&mut auth_resp).await?;
+        if auth_resp[1] != 0x00 {
+            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+            return Ok(());
+        }
+    } else {
+        upstream.write_all(&[0x05, 0x01, 0x00]).await?;
+        let mut method_choice = [0u8; 2];
+        upstream.read_exact(&mut method_choice).await?;
+        if method_choice[0] != 0x05 || method_choice[1] != 0x00 {
+            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+            return Ok(());
+        }
+    }
+
+    // 5. Forward connect request to upstream
+    upstream.write_all(&full_req).await?;
+
+    // 6. Read upstream reply header and forward to client
+    let mut reply_hdr = [0u8; 4];
+    upstream.read_exact(&mut reply_hdr).await?;
+    let rep_atyp = reply_hdr[3];
+
+    let mut reply_buf = Vec::new();
+    reply_buf.extend_from_slice(&reply_hdr);
+    match rep_atyp {
+        0x01 => {
+            let mut b = [0u8; 6];
+            upstream.read_exact(&mut b).await?;
+            reply_buf.extend_from_slice(&b);
+        }
+        0x03 => {
+            let mut dlen = [0u8; 1];
+            upstream.read_exact(&mut dlen).await?;
+            reply_buf.push(dlen[0]);
+            let mut dbuf = vec![0u8; dlen[0] as usize + 2];
+            upstream.read_exact(&mut dbuf).await?;
+            reply_buf.extend_from_slice(&dbuf);
+        }
+        0x04 => {
+            let mut b = [0u8; 18];
+            upstream.read_exact(&mut b).await?;
+            reply_buf.extend_from_slice(&b);
+        }
+        _ => {}
+    }
+    client.write_all(&reply_buf).await?;
+
+    if reply_hdr[1] != 0x00 {
+        return Ok(());
+    }
+
+    // 7. Bidirectional streaming
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    Ok(())
+}
+
 /// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
     let mode = profile.engine_mode.as_deref().unwrap_or("native");
@@ -812,11 +990,37 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
     let use_proxy = !profile.proxy_type.eq_ignore_ascii_case("direct") && !profile.proxy_string.trim().is_empty();
+    let mut proxy_bridge_shutdown: Option<tokio::sync::oneshot::Sender<()>> = None;
+
     if use_proxy {
         if let Some(parsed_proxy) = parse_proxy_string_with_type(&profile.proxy_string, &profile.proxy_type) {
-            let server_arg = parsed_proxy.server_arg();
-            info!("🛡️ Cấu hình Proxy [{}] cho Profile #{}: {}", parsed_proxy.scheme.to_uppercase(), profile.id, server_arg);
-            cmd.arg(format!("--proxy-server={}", server_arg));
+            let has_auth = parsed_proxy.username.is_some() && parsed_proxy.password.is_some();
+            let is_socks = parsed_proxy.scheme.starts_with("socks");
+
+            if is_socks && has_auth {
+                // Chromium không hỗ trợ xác thực RFC 1929 SOCKS5 user/pass trực tiếp từ command line.
+                // Khởi tạo Local In-Process SOCKS5 Bridge không cần auth cho Chrome kết nối!
+                match spawn_socks5_bridge(
+                    parsed_proxy.host.clone(),
+                    parsed_proxy.port,
+                    parsed_proxy.username.clone(),
+                    parsed_proxy.password.clone(),
+                ).await {
+                    Ok((local_port, tx)) => {
+                        info!("🚀 Đã kích hoạt Local SOCKS5 Bridge 127.0.0.1:{} -> {}:{} cho Profile #{}", local_port, parsed_proxy.host, parsed_proxy.port, profile.id);
+                        cmd.arg(format!("--proxy-server=socks5://127.0.0.1:{}", local_port));
+                        proxy_bridge_shutdown = Some(tx);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Không thể mở Local SOCKS5 Bridge ({}), fallback sang direct flag", e);
+                        cmd.arg(format!("--proxy-server={}", parsed_proxy.server_arg()));
+                    }
+                }
+            } else {
+                let server_arg = parsed_proxy.server_arg();
+                info!("🛡️ Cấu hình Proxy [{}] cho Profile #{}: {}", parsed_proxy.scheme.to_uppercase(), profile.id, server_arg);
+                cmd.arg(format!("--proxy-server={}", server_arg));
+            }
 
             // WebRTC Leak Protection: Bắt buộc định tuyến WebRTC qua Proxy hoặc tắt hẳn
             let webrtc_mode = profile.webrtc_mode.as_deref().unwrap_or("proxy_only");
@@ -828,12 +1032,12 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                     .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
             }
 
-        // Nếu proxy có xác thực Username / Password:
-        // Tự động sinh Chrome Proxy Auth Extension vào thư mục user_data_dir của profile
-        if let (Some(u), Some(p)) = (&parsed_proxy.username, &parsed_proxy.password) {
-            let ext_dir = user_data_dir.join("qhtd_proxy_auth_ext");
-            if let Ok(_) = std::fs::create_dir_all(&ext_dir) {
-                let manifest = r#"{
+            // Nếu là HTTP proxy có auth: nạp Extension cho HTTP
+            if !is_socks && has_auth {
+                if let (Some(u), Some(p)) = (&parsed_proxy.username, &parsed_proxy.password) {
+                    let ext_dir = user_data_dir.join("qhtd_proxy_auth_ext");
+                    if let Ok(_) = std::fs::create_dir_all(&ext_dir) {
+                        let manifest = r#"{
   "version": "1.0.0",
   "manifest_version": 2,
   "name": "QHTD Anti-Detect Proxy Auth",
@@ -851,10 +1055,10 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
   },
   "minimum_chrome_version": "22.0.0"
 }"#;
-                let _ = std::fs::write(ext_dir.join("manifest.json"), manifest);
+                        let _ = std::fs::write(ext_dir.join("manifest.json"), manifest);
 
-                let bg_js = format!(
-                    r#"chrome.webRequest.onAuthRequired.addListener(
+                        let bg_js = format!(
+                            r#"chrome.webRequest.onAuthRequired.addListener(
     function(details) {{
         return {{
             authCredentials: {{
@@ -866,17 +1070,18 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     {{urls: ["<all_urls>"]}},
     ['blocking']
 );"#,
-                    u.replace('\\', "\\\\").replace('"', "\\\""),
-                    p.replace('\\', "\\\\").replace('"', "\\\"")
-                );
-                let _ = std::fs::write(ext_dir.join("background.js"), bg_js);
+                            u.replace('\\', "\\\\").replace('"', "\\\""),
+                            p.replace('\\', "\\\\").replace('"', "\\\"")
+                        );
+                        let _ = std::fs::write(ext_dir.join("background.js"), bg_js);
 
-                cmd.arg(format!("--load-extension={}", ext_dir.display()));
-                info!("🔐 Đã nạp Proxy Auth Extension cho Profile #{} (User: {})", profile.id, u);
+                        cmd.arg(format!("--load-extension={}", ext_dir.display()));
+                        info!("🔐 Đã nạp Proxy Auth Extension cho Profile #{} (User: {})", profile.id, u);
+                    }
+                }
             }
         }
     }
-}
 
     // Các switches C++ Native Anti-Detect (Được nhận diện trực tiếp bởi QHTD Custom Chromium)
     cmd.arg(format!("--qhtd-hardware-concurrency={}", cpu))
@@ -893,11 +1098,14 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let p_id = profile.id;
     mark_profile_active(p_id);
 
-    // Theo dõi tiến trình Chrome nền, khi tắt thì cập nhật trạng thái
+    // Theo dõi tiến trình Chrome nền, khi tắt thì cập nhật trạng thái và giải phóng bridge
     std::thread::spawn(move || {
         let _ = child.wait();
         info!("🛑 Cửa sổ Chrome của Profile #{} đã đóng.", p_id);
         mark_profile_inactive(p_id);
+        if let Some(tx) = proxy_bridge_shutdown {
+            let _ = tx.send(());
+        }
     });
 
     // Chờ Chrome mở cổng DevTools

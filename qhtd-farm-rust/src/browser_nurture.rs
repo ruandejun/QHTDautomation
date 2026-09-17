@@ -1576,8 +1576,10 @@ pub fn load_c69_proxies() -> Vec<C69Proxy> {
     Vec::new()
 }
 
-/// Kiểm tra kết nối TCP tới Proxy và đo độ trễ (latency ms)
+/// Kiểm tra kết nối TCP và xác thực SOCKS5 tới Proxy và đo độ trễ (latency ms)
 pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     let parsed = match crate::cdp_browser::parse_proxy_string(proxy_str) {
         Some(p) => p,
         None => return (false, 0, "Định dạng proxy không hợp lệ".to_string()),
@@ -1586,17 +1588,51 @@ pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
     let target = format!("{}:{}", parsed.host, parsed.port);
     let start = std::time::Instant::now();
 
-    match tokio::time::timeout(
-        Duration::from_millis(4000),
+    let mut stream = match tokio::time::timeout(
+        Duration::from_millis(5000),
         tokio::net::TcpStream::connect(&target)
     ).await {
-        Ok(Ok(_)) => {
-            let latency = start.elapsed().as_millis() as u64;
-            let msg = format!("Proxy Live (Độ trễ: {}ms)", latency);
-            (true, latency, msg)
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return (false, 0, format!("Không thể kết nối đến {}: {}", target, e)),
+        Err(_) => return (false, 0, format!("Kết nối đến {} bị timeout (> 5000ms)", target)),
+    };
+
+    if parsed.scheme.starts_with("socks") {
+        if let (Some(u), Some(p)) = (&parsed.username, &parsed.password) {
+            // Test SOCKS5 Greeting with method 0x02
+            if let Err(e) = stream.write_all(&[0x05, 0x01, 0x02]).await {
+                return (false, 0, format!("Lỗi gửi SOCKS5 greeting: {}", e));
+            }
+            let mut choice = [0u8; 2];
+            if let Err(e) = stream.read_exact(&mut choice).await {
+                return (false, 0, format!("Lỗi đọc phản hồi SOCKS5: {}", e));
+            }
+            if choice[0] != 0x05 || choice[1] != 0x02 {
+                return (false, 0, "Proxy từ chối phương thức xác thực Username/Password".to_string());
+            }
+
+            // Send RFC 1929 auth
+            let mut auth_buf = Vec::new();
+            auth_buf.push(0x01);
+            auth_buf.push(u.len() as u8);
+            auth_buf.extend_from_slice(u.as_bytes());
+            auth_buf.push(p.len() as u8);
+            auth_buf.extend_from_slice(p.as_bytes());
+
+            if let Err(e) = stream.write_all(&auth_buf).await {
+                return (false, 0, format!("Lỗi gửi SOCKS5 auth: {}", e));
+            }
+            let mut auth_resp = [0u8; 2];
+            if let Err(e) = stream.read_exact(&mut auth_resp).await {
+                return (false, 0, format!("Lỗi đọc SOCKS5 auth response: {}", e));
+            }
+            if auth_resp[1] != 0x00 {
+                return (false, 0, "❌ SOCKS5 Auth thất bại: Sai User/Pass hoặc Proxy hết hạn/băng thông".to_string());
+            }
         }
-        Ok(Err(e)) => (false, 0, format!("Không thể kết nối đến {}: {}", target, e)),
-        Err(_) => (false, 0, format!("Kết nối đến {} bị timeout (> 4000ms)", target)),
     }
+
+    let latency = start.elapsed().as_millis() as u64;
+    (true, latency, format!("Proxy Live (Độ trễ: {}ms)", latency))
 }
 
