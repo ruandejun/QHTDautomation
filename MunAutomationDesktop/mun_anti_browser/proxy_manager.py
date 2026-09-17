@@ -81,41 +81,54 @@ class ProxyManager:
         if not proxy_string:
             return None
 
-        config = ProxyConfig(proxy_type=proxy_type, raw=proxy_string)
+        # Clean scheme prefix (socks5://, http://, https://)
+        parsed_type = proxy_type
+        clean_str = proxy_string
+        if "://" in clean_str:
+            scheme, clean_str = clean_str.split("://", 1)
+            parsed_type = scheme.lower()
+
+        config = ProxyConfig(proxy_type=parsed_type, raw=proxy_string)
 
         try:
-            if "@" in proxy_string:
+            if "@" in clean_str:
                 # Format: user:pass@ip:port
-                auth_part, address_part = proxy_string.split("@", 1)
-                config.ip = address_part.split(":")[0]
-                config.port = address_part.split(":")[1]
-                config.username = auth_part.split(":")[0]
-                config.password = auth_part.split(":")[1]
-
-            elif "#" in proxy_string:
-                # Format: ip:port#user:pass
-                address_part, auth_part = proxy_string.split("#", 1)
+                auth_part, address_part = clean_str.split("@", 1)
                 config.ip = address_part.split(":")[0].strip()
-                config.port = address_part.split(":")[1].strip()
-                config.username = auth_part.split(":")[0].strip()
-                config.password = auth_part.split(":")[1].strip()
+                config.port = address_part.split(":")[1].strip().split("/")[0]
+                if ":" in auth_part:
+                    config.username, config.password = auth_part.split(":", 1)
+                else:
+                    config.username = auth_part
+                    config.password = ""
+
+            elif "#" in clean_str:
+                # Format: ip:port#user:pass
+                address_part, auth_part = clean_str.split("#", 1)
+                config.ip = address_part.split(":")[0].strip()
+                config.port = address_part.split(":")[1].strip().split("/")[0]
+                if ":" in auth_part:
+                    config.username, config.password = auth_part.split(":", 1)
+                else:
+                    config.username = auth_part
+                    config.password = ""
 
             elif username and password:
                 # External auth provided
-                parts = proxy_string.split(":")
-                config.ip = parts[0]
-                config.port = parts[1]
+                parts = clean_str.split(":")
+                config.ip = parts[0].strip()
+                config.port = parts[1].strip().split("/")[0]
                 config.username = username
                 config.password = password
 
-            elif ":" in proxy_string:
-                parts = proxy_string.split(":")
-                config.ip = parts[0]
-                config.port = parts[1]
+            elif ":" in clean_str:
+                parts = clean_str.split(":")
+                config.ip = parts[0].strip()
+                config.port = parts[1].strip().split("/")[0]
                 if len(parts) == 4:
                     # Format: ip:port:user:pass
-                    config.username = parts[2]
-                    config.password = parts[3]
+                    config.username = parts[2].strip()
+                    config.password = parts[3].strip()
 
             else:
                 logger.warning(f"Cannot parse proxy string: {proxy_string}")

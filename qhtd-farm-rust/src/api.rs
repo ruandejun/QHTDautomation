@@ -4256,7 +4256,9 @@ async fn dashboard_handler() -> Html<&'static str> {
                     const picked = data.proxies[Math.floor(Math.random() * data.proxies.length)];
                     typeEl.value = 'socks5';
                     input.disabled = false;
-                    input.value = picked.proxy_string;
+                    input.value = picked.proxy_string || ((picked.username && picked.password)
+                        ? `socks5://${picked.username}:${picked.password}@${picked.host}:${picked.port}`
+                        : `socks5://${picked.host}:${picked.port}`);
                     const isEdit = inputId.includes('edit');
                     testModalProxy(isEdit ? 'edit' : 'create');
                 } else {

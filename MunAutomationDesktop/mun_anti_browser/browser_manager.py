@@ -307,7 +307,7 @@ class NodriverBrowserManager:
             args.append("--blink-settings=imagesEnabled=false")
 
         # Proxy
-        proxy_str = proxy_string or profile_config.get("profile_socks5_details") or profile_config.get("profile_proxy_details", "")
+        proxy_str = proxy_string or profile_config.get("proxy_string") or profile_config.get("profile_socks5_details") or profile_config.get("profile_proxy_details", "")
         if proxy_str:
             proxy_config = self.proxy_manager.parse(
                 proxy_str, proxy_type, proxy_username, proxy_password,

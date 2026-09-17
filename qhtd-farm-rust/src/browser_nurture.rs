@@ -1530,6 +1530,8 @@ pub struct C69Proxy {
     pub password: Option<String>,
     pub status: Option<String>,
     pub latency: Option<i32>,
+    #[serde(default)]
+    pub proxy_string: Option<String>,
 }
 
 impl C69Proxy {
@@ -1560,7 +1562,10 @@ pub fn load_c69_proxies() -> Vec<C69Proxy> {
                     if let Some(arr) = val.get("proxies").and_then(|v| v.as_array()) {
                         let mut proxies = Vec::new();
                         for item in arr {
-                            if let Ok(proxy) = serde_json::from_value::<C69Proxy>(item.clone()) {
+                            if let Ok(mut proxy) = serde_json::from_value::<C69Proxy>(item.clone()) {
+                                if proxy.proxy_string.is_none() {
+                                    proxy.proxy_string = Some(proxy.to_proxy_string());
+                                }
                                 proxies.push(proxy);
                             }
                         }
