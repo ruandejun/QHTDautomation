@@ -1414,6 +1414,7 @@ async fn check_and_handle_tiktok_login_cdp(
         let two_fa = acc.two_factor_auth.clone().unwrap_or_default();
 
         info!("👤 [Profile #{}] Đã gắn tài khoản C69: {}. Kiểm tra phiên đăng nhập...", profile_id, login_target);
+        crate::api::update_profile_nurture_status(profile_id, "Kiểm tra đăng nhập", None, None);
 
         // Script kiểm tra và tự động điền form đăng nhập nếu chưa login
         let login_script = format!(r#"

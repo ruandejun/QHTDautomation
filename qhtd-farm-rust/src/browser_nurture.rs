@@ -287,9 +287,10 @@ impl BrowserNurtureEngine {
         if let Some(st) = self.statuses.write().get_mut(&profile_id) {
             st.waiting_otp = true;
             st.challenge_type = Some(challenge_type.to_string());
-            st.status = format!("Chờ mã {}", challenge_type);
-            st.last_log = log_msg;
+            st.status = format!("Chờ giải {}", challenge_type);
+            st.last_log = log_msg.clone();
         }
+        crate::api::update_profile_nurture_status(profile_id, &format!("Thách thức: {}", challenge_type), Some(&log_msg), None);
     }
 
     pub fn clear_challenge(&self, profile_id: usize) {
@@ -662,7 +663,21 @@ impl BrowserNurtureEngine {
             }
 
             if !form_found_and_submitted {
-                self.update_log(pid, "⚠️ Không tìm thấy ô nhập Email/Mật khẩu trên trang login TikTok sau 15s. Vui lòng kiểm tra cửa sổ trình duyệt!".to_string(), "Chờ đăng nhập");
+                // Kiểm tra xem trang có bị lỗi mạng / SOCKS5 không
+                let page_check = cdp.evaluate(r#"(() => {
+                    const txt = (document.body ? document.body.innerText : '');
+                    if (txt.includes('ERR_SOCKS') || txt.includes('This site can’t be reached') || txt.includes('ERR_CONNECTION')) {
+                        return 'Lỗi mạng SOCKS5: Không thể kết nối tới tiktok.com (ERR_SOCKS_CONNECTION_FAILED)';
+                    }
+                    return '';
+                })()"#).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+
+                if !page_check.is_empty() {
+                    self.set_error(pid, page_check);
+                    return;
+                }
+
+                self.update_log(pid, "⚠️ Không tìm thấy ô nhập Email/Mật khẩu trên trang login TikTok sau 15s. Vui lòng kiểm tra cửa sổ trình duyệt!".to_string(), "Chờ form login");
             }
 
             // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
@@ -713,9 +728,12 @@ impl BrowserNurtureEngine {
                     self.update_challenge(pid, "Captcha", format!("⚠️ Phát hiện Captcha TikTok! Vui lòng kéo captcha trên cửa sổ trình duyệt (chu kỳ {}/90)...", cycle));
                 }
 
-                // 3. Kiểm tra thông báo lỗi sai mật khẩu / tài khoản / rate limit toàn diện
+                // 3. Kiểm tra thông báo lỗi sai mật khẩu / tài khoản / rate limit / lỗi mạng SOCKS5 toàn diện
                 let err_expr = r#"(() => {
                     const bodyText = (document.body ? document.body.innerText : '');
+                    if (bodyText.includes('ERR_SOCKS') || bodyText.includes('ERR_CONNECTION_REFUSED') || bodyText.includes('This site can’t be reached')) {
+                        return 'Lỗi mạng SOCKS5 Proxy (ERR_SOCKS_CONNECTION_FAILED hoặc mất mạng)';
+                    }
                     if (bodyText.includes('Maximum number of attempts reached') || bodyText.includes('Try again later')) {
                         return 'Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)';
                     }
@@ -1101,9 +1119,11 @@ impl BrowserNurtureEngine {
 
     fn update_log(&self, pid: usize, log: String, status: &str) {
         if let Some(st) = self.statuses.write().get_mut(&pid) {
-            st.last_log = log;
+            st.last_log = log.clone();
             st.status = status.to_string();
         }
+        // Đồng bộ trạng thái mới nhất ra database profile (hiển thị ngay lập tức trên Dashboard UI)
+        crate::api::update_profile_nurture_status(pid, status, None, None);
     }
 
     fn update_stats(&self, pid: usize, watched: u32, likes: u32, comments: u32, log: String, status: &str) {
@@ -1111,9 +1131,10 @@ impl BrowserNurtureEngine {
             st.videos_watched = watched;
             st.likes_given = likes;
             st.comments_posted = comments;
-            st.last_log = log;
+            st.last_log = log.clone();
             st.status = status.to_string();
         }
+        crate::api::update_profile_nurture_status(pid, status, None, None);
     }
 
     fn set_error(&self, pid: usize, err: String) {
@@ -1122,14 +1143,23 @@ impl BrowserNurtureEngine {
         let is_max_attempts = err_lower.contains("maximum number of attempts") 
             || err_lower.contains("try again later")
             || err_lower.contains("too many attempts");
+        let is_wrong_pwd = err_lower.contains("sai tên đăng nhập") || err_lower.contains("sai mật khẩu") || err_lower.contains("incorrect username or password");
+        let is_not_exist = err_lower.contains("không tồn tại") || err_lower.contains("does not exist");
         let is_email_error = err_lower.contains("lỗi đọc email");
+        let is_socks_error = err_lower.contains("err_socks") || err_lower.contains("proxy") || err_lower.contains("kết nối");
 
         let (status_label, retry_after, short_st) = if is_max_attempts {
             ("Rate limit (Chờ 1h)", Some(3600), "Chờ 1h")
+        } else if is_wrong_pwd {
+            ("Lỗi: Sai tài khoản/mật khẩu", None, "Sai mật khẩu")
+        } else if is_not_exist {
+            ("Lỗi: Tài khoản không tồn tại", None, "Không tồn tại")
+        } else if is_socks_error {
+            ("Lỗi SOCKS5 Proxy", None, "Lỗi Proxy")
         } else if is_email_error {
-            ("Lỗi đọc email", None, "Lỗi đọc email")
+            ("Lỗi đọc email", None, "Lỗi email")
         } else {
-            ("Lỗi nuôi", None, "Lỗi")
+            ("Lỗi nuôi/đăng nhập", None, "Lỗi")
         };
 
         crate::api::update_profile_nurture_status(pid, status_label, Some(&err), retry_after);
@@ -1143,6 +1173,7 @@ impl BrowserNurtureEngine {
             f.store(false, Ordering::Relaxed);
         }
     }
+
 }
 
 /// Điền mã OTP vào ô nhập (hỗ trợ cả 6 ô ký tự riêng biệt và 1 ô tổng hợp) và bấm nút xác nhận
