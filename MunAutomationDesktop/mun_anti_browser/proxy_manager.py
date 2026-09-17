@@ -12,8 +12,9 @@ all connections through the authenticated remote SOCKS5 proxy using PySocks.
 import logging
 import socket
 import threading
+import time
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Union, Dict, Any
 
 import socks as pysocks
 
@@ -338,3 +339,93 @@ class ProxyManager:
             "webrtc.multiple_routes_enabled": False,
             "webrtc.nonproxied_udp_enabled": False,
         }
+
+    @staticmethod
+    def test_connection(
+        proxy: Union[str, ProxyConfig],
+        timeout: float = 10.0,
+        target_host: str = "www.google.com",
+        target_port: int = 80,
+    ) -> Dict[str, Any]:
+        """
+        Test if a proxy is alive and measure round-trip handshake latency in milliseconds.
+        Supports both SOCKS5 (with/without RFC 1929 auth) and HTTP proxies.
+        """
+        # Normalize input
+        if isinstance(proxy, str):
+            cfg = ProxyManager.parse(proxy)
+            if cfg is None:
+                return {
+                    "alive": False,
+                    "latency_ms": -1.0,
+                    "error": f"Failed to parse proxy string (Missing proxy IP or port): {proxy}",
+                    "proxy_address": proxy,
+                    "proxy_type": "",
+                }
+        elif isinstance(proxy, ProxyConfig):
+            cfg = proxy
+        else:
+            return {
+                "alive": False,
+                "latency_ms": -1.0,
+                "error": "Invalid proxy parameter type",
+                "proxy_address": "",
+                "proxy_type": "",
+            }
+
+        if not cfg.ip or not cfg.port:
+            return {
+                "alive": False,
+                "latency_ms": -1.0,
+                "error": "Missing proxy IP or port",
+                "proxy_address": cfg.address,
+                "proxy_type": cfg.proxy_type,
+            }
+
+        try:
+            port_num = int(cfg.port)
+        except ValueError:
+            return {
+                "alive": False,
+                "latency_ms": -1.0,
+                "error": f"Invalid port number: {cfg.port}",
+                "proxy_address": cfg.address,
+                "proxy_type": cfg.proxy_type,
+            }
+
+        proxy_type_flag = pysocks.SOCKS5 if cfg.proxy_type.lower() == "socks5" else pysocks.HTTP
+        sock = pysocks.socksocket()
+        sock.settimeout(timeout)
+
+        start_time = time.perf_counter()
+        try:
+            sock.set_proxy(
+                proxy_type=proxy_type_flag,
+                addr=cfg.ip,
+                port=port_num,
+                username=cfg.username if cfg.username else None,
+                password=cfg.password if cfg.password else None,
+            )
+            sock.connect((target_host, target_port))
+            latency_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
+            sock.close()
+            return {
+                "alive": True,
+                "latency_ms": latency_ms,
+                "error": None,
+                "proxy_address": cfg.address,
+                "proxy_type": cfg.proxy_type,
+            }
+        except Exception as e:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            return {
+                "alive": False,
+                "latency_ms": -1.0,
+                "error": str(e),
+                "proxy_address": cfg.address,
+                "proxy_type": cfg.proxy_type,
+            }
+

@@ -35,3 +35,11 @@ Before submitting code changes, perform a review across 5 axes:
 4. **Backend Collectstatic & Rebuild Assets:** Chạy `python manage.py collectstatic --noinput` trong container backend (và build frontend nếu có thay đổi UI).
 5. **Restart Docker Containers:** Restart service `docker restart <backend> <frontend> <nginx>` hoặc `docker compose up -d --force-recreate`.
 6. **Live Verification & Kiểm Tra Cập Nhật:** Curl endpoint live (`curl -s -I <url>`), kiểm tra HTTP 200 OK và xác thực code mới live 100%.
+
+## 4. Dây Chuyền 4 Agent Nối Ca (Four-Agent Pipeline — Chuẩn Cốt Lõi)
+Mọi thay đổi tính năng hoặc bugfix đều bắt buộc tuân thủ 4 vai trò nối ca qua thư mục .bangiao/:
+1. **Planner (.bangiao/ke-hoach.md)**: Thiết kế kỹ thuật, phân tích interface & edge cases. Tuyệt đối không gõ code. Mơ hồ thì dừng hỏi.
+2. **Coder (.bangiao/thay-doi.md)**: Chỉ thi công đúng theo kế hoạch, tuân thủ Chesterton\'s Fence, không sửa ngoài scope.
+3. **Tester (.bangiao/ket-qua-test.md)**: Viết unit/behavioral test độc lập. Chạy test. Test rớt thì dừng lại, cấm sửa code sản phẩm để ép test xanh.
+4. **Reviewer (.bangiao/danh-gia.md)**: Read-only, soi git diff và ra phán quyết CHOT / CAN SUA / CHAN.
+5. **Chốt chặn con người**: Tony là người duyệt cuối cùng trước khi gộp nhánh (merge). Cấm tự ý merge vào nhánh chính.
