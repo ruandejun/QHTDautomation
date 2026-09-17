@@ -46,8 +46,12 @@
     "profile_audio": null,
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
-    "tiktok_account_id": 16554,
-    "tiktok_username": "h.xun.anh52"
+    "tiktok_account_id": 16809,
+    "tiktok_username": "3_bsantana.yandra",
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-16 11:43:07",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
+    "retry_after_epoch": 1789537387
   },
   {
     "id": 2,
@@ -70,7 +74,11 @@
     "gpu_renderer": "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (AMD)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 3,
@@ -93,7 +101,11 @@
     "gpu_renderer": "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (Intel)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 4,
@@ -116,7 +128,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 5,
@@ -139,7 +155,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16810,
-    "tiktok_username": "2_monicafmroquio"
+    "tiktok_username": "2_monicafmroquio",
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 6,
@@ -162,7 +182,11 @@
     "gpu_renderer": "Mali-G715 Immortalis MC11",
     "gpu_vendor": "ARM",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 7,
@@ -185,7 +209,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 8,
@@ -208,7 +236,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 9,
@@ -231,7 +263,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-16 11:52:44",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
+    "retry_after_epoch": 1789537964
   },
   {
     "id": 10,
@@ -254,7 +290,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 11,
@@ -277,7 +317,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 12,
@@ -300,7 +344,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 13,
@@ -323,7 +371,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 14,
@@ -346,7 +398,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 15,
@@ -369,7 +425,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 16,
@@ -392,7 +452,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 17,
@@ -415,7 +479,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 18,
@@ -438,7 +506,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 19,
@@ -461,7 +533,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 20,
@@ -484,7 +560,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 21,
@@ -507,7 +587,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 22,
@@ -530,7 +614,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 23,
@@ -553,7 +641,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 24,
@@ -576,7 +668,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 25,
@@ -599,7 +695,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 26,
@@ -622,7 +722,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 27,
@@ -645,7 +749,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 28,
@@ -668,7 +776,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 29,
@@ -691,7 +803,11 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 30,
@@ -714,6 +830,91 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
-    "tiktok_username": null
+    "tiktok_username": null,
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
+  },
+  {
+    "id": 31,
+    "name": "Profile #31 - Socks5 250m (23.27.210.99)",
+    "engine_mode": "js_stealth",
+    "profile_user_agent": "",
+    "profile_os": "Windows",
+    "profile_resolution": "1920x1080",
+    "profile_cpu": 8,
+    "profile_ram": 16,
+    "proxy_string": "socks5://iifcuwil:o6jm2azbq5gs@23.27.210.99:6469",
+    "proxy_type": "socks5",
+    "profile_start_url": "https://www.tiktok.com",
+    "canvas_seed": 20031000,
+    "audio_seed": 30031000,
+    "webrtc_mode": "proxy_only",
+    "profile_canvas": null,
+    "profile_webgl": null,
+    "profile_audio": null,
+    "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "gpu_vendor": "Google Inc. (NVIDIA)",
+    "tiktok_account_id": 16810,
+    "tiktok_username": "2_monicafmroquio",
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
+  },
+  {
+    "id": 32,
+    "name": "Profile #32 - Socks5 250m (50.114.98.173)",
+    "engine_mode": "js_stealth",
+    "profile_user_agent": "",
+    "profile_os": "Windows",
+    "profile_resolution": "1920x1080",
+    "profile_cpu": 8,
+    "profile_ram": 16,
+    "proxy_string": "socks5://iifcuwil:o6jm2azbq5gs@50.114.98.173:5657",
+    "proxy_type": "socks5",
+    "profile_start_url": "https://www.tiktok.com",
+    "canvas_seed": 20032000,
+    "audio_seed": 30032000,
+    "webrtc_mode": "proxy_only",
+    "profile_canvas": null,
+    "profile_webgl": null,
+    "profile_audio": null,
+    "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "gpu_vendor": "Google Inc. (NVIDIA)",
+    "tiktok_account_id": 16809,
+    "tiktok_username": "3_bsantana.yandra",
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
+  },
+  {
+    "id": 33,
+    "name": "Profile #33 - Socks5 250m (104.164.131.28)",
+    "engine_mode": "js_stealth",
+    "profile_user_agent": "",
+    "profile_os": "Windows",
+    "profile_resolution": "1920x1080",
+    "profile_cpu": 8,
+    "profile_ram": 16,
+    "proxy_string": "socks5://iifcuwil:o6jm2azbq5gs@104.164.131.28:7207",
+    "proxy_type": "socks5",
+    "profile_start_url": "https://www.tiktok.com",
+    "canvas_seed": 20033000,
+    "audio_seed": 30033000,
+    "webrtc_mode": "proxy_only",
+    "profile_canvas": null,
+    "profile_webgl": null,
+    "profile_audio": null,
+    "gpu_renderer": "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "gpu_vendor": "Google Inc. (AMD)",
+    "tiktok_account_id": 16808,
+    "tiktok_username": "user1520468208572",
+    "last_nurture_status": null,
+    "last_nurture_time": null,
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   }
 ]

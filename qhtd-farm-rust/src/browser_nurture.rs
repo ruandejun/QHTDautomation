@@ -42,6 +42,8 @@ pub struct BrowserNurtureStatus {
     pub status: String,
     pub videos_watched: u32,
     pub likes_given: u32,
+    #[serde(default)]
+    pub comments_posted: u32,
     pub is_running: bool,
     pub last_log: String,
     #[serde(default)]
@@ -375,6 +377,7 @@ impl BrowserNurtureEngine {
             status: "Đang khởi động Anti-Browser...".to_string(),
             videos_watched: 0,
             likes_given: 0,
+            comments_posted: 0,
             is_running: true,
             last_log: "Bắt đầu chu trình nuôi TikTok kết hợp C69...".to_string(),
             waiting_otp: false,
@@ -888,6 +891,7 @@ impl BrowserNurtureEngine {
         // 6. VÒNG LẶP NUÔI TƯƠNG TÁC FYP (Human-Behavior Simulation)
         let mut watched_count = 0u32;
         let mut likes_count = 0u32;
+        let mut comments_count = 0u32;
 
         while run_flag.load(Ordering::Relaxed) {
             watched_count += 1;
@@ -897,6 +901,7 @@ impl BrowserNurtureEngine {
                 pid, 
                 watched_count, 
                 likes_count, 
+                comments_count,
                 format!("Đang xem video FYP #{} ({} giây)...", watched_count, watch_seconds), 
                 "Đang lướt FYP"
             );
@@ -916,10 +921,84 @@ impl BrowserNurtureEngine {
                     pid, 
                     watched_count, 
                     likes_count, 
+                    comments_count,
                     format!("❤️ Đã thả tim video #{}!", watched_count), 
                     "Đang lướt FYP"
                 );
                 tokio::time::sleep(Duration::from_millis(800)).await;
+            }
+
+            // Tự động bình luận ngẫu nhiên (mỗi 5-7 video hoặc xác suất 20%)
+            let will_comment = (watched_count % 6 == 0) || rand::thread_rng().gen_bool(0.20);
+            if will_comment {
+                let open_comment_js = r#"(() => {
+                    const commentBtn = document.querySelector('[data-e2e="comment-icon"]') || 
+                                       document.querySelector('[data-e2e="feed-comment-icon"]');
+                    if (commentBtn) { commentBtn.click(); return true; }
+                    return false;
+                })()"#;
+                if let Ok(opened) = cdp.evaluate(open_comment_js).await {
+                    if opened.as_bool().unwrap_or(false) {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let focus_js = r#"(() => {
+                            const box = document.querySelector('[data-e2e="comment-input"]') || 
+                                        document.querySelector('div[contenteditable="true"]') ||
+                                        document.querySelector('.DraftEditor-editorContainer');
+                            if (box) {
+                                box.focus();
+                                const r = box.getBoundingClientRect();
+                                return JSON.stringify({ found: true, x: r.left + 50, y: r.top + r.height/2 });
+                            }
+                            return JSON.stringify({ found: false });
+                        })()"#;
+                        if let Ok(f_val) = cdp.evaluate(focus_js).await {
+                            if let Some(f_str) = f_val.as_str() {
+                                if let Ok(coord) = serde_json::from_str::<serde_json::Value>(f_str) {
+                                    if coord.get("found").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                        let cx = coord.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                        let cy = coord.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                        if cx > 0.0 && cy > 0.0 {
+                                            let _ = cdp.dispatch_mouse_click(cx, cy).await;
+                                            tokio::time::sleep(Duration::from_millis(500)).await;
+                                            let comments_pool = [
+                                                "So amazing! ❤️",
+                                                "Great video! 🔥",
+                                                "Nice content! 👏",
+                                                "Love this! ✨",
+                                                "Awesome! 👍",
+                                                "Super cool! 😊",
+                                            ];
+                                            let pick = comments_pool[rand::thread_rng().gen_range(0..comments_pool.len())];
+                                            let _ = cdp.insert_text(pick).await;
+                                            tokio::time::sleep(Duration::from_millis(800)).await;
+
+                                            let post_js = r#"(() => {
+                                                const postBtn = document.querySelector('[data-e2e="comment-post"]') || 
+                                                                Array.from(document.querySelectorAll('div, button')).find(b => {
+                                                                    const t = (b.innerText || '').trim().toLowerCase();
+                                                                    return t === 'post' || t === 'đăng';
+                                                                });
+                                                if (postBtn) { postBtn.click(); return true; }
+                                                return false;
+                                            })()"#;
+                                            let _ = cdp.evaluate(post_js).await;
+                                            comments_count += 1;
+                                            self.update_stats(
+                                                pid,
+                                                watched_count,
+                                                likes_count,
+                                                comments_count,
+                                                format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count),
+                                                "Đang lướt FYP"
+                                            );
+                                            tokio::time::sleep(Duration::from_secs(2)).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Chuyển sang video kế tiếp bằng phím mũi tên xuống (ArrowDown)
@@ -930,7 +1009,7 @@ impl BrowserNurtureEngine {
         }
 
         // Hoàn tất hoặc dừng
-        let summary = format!("Đã xem {} video, thả tim {} lượt", watched_count, likes_count);
+        let summary = format!("Đã xem {} video, thả tim {} lượt, đăng {} bình luận", watched_count, likes_count, comments_count);
         self.update_log(
             pid, 
             format!("Chu trình nuôi hoàn tất. Tổng {}.", summary), 
@@ -953,10 +1032,11 @@ impl BrowserNurtureEngine {
         }
     }
 
-    fn update_stats(&self, pid: usize, watched: u32, likes: u32, log: String, status: &str) {
+    fn update_stats(&self, pid: usize, watched: u32, likes: u32, comments: u32, log: String, status: &str) {
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.videos_watched = watched;
             st.likes_given = likes;
+            st.comments_posted = comments;
             st.last_log = log;
             st.status = status.to_string();
         }
