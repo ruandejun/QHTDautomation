@@ -94,8 +94,8 @@ jobs:
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
           call ninja.bat -C out\Release chrome || (
-            echo ================== FIRST COMPILATION STOPPED - RETRYING WITH DETAILED CLANG LOG ==================
-            call ninja.bat -C out\Release chrome -j 2
+            echo ================== FIRST COMPILATION STOPPED - RETRYING WITH CLANG LOG ==================
+            call ninja.bat -C out\Release chrome -j 1 -k 0
             exit 1
           )
 
