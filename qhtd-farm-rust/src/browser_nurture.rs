@@ -32,6 +32,8 @@ pub struct C69Account {
     pub status: Option<serde_json::Value>,
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default)]
+    pub accounts_emails: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -521,6 +523,7 @@ impl BrowserNurtureEngine {
 
         if already_logged_in {
             self.update_log(pid, "✅ Phát hiện phiên đăng nhập TikTok có sẵn trong profile! Sẵn sàng vào FYP...".to_string(), "Đã đăng nhập");
+            let _ = crate::cdp_browser::backup_thin_profile(pid);
             tokio::time::sleep(Duration::from_secs(2)).await;
         } else {
             // Chưa đăng nhập -> Cần thực hiện quy trình đăng nhập
@@ -665,6 +668,8 @@ impl BrowserNurtureEngine {
             // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
             let mut login_confirmed = false;
             let mut totp_submitted = false;
+            let mut email_otp_submitted = false;
+            let mut email_otp_poll_count = 0u32;
 
             for cycle in 1..=90 {
                 if !run_flag.load(Ordering::Relaxed) { return; }
@@ -832,9 +837,76 @@ impl BrowserNurtureEngine {
                                 }
                             }
 
-                            // Cập nhật trạng thái chờ nhập mã xác thực
-                            if is_email || is_phone || (is_2fa && !totp_submitted) {
-                                let c_type = if is_email { "Email OTP" } else if is_phone { "SMS OTP" } else { "2FA" };
+                            // Xử lý tự động Email OTP từ C69 Email Database
+                            if is_email && !email_otp_submitted {
+                                email_otp_poll_count += 1;
+                                let mut email_id_opt = acc.accounts_emails;
+                                if email_id_opt.is_none() {
+                                    if let Some(ref em) = acc.email {
+                                        if let Ok(found_id) = find_c69_email_id_by_address(em).await {
+                                            email_id_opt = found_id;
+                                        }
+                                    }
+                                }
+
+                                if let Some(eid) = email_id_opt {
+                                    if email_otp_poll_count == 1 {
+                                        self.update_log(
+                                            pid, 
+                                            format!("🔑 TikTok yêu cầu xác minh Email! Đang tự động đọc mã OTP từ C69 Email Database (Email ID: #{})...", eid), 
+                                            "Đang đọc Email OTP"
+                                        );
+                                    } else {
+                                        self.update_log(
+                                            pid, 
+                                            format!("Đang kiểm tra hòm thư C69 để lấy OTP (Email ID: #{}, lần {}/15)...", eid, email_otp_poll_count), 
+                                            "Đang đọc Email OTP"
+                                        );
+                                    }
+
+                                    match fetch_c69_email_otp(eid).await {
+                                        Ok(Some(otp_code)) => {
+                                            self.update_log(
+                                                pid, 
+                                                format!("🎉 Lấy mã OTP thành công từ Email Database C69: {}! Đang tự động điền...", otp_code), 
+                                                "Tự giải Email OTP"
+                                            );
+                                            let _ = fill_and_submit_otp(&cdp, &otp_code).await;
+                                            email_otp_submitted = true;
+                                            tokio::time::sleep(Duration::from_secs(3)).await;
+                                        }
+                                        Ok(None) => {
+                                            if email_otp_poll_count >= 15 {
+                                                let err_msg = format!("Lỗi đọc email: Đã quá thời gian chờ OTP từ Email ID #{} (hòm thư chưa nhận được mã). Vui lòng kiểm tra lại sau!", eid);
+                                                self.set_error(pid, format!("❌ {}", err_msg));
+                                                let aid = acc.id;
+                                                tokio::spawn(async move {
+                                                    let _ = update_c69_account_note(aid, &err_msg).await;
+                                                });
+                                                return;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let err_msg = format!("Lỗi đọc email: Không thể truy cập hòm thư C69 (Email ID #{}) [{}]. Vui lòng kiểm tra lại tài khoản email trên C69!", eid, e);
+                                            self.set_error(pid, format!("❌ {}", err_msg));
+                                            let aid = acc.id;
+                                            tokio::spawn(async move {
+                                                let _ = update_c69_account_note(aid, &err_msg).await;
+                                            });
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    let err_msg = "Lỗi đọc email: Tài khoản TikTok chưa liên kết Email ID hoặc không tìm thấy địa chỉ email trong C69 Email Database để lấy OTP!".to_string();
+                                    self.set_error(pid, format!("❌ {}", err_msg));
+                                    let aid = acc.id;
+                                    tokio::spawn(async move {
+                                        let _ = update_c69_account_note(aid, &err_msg).await;
+                                    });
+                                    return;
+                                }
+                            } else if is_phone || (is_2fa && !totp_submitted) {
+                                let c_type = if is_phone { "SMS OTP" } else { "2FA" };
                                 self.update_challenge(
                                     pid, 
                                     c_type, 
@@ -880,6 +952,7 @@ impl BrowserNurtureEngine {
             }
 
             self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đã lưu phiên Cookies. Đang chuyển sang Feed FYP...".to_string(), "Đăng nhập thành công");
+            let _ = crate::cdp_browser::backup_thin_profile(pid);
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
 
@@ -1018,6 +1091,7 @@ impl BrowserNurtureEngine {
         if watched_count > 0 {
             crate::api::update_profile_nurture_status(pid, "Đã nuôi thành công", Some(&summary), None);
         }
+        let _ = crate::cdp_browser::backup_thin_profile(pid);
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
             st.status = "Đã dừng".to_string();
@@ -1048,9 +1122,12 @@ impl BrowserNurtureEngine {
         let is_max_attempts = err_lower.contains("maximum number of attempts") 
             || err_lower.contains("try again later")
             || err_lower.contains("too many attempts");
+        let is_email_error = err_lower.contains("lỗi đọc email");
 
         let (status_label, retry_after, short_st) = if is_max_attempts {
             ("Rate limit (Chờ 1h)", Some(3600), "Chờ 1h")
+        } else if is_email_error {
+            ("Lỗi đọc email", None, "Lỗi đọc email")
         } else {
             ("Lỗi nuôi", None, "Lỗi")
         };
@@ -1171,6 +1248,8 @@ pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, Stri
     let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
     let st = item.get("status").cloned();
     let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let acc_emails = item.get("accounts_emails").and_then(|v| v.as_u64())
+        .or_else(|| item.get("email_info").and_then(|v| v.get("id")).and_then(|v| v.as_u64()));
 
     Ok(C69Account {
         id,
@@ -1181,6 +1260,7 @@ pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, Stri
         cookies,
         status: st,
         note: nt,
+        accounts_emails: acc_emails,
     })
 }
 
@@ -1214,6 +1294,9 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
             let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
             let st = item.get("status").cloned();
             let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let acc_emails = item.get("accounts_emails").and_then(|v| v.as_u64())
+                .or_else(|| item.get("email_info").and_then(|v| v.get("id")).and_then(|v| v.as_u64()));
+
             accounts.push(C69Account {
                 id,
                 username: u.to_string(),
@@ -1223,11 +1306,136 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
                 cookies,
                 status: st,
                 note: nt,
+                accounts_emails: acc_emails,
             });
         }
     }
 
     Ok(accounts)
+}
+
+/// Trích xuất mã OTP 6 chữ số từ chuỗi văn bản
+pub fn extract_6digit_otp(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    for i in 0..len {
+        if i + 6 <= len {
+            let slice = &text[i..i + 6];
+            if slice.chars().all(|c| c.is_ascii_digit()) {
+                let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+                let next_ok = i + 6 == len || !bytes[i + 6].is_ascii_digit();
+                if prev_ok && next_ok {
+                    return Some(slice.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Tìm kiếm email ID trên C69 theo địa chỉ email
+pub async fn find_c69_email_id_by_address(email_addr: &str) -> Result<Option<u64>, String> {
+    let client = reqwest::Client::new();
+    let encoded = urlencoding::encode(email_addr.trim());
+    let url = format!("{}/dashboard/api/emails/?search={}", DEFAULT_C69_API_URL, encoded);
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .timeout(Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối C69 tìm email: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("C69 API trả về mã lỗi: {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi giải mã JSON C69: {}", e))?;
+    if let Some(arr) = data.get("results").and_then(|v| v.as_array()) {
+        if let Some(first) = arr.first() {
+            if let Some(id) = first.get("id").and_then(|v| v.as_u64()) {
+                return Ok(Some(id));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Đọc hòm thư email trên C69 và tự động trích xuất mã OTP TikTok 6 số
+pub async fn fetch_c69_email_otp(email_id: u64) -> Result<Option<String>, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/emails/{}/read-mailbox/", DEFAULT_C69_API_URL, email_id);
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối đọc hòm thư: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69 đọc hòm thư: HTTP {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON hòm thư: {}", e))?;
+    let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !success {
+        let msg = data.get("error").or_else(|| data.get("message")).and_then(|v| v.as_str()).unwrap_or("Không thể kết nối hòm thư Microsoft");
+        return Err(msg.to_string());
+    }
+
+    // 1. Kiểm tra email_data.latest_code
+    if let Some(email_data) = data.get("email_data") {
+        if let Some(latest_code) = email_data.get("latest_code").and_then(|v| v.as_str()) {
+            let clean = latest_code.trim();
+            if clean.len() == 6 && clean.chars().all(|c| c.is_ascii_digit()) {
+                return Ok(Some(clean.to_string()));
+            }
+        }
+    }
+
+    // 2. Quét danh sách emails nhận được
+    if let Some(emails) = data.get("emails").and_then(|v| v.as_array()) {
+        for email in emails {
+            let from_str = email.get("from").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+            let snippet = email.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+            let body = email.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+            let is_from_tiktok = from_str.contains("tiktok") || subject.to_lowercase().contains("tiktok") || body.to_lowercase().contains("tiktok");
+            if is_from_tiktok || subject.to_lowercase().contains("verification") || subject.to_lowercase().contains("mã xác") {
+                if let Some(otp) = extract_6digit_otp(subject) {
+                    return Ok(Some(otp));
+                }
+                if let Some(otp) = extract_6digit_otp(snippet) {
+                    return Ok(Some(otp));
+                }
+                if let Some(otp) = extract_6digit_otp(body) {
+                    return Ok(Some(otp));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Cập nhật ghi chú trên tài khoản C69 (ví dụ: ghi lại lỗi đọc email)
+pub async fn update_c69_account_note(account_id: u64, note: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, account_id);
+    let payload = json!({ "note": note });
+
+    let _ = client
+        .patch(&url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .json(&payload)
+        .send()
+        .await;
+
+    Ok(())
 }
 
 /// Đồng bộ Profiles từ C69 Profile API và lưu vào browser_profiles.json

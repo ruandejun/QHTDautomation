@@ -1010,6 +1010,7 @@ async fn browser_nurture_start_handler(
             cookies: None,
             status: None,
             note: None,
+            accounts_emails: None,
         })
     } else {
         // Tìm tài khoản theo account ID hoặc username lưu trong profile hoặc lấy từ danh sách C69
@@ -1215,6 +1216,7 @@ async fn browser_nurture_create_and_nurture_handler(
         cookies: None,
         status: None,
         note: None,
+        accounts_emails: None,
     };
 
     match state.browser_nurture.start_nurture(new_profile, Some(c69_acc)).await {

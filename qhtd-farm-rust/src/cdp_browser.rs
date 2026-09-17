@@ -9,9 +9,13 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 use parking_lot::RwLock;
+use std::io::{Read, Write};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
+use zip::write::SimpleFileOptions;
+use zip::CompressionMethod;
+use zip::{ZipArchive, ZipWriter};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ParsedProxy {
@@ -535,11 +539,158 @@ fn cleanup_profile_process_and_locks(profile_id: usize, user_data_dir: &std::pat
     let _ = std::fs::remove_file(user_data_dir.join("lockfile"));
 }
 
-/// Dừng profile Chrome đang chạy và xóa trạng thái
+/// Lấy thư mục lưu trữ các bản sao lưu Thin Profile (.zip)
+pub fn get_profile_backup_dir() -> PathBuf {
+    let p1 = PathBuf::from(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\profile_backups");
+    if p1.parent().map(|p| p.exists()).unwrap_or(false) {
+        let _ = std::fs::create_dir_all(&p1);
+        return p1;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p2 = parent.join("profile_backups");
+            let _ = std::fs::create_dir_all(&p2);
+            return p2;
+        }
+    }
+    let fallback = PathBuf::from("profile_backups");
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
+}
+
+/// Helper duyệt tất cả các file trong thư mục con
+fn walk_dir_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walk_dir_files(&path));
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Sao lưu Thin Profile (chỉ nén 7 file/thư mục phiên cốt lõi: Local State, Cookies, Storage... ~200KB/profile)
+pub fn backup_thin_profile(profile_id: usize) -> Result<(PathBuf, u64), String> {
+    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    if !user_data_dir.exists() {
+        return Err(format!("Thư mục profile không tồn tại: {}", user_data_dir.display()));
+    }
+
+    let backup_dir = get_profile_backup_dir();
+    let zip_path = backup_dir.join(format!("profile_{}.zip", profile_id));
+    let temp_zip_path = backup_dir.join(format!("profile_{}.tmp.zip", profile_id));
+
+    let file = std::fs::File::create(&temp_zip_path)
+        .map_err(|e| format!("Không thể tạo file zip tạm: {}", e))?;
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated);
+
+    let essential_paths = [
+        "Local State",
+        "Default/Preferences",
+        "Default/Network",
+        "Default/Local Storage",
+        "Default/Session Storage",
+        "Default/IndexedDB",
+        "Default/Web Data",
+    ];
+
+    let mut total_files = 0usize;
+
+    for rel_path_str in &essential_paths {
+        let os_rel = rel_path_str.replace('/', &std::path::MAIN_SEPARATOR.to_string());
+        let target_path = user_data_dir.join(&os_rel);
+        if !target_path.exists() {
+            continue;
+        }
+
+        if target_path.is_file() {
+            if let Ok(mut f) = std::fs::File::open(&target_path) {
+                let zip_entry_name = rel_path_str.replace('\\', "/");
+                if zip.start_file(&zip_entry_name, options).is_ok() {
+                    let mut buf = Vec::new();
+                    if f.read_to_end(&mut buf).is_ok() {
+                        let _ = zip.write_all(&buf);
+                        total_files += 1;
+                    }
+                }
+            }
+        } else if target_path.is_dir() {
+            for entry in walk_dir_files(&target_path) {
+                if let Ok(rel) = entry.strip_prefix(&user_data_dir) {
+                    let zip_entry_name = rel.to_string_lossy().replace('\\', "/");
+                    if entry.is_file() {
+                        if let Ok(mut f) = std::fs::File::open(&entry) {
+                            if zip.start_file(&zip_entry_name, options).is_ok() {
+                                let mut buf = Vec::new();
+                                if f.read_to_end(&mut buf).is_ok() {
+                                    let _ = zip.write_all(&buf);
+                                    total_files += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    zip.finish().map_err(|e| format!("Lỗi hoàn tất nén zip: {}", e))?;
+
+    // Đổi tên nguyên tử (Atomic replace)
+    let _ = std::fs::remove_file(&zip_path);
+    std::fs::rename(&temp_zip_path, &zip_path)
+        .map_err(|e| format!("Lỗi lưu file zip backup: {}", e))?;
+
+    let size = std::fs::metadata(&zip_path).map(|m| m.len()).unwrap_or(0);
+    info!(
+        "💾 Đã sao lưu Thin Profile #{} thành công: {} ({} files, {:.1} KB)",
+        profile_id,
+        zip_path.display(),
+        total_files,
+        (size as f64) / 1024.0
+    );
+    Ok((zip_path, size))
+}
+
+/// Phục hồi Thin Profile từ bản nén ZIP vào thư mục temp trước khi khởi chạy Chrome
+pub fn restore_thin_profile(profile_id: usize) -> Result<bool, String> {
+    let backup_dir = get_profile_backup_dir();
+    let zip_path = backup_dir.join(format!("profile_{}.zip", profile_id));
+    if !zip_path.exists() {
+        return Ok(false);
+    }
+
+    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let _ = std::fs::create_dir_all(&user_data_dir);
+
+    let file = std::fs::File::open(&zip_path)
+        .map_err(|e| format!("Không thể mở file zip backup: {}", e))?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| format!("Lỗi đọc file zip backup: {}", e))?;
+
+    archive.extract(&user_data_dir)
+        .map_err(|e| format!("Lỗi giải nén profile backup: {}", e))?;
+
+    info!("⚡ Đã phục hồi Thin Profile #{} thành công từ {}", profile_id, zip_path.display());
+    Ok(true)
+}
+
+/// Dừng profile Chrome đang chạy, tự động sao lưu Thin Profile và xóa trạng thái
 pub fn stop_cdp_profile(profile_id: usize) {
     info!("🛑 Dừng tiến trình Chrome của Profile #{}", profile_id);
     let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
     cleanup_profile_process_and_locks(profile_id, &user_data_dir);
+
+    // Tự động sao lưu phiên đăng nhập (Thin Profile Backup) khi trình duyệt tắt
+    let _ = backup_thin_profile(profile_id);
+
     mark_profile_inactive(profile_id);
 }
 
@@ -559,6 +710,13 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     // Xóa triệt để zombie chrome và lockfile của profile này
     cleanup_profile_process_and_locks(profile.id, &user_data_dir);
+
+    // Tự động phục hồi Thin Profile (nếu có bản sao lưu trước đó) - Đảm bảo Zero Login
+    if let Ok(restored) = restore_thin_profile(profile.id) {
+        if restored {
+            info!("⚡ Đã nạp thành công Thin Profile (Zero-Login) cho Profile #{}", profile.id);
+        }
+    }
 
     let start_url = if profile.profile_start_url.trim().is_empty() {
         "https://iphey.com".to_string()
