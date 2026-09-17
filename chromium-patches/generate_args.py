@@ -120,6 +120,8 @@ dcheck_always_on = false
 enable_iterator_debugging = false
 exclude_unwind_tables = true
 enable_resource_allowlist_generation = false
+use_remoteexec = false
+use_siso = false
 windows_sdk_version = "{sdk_ver}"
 """
     with open("out/Release/args.gn", "w", encoding="utf-8") as f:

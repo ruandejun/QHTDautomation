@@ -99,46 +99,37 @@ jobs:
             exit 1
           )
 
-      - name: Print Ninja Error Log on Failure
-        if: failure()
+      - name: Save Diagnostic Logs
+        if: always()
         shell: powershell
         run: |
-          cd chromium_build\src
-          Write-Host "================== COMPILATION FAILED =================="
-          if (Test-Path "out\Release\chrome.exe") {
-            Write-Host "chrome.exe EXISTS!"
-          } else {
-            Write-Host "chrome.exe NOT FOUND!"
+          New-Item -ItemType Directory -Path "build_diagnostics" -Force
+          if (Test-Path "chromium_build\src\out\Release\.ninja_log") {
+            Copy-Item "chromium_build\src\out\Release\.ninja_log" "build_diagnostics\ninja.log"
           }
-          if (Test-Path "out\Release\.ninja_log") {
-            Write-Host "--- Last 60 lines of .ninja_log ---"
-            Get-Content "out\Release\.ninja_log" -Tail 60
+          if (Test-Path "chromium_build\src\out\Release\args.gn") {
+            Copy-Item "chromium_build\src\out\Release\args.gn" "build_diagnostics\args.gn"
           }
-          # Also search for any .log or compile error files
-          Get-ChildItem -Path "out\Release" -Filter "*.log" -Recurse | ForEach-Object {
-            Write-Host "Log file found: $($_.FullName)"
-            Get-Content $_.FullName -Tail 50
+          Get-ChildItem -Path "chromium_build\src\out\Release" -Filter "*.log" -Recurse | ForEach-Object {
+            Copy-Item $_.FullName "build_diagnostics\$($_.Name)" -Force
           }
-          Write-Host "======================================================="
+          Get-PSDrive C | Out-File "build_diagnostics\disk_space.txt"
 
       - name: Package Portable Chromium
         if: always()
         shell: powershell
         run: |
-          if (Test-Path "chromium_build\src\ninja_build.log") {
-            Copy-Item "chromium_build\src\ninja_build.log" "ninja_build.log"
-          }
           $outDir = "chromium_build\src\out\Release"
           if (Test-Path "$outDir\chrome.exe") {
             $packDir = "qhtd-browser-portable"
-            New-Item -ItemType Directory -Path $packDir
+            New-Item -ItemType Directory -Path $packDir -Force
             Copy-Item "$outDir\chrome.exe" "$packDir\qhtd-browser.exe"
             Copy-Item "$outDir\*.dll" "$packDir\"
             Copy-Item "$outDir\*.pak" "$packDir\"
             Copy-Item "$outDir\icudtl.dat" "$packDir\"
             Copy-Item "$outDir\v8_context_snapshot.bin" "$packDir\"
             if (Test-Path "$outDir\locales") { Copy-Item "$outDir\locales" "$packDir\" -Recurse }
-            Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip"
+            Compress-Archive -Path "$packDir\*" -DestinationPath "qhtd-browser-windows-x64.zip" -Force
             Write-Host "SUCCESS: Packaged qhtd-browser-windows-x64.zip successfully!"
           } else {
             Write-Host "WARNING: chrome.exe not found in $outDir yet."
@@ -151,8 +142,8 @@ jobs:
           name: qhtd-browser-windows-x64
           path: |
             qhtd-browser-windows-x64.zip
-            ninja_build.log
-            chromium_build/src/out/Release/.ninja_log
+            build_diagnostics/*
+          if-no-files-found: ignore
 
       - name: Create GitHub Release & Upload Artifact
         uses: softprops/action-gh-release@v2
