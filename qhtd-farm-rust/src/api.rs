@@ -1889,6 +1889,30 @@ async fn dashboard_handler() -> Html<&'static str> {
             transform: scale(1.03);
         }
 
+        .nurture-filter-btn {
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 600;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .nurture-filter-btn:hover {
+            color: #fff;
+            border-color: rgba(255, 255, 255, 0.25);
+            background: rgba(255, 255, 255, 0.06);
+        }
+        .nurture-filter-btn.active {
+            background: rgba(56, 189, 248, 0.15);
+            border-color: #38bdf8;
+            color: #38bdf8;
+            font-weight: 700;
+            box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
+        }
+
         .search-input {
             background: var(--bg-card-hover);
             border: 1px solid var(--border);
@@ -2029,50 +2053,108 @@ async fn dashboard_handler() -> Html<&'static str> {
             </div>
         </div>
 
-        <!-- VIEW 2: MUN ANTI BROWSER (HARDWARE SHIELD NO LEAK) -->
+        <!-- VIEW 2: MUN ANTI BROWSER (TIKTOK FARMING & HARDWARE SHIELD) -->
         <div class="view-content" id="view-browser">
-            <div class="action-toolbar">
-                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
-                    <h2 style="font-size: 14px; font-weight: 700;">🌐 Mun Anti Browser — Dual-Engine Hardware Shield</h2>
-                    <span id="core-status-badge"></span>
-                </div>
-                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
-                    <button class="btn btn-primary" onclick="startNurtureSelectedProfiles()" style="background:linear-gradient(135deg, #06b6d4, #3b82f6); font-weight:700; font-size:11px; padding:5px 12px; color:#fff;" title="Chạy nuôi các profiles được tích chọn (tự gán nick random nếu chưa có)">🎬 Nuôi Profiles Đã Chọn</button>
-                    <label style="font-size:11px; color:#38bdf8; display:flex; align-items:center; gap:4px; cursor:pointer; background:rgba(56,189,248,0.08); padding:3px 8px; border-radius:4px; border:1px solid rgba(56,189,248,0.25);" title="Tự động cấp phát Proxy từ C69 Pool cho các profile chưa có proxy khi chạy nuôi">
-                        <input type="checkbox" id="browser-auto-proxy-chk" checked>
-                        <span>🛡️ Auto Proxy C69</span>
-                    </label>
-                    <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:5px 12px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi All</button>
-                    <button class="btn btn-dark" onclick="stopNurtureAllProfiles()" style="border-color:#ef4444; color:#ef4444; font-size:11px; padding:5px 10px; font-weight:600;">⏹️ Dừng Nuôi All</button>
-                    <button class="btn btn-dark" onclick="syncC69Profiles()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;" title="Đồng bộ cấu hình từ C69.us">☁️ Đồng Bộ C69</button>
-                    <div style="display:flex; gap:4px; margin-left:4px;">
-                        <button class="btn filter-btn active" onclick="setEngineFilter('all', this)" style="padding:4px 8px; font-size:10px;">Tất cả</button>
-                        <button class="btn filter-btn" onclick="setEngineFilter('native', this)" style="padding:4px 8px; font-size:10px; color:#c084fc;">💎 Native C++</button>
-                        <button class="btn filter-btn" onclick="setEngineFilter('js_stealth', this)" style="padding:4px 8px; font-size:10px; color:#38bdf8;">⚡ JS Stealth</button>
-                        <button class="btn filter-btn" onclick="setEngineFilter('hybrid', this)" style="padding:4px 8px; font-size:10px; color:#f59e0b;">🔥 Hybrid</button>
+            <!-- TIKTOK FARM KPI SUMMARY BAR -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; margin-bottom:12px;">
+                <div style="background:rgba(15,23,42,0.6); border:1px solid rgba(56,189,248,0.25); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">👥</span>
+                    <div>
+                        <div style="font-size:10px; color:#94a3b8; font-weight:700;">TỔNG PROFILES</div>
+                        <div style="font-size:16px; font-weight:800; color:#38bdf8;" id="kpi-total-profiles">0</div>
                     </div>
-                    <span id="active-profiles-count" style="font-size: 11px; font-weight: 700; color: #10b981;"></span>
-                    <input type="text" class="search-input" placeholder="Tìm profile / proxy..." id="profile-search" oninput="filterProfiles()">
-                    <button class="btn btn-primary" onclick="openCreateProfileModal()">➕ Tạo Profile Mới</button>
+                </div>
+                <div style="background:rgba(217,70,239,0.08); border:1px solid rgba(217,70,239,0.3); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">🎬</span>
+                    <div>
+                        <div style="font-size:10px; color:#f0abfc; font-weight:700;">ĐANG NUÔI FYP</div>
+                        <div style="font-size:16px; font-weight:800; color:#d946ef;" id="kpi-running-nurture">0</div>
+                    </div>
+                </div>
+                <div style="background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">✅</span>
+                    <div>
+                        <div style="font-size:10px; color:#6ee7b7; font-weight:700;">ĐÃ NUÔI XONG</div>
+                        <div style="font-size:16px; font-weight:800; color:#10b981;" id="kpi-done-nurture">0</div>
+                    </div>
+                </div>
+                <div style="background:rgba(249,115,22,0.08); border:1px solid rgba(249,115,22,0.3); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">⏳</span>
+                    <div>
+                        <div style="font-size:10px; color:#fdba74; font-weight:700;">CHỜ 1H (LIMIT)</div>
+                        <div style="font-size:16px; font-weight:800; color:#f97316;" id="kpi-rate-limited">0</div>
+                    </div>
+                </div>
+                <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">⚠️</span>
+                    <div>
+                        <div style="font-size:10px; color:#fca5a5; font-weight:700;">LỖI CẦN CHECK</div>
+                        <div style="font-size:16px; font-weight:800; color:#ef4444;" id="kpi-error-profiles">0</div>
+                    </div>
+                </div>
+                <div style="background:rgba(14,165,233,0.08); border:1px solid rgba(14,165,233,0.3); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:20px;">⚡</span>
+                    <div>
+                        <div style="font-size:10px; color:#7dd3fc; font-weight:700;">ZERO-LOGIN SESSION</div>
+                        <div style="font-size:16px; font-weight:800; color:#0ea5e9;" id="kpi-zero-login">0</div>
+                    </div>
                 </div>
             </div>
 
+            <!-- ACTION & FILTER TOOLBAR -->
+            <div class="action-toolbar" style="margin-bottom:10px;">
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:8px;">
+                    <button class="btn btn-primary" onclick="startNurtureSelectedProfiles()" style="background:linear-gradient(135deg, #06b6d4, #3b82f6); font-weight:700; font-size:11px; padding:6px 14px; color:#fff;" title="Chạy nuôi các profiles được tích chọn (tự gán nick random nếu chưa có)">🎬 Nuôi Profile Đã Chọn</button>
+                    <button class="btn btn-purple" onclick="startNurtureAllProfiles()" style="background:linear-gradient(135deg, #8b5cf6, #d946ef); font-weight:700; font-size:11px; padding:6px 14px; box-shadow:0 0 12px rgba(217,70,239,0.35); color:#fff;" title="Chạy nuôi TikTok tự động cho tất cả profile">🎬 Nuôi Tất Cả</button>
+                    <button class="btn btn-dark" onclick="stopNurtureAllProfiles()" style="border-color:#ef4444; color:#ef4444; font-size:11px; padding:5px 10px; font-weight:600;">⏹️ Dừng Nuôi All</button>
+                    <label style="font-size:11px; color:#38bdf8; display:flex; align-items:center; gap:4px; cursor:pointer; background:rgba(56,189,248,0.08); padding:4px 8px; border-radius:5px; border:1px solid rgba(56,189,248,0.25);" title="Tự động cấp phát Proxy từ C69 Pool cho các profile chưa có proxy khi chạy nuôi">
+                        <input type="checkbox" id="browser-auto-proxy-chk" checked>
+                        <span>🛡️ Auto Proxy C69</span>
+                    </label>
+                </div>
+                <div class="toolbar-group" style="display:flex; align-items:center; gap:6px;">
+                    <span id="core-status-badge"></span>
+                    <button class="btn btn-dark" onclick="syncC69Profiles()" style="border-color:#38bdf8; color:#38bdf8; font-size:11px; padding:5px 10px; font-weight:600;" title="Đồng bộ cấu hình từ C69.us">☁️ Đồng Bộ C69</button>
+                    <button class="btn btn-primary" onclick="openCreateProfileModal()" style="font-size:11px; padding:6px 12px;">➕ Tạo Profile</button>
+                </div>
+            </div>
+
+            <!-- SUB-TOOLBAR: SMART FILTERS & SEARCH -->
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+                <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                    <span style="font-size:11px; color:#94a3b8; font-weight:600; margin-right:2px;">Lọc trạng thái:</span>
+                    <button class="nurture-filter-btn active" onclick="setNurtureFilter('all', this)">Tất cả</button>
+                    <button class="nurture-filter-btn" onclick="setNurtureFilter('running', this)">🎬 Đang nuôi</button>
+                    <button class="nurture-filter-btn" onclick="setNurtureFilter('done', this)">✅ Đã nuôi OK</button>
+                    <button class="nurture-filter-btn" onclick="setNurtureFilter('ratelimit', this)">⏳ Chờ 1h</button>
+                    <button class="nurture-filter-btn" onclick="setNurtureFilter('error', this)">⚠️ Cần check</button>
+                    <button class="nurture-filter-btn" onclick="setNurtureFilter('unassigned', this)">⚪ Chưa gán nick</button>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <input type="text" class="search-input" placeholder="🔍 Tìm ID, Nick, Tên, Proxy..." id="profile-search" oninput="filterProfiles()" style="width:220px;">
+                    <span id="active-profiles-count" style="font-size: 11px; font-weight: 700; color: #10b981;"></span>
+                </div>
+            </div>
+
+            <!-- COMPACT & INTUITIVE 6-COLUMN TABLE -->
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th style="width:36px; text-align:center;"><input type="checkbox" id="check-all-profiles" onchange="toggleSelectAllProfiles(this)"></th>
-                        <th>ID</th>
-                        <th>Tên Profile & Nick TikTok</th>
-                        <th>Engine Chống Detect</th>
-                        <th>Hệ Điều Hành / User-Agent</th>
-                        <th>Card GPU & Dấu Vân Tay</th>
-                        <th>Proxy Cấu Hình</th>
-                        <th>Trạng Thái</th>
-                        <th>Thao Tác</th>
+                        <th style="width:65px; text-align:center;">
+                            <div style="display:flex; align-items:center; justify-content:center; gap:4px;">
+                                <input type="checkbox" id="check-all-profiles" onchange="toggleSelectAllProfiles(this)">
+                                <span>ID</span>
+                            </div>
+                        </th>
+                        <th>Profile & Thiết Bị</th>
+                        <th>Tài Khoản TikTok</th>
+                        <th>Proxy SOCKS5</th>
+                        <th>Trạng Thái Nuôi FYP</th>
+                        <th style="text-align:center;">Thao Tác</th>
                     </tr>
                 </thead>
                 <tbody id="browser-profiles-body">
-                    <tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
+                    <tr><td colspan="6" style="text-align: center; padding:30px; color: var(--text-muted);">Đang tải danh sách profile...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -3217,134 +3299,234 @@ async fn dashboard_handler() -> Html<&'static str> {
             }
         }
 
+        function updateNurtureKpis(profiles) {
+            if (!profiles) return;
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            const total = profiles.length;
+            let running = 0;
+            let done = 0;
+            let rateLimited = 0;
+            let errorCount = 0;
+            let zeroLogin = 0;
+
+            profiles.forEach(p => {
+                const nurture = nurtureStatuses[p.id];
+                if (nurture && nurture.is_running) running++;
+                if (p.retry_after_epoch && p.retry_after_epoch > nowEpoch) rateLimited++;
+                else if (p.last_nurture_status && p.last_nurture_status.includes('thành công')) {
+                    done++;
+                    zeroLogin++;
+                } else if (p.last_nurture_status) {
+                    errorCount++;
+                }
+            });
+
+            const setVal = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.innerText = val;
+            };
+            setVal('kpi-total-profiles', total);
+            setVal('kpi-running-nurture', running);
+            setVal('kpi-done-nurture', done);
+            setVal('kpi-rate-limited', rateLimited);
+            setVal('kpi-error-profiles', errorCount);
+            setVal('kpi-zero-login', zeroLogin);
+        }
+
         function renderProfiles(profiles) {
+            updateNurtureKpis(allProfiles);
             const tbody = document.getElementById('browser-profiles-body');
-            if (profiles.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Chưa có profile nào. Hãy bấm "Tạo Profile Mới" hoặc "Đồng Bộ C69".</td></tr>`;
+            if (!profiles || profiles.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 40px 20px; color: var(--text-muted); font-size:13px;">
+                    <div style="font-size: 28px; margin-bottom: 8px;">🔍</div>
+                    <div>Không tìm thấy profile nào phù hợp với bộ lọc hiện tại.</div>
+                </td></tr>`;
                 return;
             }
+
+            const nowEpoch = Math.floor(Date.now() / 1000);
 
             tbody.innerHTML = profiles.map(p => {
                 const isRunning = activeProfileIds.has(p.id);
                 const nurture = nurtureStatuses[p.id];
                 const isNurturing = nurture && nurture.is_running;
-
-                let gpuLabel = 'DirectX 11 GPU';
-                if (p.gpu_renderer) {
-                    if (p.gpu_renderer.includes('RTX 3060')) gpuLabel = 'NVIDIA RTX 3060';
-                    else if (p.gpu_renderer.includes('RTX 4070')) gpuLabel = 'NVIDIA RTX 4070';
-                    else if (p.gpu_renderer.includes('RTX 3070')) gpuLabel = 'NVIDIA RTX 3070';
-                    else if (p.gpu_renderer.includes('RTX 4060')) gpuLabel = 'NVIDIA RTX 4060';
-                    else if (p.gpu_renderer.includes('GTX 1660')) gpuLabel = 'NVIDIA GTX 1660 SUPER';
-                    else if (p.gpu_renderer.includes('RX 6700')) gpuLabel = 'AMD Radeon RX 6700 XT';
-                    else if (p.gpu_renderer.includes('RX 7600')) gpuLabel = 'AMD Radeon RX 7600';
-                    else if (p.gpu_renderer.includes('Iris')) gpuLabel = 'Intel Iris Xe Graphics';
-                    else if (p.gpu_renderer.includes('Mali')) gpuLabel = 'ARM Mali-G715 Immortalis';
-                    else gpuLabel = p.gpu_renderer.split('(')[1]?.split(',')[1]?.trim() || p.gpu_renderer.slice(0, 25);
-                }
-
-                const mode = p.engine_mode || 'native';
-                let engineBadge = `<span class="badge-engine-native" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang JS Stealth">💎 Native C++</span>`;
-                if (mode === 'js_stealth') {
-                    engineBadge = `<span class="badge-engine-js" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Hybrid">⚡ JS Stealth</span>`;
-                } else if (mode === 'hybrid') {
-                    engineBadge = `<span class="badge-engine-hybrid" onclick="toggleEngine(${p.id})" title="Bấm để đổi sang Native C++">🔥 Hybrid (2 Lớp)</span>`;
-                }
-
-                let statusBadge = `<span class="badge-status-stopped">⚪ Chưa nuôi</span>`;
-                const nowEpoch = Math.floor(Date.now() / 1000);
                 const isRateLimited = p.retry_after_epoch && p.retry_after_epoch > nowEpoch;
                 const remainMins = isRateLimited ? Math.ceil((p.retry_after_epoch - nowEpoch) / 60) : 0;
 
-                if (isNurturing) {
-                    if (nurture.waiting_otp) {
-                        statusBadge = `<div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
-                            <span class="badge-status-running" style="background:rgba(234,179,8,0.2); border:1px solid #eab308; color:#fde047; font-weight:700; font-size:10px; padding:2px 6px; border-radius:4px;">
-                                <span class="pulse-dot" style="background:#eab308; box-shadow:0 0 8px #eab308;"></span>
-                                🔑 ${nurture.status || 'Chờ mã OTP'}
-                            </span>
-                            <div style="display:flex; gap:3px;">
-                                <input type="text" id="otp-inp-${p.id}" placeholder="Mã 6 số" maxlength="6" style="width:70px; padding:2px 4px; font-size:11px; background:#0f172a; border:1px solid #eab308; color:#fff; border-radius:3px; text-align:center;">
-                                <button class="btn btn-warning" style="padding:2px 6px; font-size:10px; font-weight:700; background:#eab308; color:#000; border-radius:3px; cursor:pointer;" onclick="submitOtpForProfile(${p.id})">Gửi</button>
-                            </div>
-                        </div>`;
-                    } else {
-                        statusBadge = `<span class="badge-status-running" style="background:rgba(217,70,239,0.15); border-color:#d946ef; color:#f0abfc;">
-                            <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
-                            🎬 Nuôi FYP (${nurture.videos_watched} vids | ❤️ ${nurture.likes_given})
-                        </span>`;
-                    }
-                } else if (isRunning) {
-                    statusBadge = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang chạy</span>`;
-                } else if (isRateLimited) {
-                    statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || 'Maximum attempts reached').replace(/"/g, '&quot;')}">
-                        <span style="background:rgba(249,115,22,0.2); border:1px solid #f97316; color:#fdba74; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
-                            ⏳ Chờ 1h (còn ${remainMins}p)
-                        </span>
-                        <span style="font-size:9px; color:#fb923c;">${p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : ''} • Limit login</span>
-                    </div>`;
-                } else if (p.last_nurture_status) {
-                    if (p.last_nurture_status.includes('thành công')) {
-                        statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || 'Đã nuôi thành công').replace(/"/g, '&quot;')}">
-                            <span style="background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#6ee7b7; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
-                                ✅ Đã nuôi OK
-                            </span>
-                            <span style="font-size:9px; color:#94a3b8;">${p.last_nurture_time ? p.last_nurture_time.slice(5, 16) : ''}</span>
-                        </div>`;
-                    } else {
-                        statusBadge = `<div style="display:flex; flex-direction:column; gap:2px; min-width:130px;" title="${(p.last_nurture_error || p.last_nurture_status).replace(/"/g, '&quot;')}">
-                            <span style="background:rgba(239,68,68,0.15); border:1px solid #ef4444; color:#fca5a5; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
-                                ❌ ${p.last_nurture_status}
-                            </span>
-                            <span style="font-size:9px; color:#ef4444; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                                ${p.last_nurture_error ? p.last_nurture_error.slice(0, 24) + '…' : (p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : '')}
-                            </span>
-                        </div>`;
-                    }
+                const osLabel = p.profile_os || 'Windows';
+                const osIcon = osLabel.toLowerCase().includes('android') ? '📱' : (osLabel.toLowerCase().includes('ios') ? '🍏' : '💻');
+                const mode = p.engine_mode || 'native';
+                const engineTag = mode === 'native' 
+                    ? `<span style="color:#c084fc; font-weight:700; cursor:pointer;" onclick="toggleEngine(${p.id})" title="💎 Native C++ (Bấm để đổi)">💎 C++</span>` 
+                    : (mode === 'js_stealth' 
+                        ? `<span style="color:#38bdf8; font-weight:700; cursor:pointer;" onclick="toggleEngine(${p.id})" title="⚡ JS Stealth (Bấm để đổi)">⚡ JS</span>` 
+                        : `<span style="color:#f59e0b; font-weight:700; cursor:pointer;" onclick="toggleEngine(${p.id})" title="🔥 Hybrid (Bấm để đổi)">🔥 Hybrid</span>`);
+
+                let gpuShort = 'GPU Shield';
+                if (p.gpu_renderer) {
+                    if (p.gpu_renderer.includes('RTX 3060')) gpuShort = 'RTX 3060';
+                    else if (p.gpu_renderer.includes('RTX 4070')) gpuShort = 'RTX 4070';
+                    else if (p.gpu_renderer.includes('RTX 4060')) gpuShort = 'RTX 4060';
+                    else if (p.gpu_renderer.includes('GTX 1660')) gpuShort = 'GTX 1660S';
+                    else if (p.gpu_renderer.includes('RX 6700')) gpuShort = 'RX 6700XT';
+                    else if (p.gpu_renderer.includes('Iris')) gpuShort = 'Iris Xe';
+                    else gpuShort = p.gpu_renderer.split('(')[1]?.split(',')[1]?.trim() || 'GPU';
                 }
 
-                const tiktokBadge = p.tiktok_username 
-                    ? `<div style="margin-top:4px;"><span style="background:rgba(217,70,239,0.15); border:1px solid #d946ef; color:#f0abfc; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">🎵 @${p.tiktok_username}</span></div>` 
-                    : `<div style="margin-top:4px;"><span style="color:#64748b; font-size:10px;">(Chưa gán nick TikTok)</span></div>`;
+                const zeroLoginTag = (p.last_nurture_status && p.last_nurture_status.includes('thành công'))
+                    ? `<span style="background:rgba(14,165,233,0.15); border:1px solid rgba(14,165,233,0.35); color:#38bdf8; font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px;" title="Profile đã lưu Thin Profile (~200KB) - Vào thẳng FYP không cần login">⚡ Zero-Login</span>`
+                    : ``;
+
+                let tiktokCell = '';
+                if (p.tiktok_username) {
+                    tiktokCell = `
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="background:linear-gradient(135deg, rgba(236,72,153,0.2), rgba(139,92,246,0.2)); border:1px solid rgba(236,72,153,0.4); color:#f0abfc; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:700; display:inline-flex; align-items:center; gap:4px;">
+                                🎵 @${p.tiktok_username}
+                            </span>
+                            <button class="btn btn-dark" style="padding:2px 5px; font-size:9px; border-color:rgba(255,255,255,0.15);" onclick="openNurtureModal(${p.id})" title="Đổi hoặc cấu hình tài khoản C69">⚙️</button>
+                        </div>
+                    `;
+                } else {
+                    tiktokCell = `
+                        <button class="btn btn-dark" style="padding:3px 8px; font-size:10px; border-color:rgba(217,70,239,0.3); color:#f0abfc; background:rgba(217,70,239,0.06);" onclick="openNurtureModal(${p.id})">
+                            ➕ Gán Nick TikTok
+                        </button>
+                    `;
+                }
+
+                let proxyCell = '';
+                if (p.proxy_string && p.proxy_type !== 'direct') {
+                    const displayStr = p.proxy_string.length > 20 ? p.proxy_string.slice(0, 18) + '…' : p.proxy_string;
+                    proxyCell = `
+                        <div style="display:flex; align-items:center; gap:5px;">
+                            <span style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.35); font-size:9px; padding:1px 4px; border-radius:3px; font-weight:700;">${(p.proxy_type || 'SOCKS5').toUpperCase()}</span>
+                            <span style="color:#e2e8f0; font-size:11px; font-family:monospace;" title="${p.proxy_string}">${displayStr}</span>
+                            <button class="btn btn-dark" style="padding:2px 5px; font-size:9px;" onclick="testSingleProxy('${p.proxy_string.replace(/'/g, "\\'")}', this)" title="Test kết nối Proxy">⚡</button>
+                        </div>
+                    `;
+                } else {
+                    proxyCell = `
+                        <div style="display:flex; align-items:center; gap:5px;">
+                            <span style="color:var(--text-muted); font-size:10px; background:rgba(255,255,255,0.05); padding:1px 5px; border-radius:3px;">⚡ Direct</span>
+                            <button class="btn btn-dark" style="padding:2px 6px; font-size:9px; color:#38bdf8; border-color:rgba(56,189,248,0.3);" onclick="assignC69ProxyToProfile(${p.id})" title="Gán 1 proxy SOCKS5 từ C69 Pool">➕ Gán C69</button>
+                        </div>
+                    `;
+                }
+
+                let statusCell = '';
+                if (isNurturing) {
+                    if (nurture.waiting_otp) {
+                        statusCell = `
+                            <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+                                <span style="background:rgba(234,179,8,0.2); border:1px solid #eab308; color:#fde047; font-weight:700; font-size:10px; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                    <span class="pulse-dot" style="background:#eab308; box-shadow:0 0 8px #eab308;"></span>
+                                    🔑 ${nurture.status || 'Chờ mã OTP'}
+                                </span>
+                                <div style="display:flex; gap:3px;">
+                                    <input type="text" id="otp-inp-${p.id}" placeholder="Mã 6 số" maxlength="6" style="width:65px; padding:2px 4px; font-size:11px; background:#0f172a; border:1px solid #eab308; color:#fff; border-radius:3px; text-align:center;">
+                                    <button class="btn btn-warning" style="padding:2px 6px; font-size:10px; font-weight:700; background:#eab308; color:#000; border-radius:3px;" onclick="submitOtpForProfile(${p.id})">Gửi</button>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        statusCell = `
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <span style="background:linear-gradient(135deg, rgba(217,70,239,0.2), rgba(14,165,233,0.2)); border:1px solid #d946ef; color:#f0abfc; font-weight:700; font-size:10px; padding:3px 7px; border-radius:5px; display:inline-flex; align-items:center; gap:5px;">
+                                    <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
+                                    🎬 Đang Nuôi FYP
+                                </span>
+                                <div style="font-size:10px; color:#cbd5e1; display:flex; gap:6px;">
+                                    <span>👀 <b>${nurture.videos_watched || 0}</b></span>
+                                    <span>❤️ <b>${nurture.likes_given || 0}</b></span>
+                                    <span>💬 <b>${nurture.comments_posted || 0}</b></span>
+                                </div>
+                            </div>
+                        `;
+                    }
+                } else if (isRateLimited) {
+                    statusCell = `
+                        <div style="display:flex; flex-direction:column; gap:2px;" title="${(p.last_nurture_error || '').replace(/"/g, '&quot;')}">
+                            <span style="background:rgba(249,115,22,0.18); border:1px solid #f97316; color:#fdba74; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                ⏳ Chờ 1h (còn ${remainMins}p)
+                            </span>
+                            <span style="font-size:9px; color:#fb923c;">${p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : ''} • Limit</span>
+                        </div>
+                    `;
+                } else if (p.last_nurture_status) {
+                    if (p.last_nurture_status.includes('thành công')) {
+                        statusCell = `
+                            <div style="display:flex; flex-direction:column; gap:2px;" title="${(p.last_nurture_error || 'Đã nuôi thành công').replace(/"/g, '&quot;')}">
+                                <span style="background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#6ee7b7; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                    ✅ Đã nuôi OK
+                                </span>
+                                <span style="font-size:9px; color:#94a3b8;">${p.last_nurture_time ? p.last_nurture_time.slice(5, 16) : ''}</span>
+                            </div>
+                        `;
+                    } else {
+                        const isEmailErr = p.last_nurture_status.toLowerCase().includes('email');
+                        const badgeColor = isEmailErr ? '#f59e0b' : '#ef4444';
+                        const badgeBg = isEmailErr ? 'rgba(245,158,11,0.15)' : 'rgba(239,68,68,0.15)';
+                        statusCell = `
+                            <div style="display:flex; flex-direction:column; gap:2px;" title="${(p.last_nurture_error || p.last_nurture_status).replace(/"/g, '&quot;')}">
+                                <span style="background:${badgeBg}; border:1px solid ${badgeColor}; color:${badgeColor}; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
+                                    ⚠️ ${p.last_nurture_status}
+                                </span>
+                                <span style="font-size:9px; color:#ef4444; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                    ${p.last_nurture_error ? p.last_nurture_error.slice(0, 24) + '…' : (p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : '')}
+                                </span>
+                            </div>
+                        `;
+                    }
+                } else if (isRunning) {
+                    statusCell = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang mở Chrome</span>`;
+                } else {
+                    statusCell = `<span class="badge-status-stopped">⚪ Sẵn sàng</span>`;
+                }
 
                 return `
-                <tr>
-                    <td style="text-align:center;"><input type="checkbox" class="prof-checkbox" value="${p.id}"></td>
-                    <td><b>#${p.id}</b></td>
-                    <td>
-                        <b style="color:var(--primary); font-size:13px;">${p.name}</b>
-                        <div style="font-size:10px; color:var(--text-muted); margin-top:2px;">Seed: <code>${p.canvas_seed || p.id}</code></div>
-                        ${tiktokBadge}
-                    </td>
-                    <td>${engineBadge}</td>
-                    <td style="font-size: 11px; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        <span style="background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px;">${p.profile_os || 'Windows'}</span> 
-                        <span style="color:#e2e8f0;">${p.profile_user_agent || 'Chrome/135 (Auto Sync V8)'}</span>
-                    </td>
-                    <td>
-                        <div style="font-size:11px; color:#38bdf8; font-weight:600;">🎮 ${gpuLabel}</div>
-                        <div style="color:#10b981; font-size:10px;">🛡️ Canvas Noise • Audio Noise • ${p.profile_cpu || 8} Cores / ${p.profile_ram || 16}GB</div>
-                    </td>
-                    <td>${p.proxy_string && (p.proxy_type !== 'direct')
-                        ? `<div style="display:flex; align-items:center; gap:4px;"><span style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3); font-size:9px; padding:1px 4px; border-radius:3px; font-weight:700;">${(p.proxy_type || 'SOCKS5').toUpperCase()}</span><span style="color:#10b981; font-weight:600; font-size:11px;" title="${p.proxy_string}">${p.proxy_string.length > 18 ? p.proxy_string.slice(0, 16) + '…' : p.proxy_string}</span><button class="btn btn-dark" style="padding:2px 5px; font-size:10px; border-color:var(--border);" onclick="testSingleProxy('${p.proxy_string.replace(/'/g, "\\'")}', this)" title="Kiểm tra kết nối Proxy">⚡ Test</button></div>` 
-                        : `<div style="display:flex; align-items:center; gap:4px;"><span style="color:var(--text-muted); font-size:11px; background:rgba(255,255,255,0.05); padding:1px 5px; border-radius:3px;">⚡ Direct</span><button class="btn btn-dark" style="padding:2px 6px; font-size:10px; color:#38bdf8; border-color:rgba(56,189,248,0.3);" onclick="assignC69ProxyToProfile(${p.id})" title="Gán 1 proxy SOCKS5 từ C69 Pool">➕ Gán C69</button></div>`}</td>
-                    <td>${statusBadge}</td>
-                    <td style="white-space:nowrap;">
-                        <div style="display:flex; gap:5px; align-items:center;">
-                            ${isNurturing
-                                ? `<button class="btn btn-danger" style="padding: 5px 10px; font-size: 11px; font-weight:700; background:linear-gradient(135deg, #ef4444, #dc2626);" onclick="stopNurtureProfile(${p.id})" title="${nurture.last_log || ''}">⏹️ Dừng Nuôi</button>`
-                                : `<button class="btn btn-purple" style="padding: 5px 10px; font-size: 11px; font-weight:700; background:linear-gradient(135deg, #8b5cf6, #d946ef); color:#fff; box-shadow:0 0 10px rgba(217,70,239,0.25);" onclick="openNurtureModal(${p.id})" title="Bắt đầu nuôi TikTok For You Page kết hợp C69">🎬 Nuôi TikTok C69</button>`
-                            }
-                            ${isRunning
-                                ? `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding: 5px 10px; font-size: 11px; font-weight:600; border-color:#ef4444; color:#ef4444;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng</button>`
-                                : `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding: 5px 10px; font-size: 11px; font-weight:600; border-color:var(--primary); color:var(--primary);" onclick="launchBrowserProfile(${p.id})">🚀 Mở</button>`
-                            }
-                            <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Tùy chỉnh Fingerprint" onclick="openEditFingerprintModal(${p.id})">🛠️</button>
-                            <button class="btn btn-dark" style="padding: 5px 8px; font-size: 11px; border: 1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
-                        </div>
-                    </td>
-                </tr>
-            `}).join('');
+                    <tr>
+                        <td style="text-align:center;">
+                            <div style="display:flex; align-items:center; justify-content:center; gap:4px;">
+                                <input type="checkbox" class="prof-checkbox" value="${p.id}">
+                                <b style="color:var(--text-muted); font-size:11px;">#${p.id}</b>
+                            </div>
+                        </td>
+                        <td>
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <div style="display:flex; align-items:center; gap:5px;">
+                                    <b style="color:#f8fafc; font-size:12px;">${p.name}</b>
+                                    ${zeroLoginTag}
+                                </div>
+                                <div style="font-size:10px; color:var(--text-muted); display:flex; align-items:center; gap:5px;">
+                                    <span>${osIcon} ${osLabel}</span>
+                                    <span>•</span>
+                                    ${engineTag}
+                                    <span>•</span>
+                                    <span style="color:#94a3b8;">${gpuShort}</span>
+                                </div>
+                            </div>
+                        </td>
+                        <td>${tiktokCell}</td>
+                        <td>${proxyCell}</td>
+                        <td>${statusCell}</td>
+                        <td style="white-space:nowrap; text-align:center;">
+                            <div style="display:flex; gap:4px; align-items:center; justify-content:center;">
+                                ${isNurturing
+                                    ? `<button class="btn btn-danger" style="padding:4px 9px; font-size:10px; font-weight:700;" onclick="stopNurtureProfile(${p.id})">⏹️ Dừng</button>`
+                                    : `<button class="btn btn-purple" style="padding:4px 9px; font-size:10px; font-weight:700; background:linear-gradient(135deg, #06b6d4, #d946ef); color:#fff; border:none; box-shadow:0 0 8px rgba(217,70,239,0.3);" onclick="openNurtureModal(${p.id})">🎬 Nuôi</button>`
+                                }
+                                ${isRunning
+                                    ? `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding:4px 8px; font-size:10px; border-color:#ef4444; color:#ef4444;" onclick="stopBrowserProfile(${p.id})">🛑 Đóng</button>`
+                                    : `<button id="btn-action-${p.id}" class="btn btn-dark" style="padding:4px 8px; font-size:10px; border-color:var(--primary); color:var(--primary);" onclick="launchBrowserProfile(${p.id})">🚀 Mở</button>`
+                                }
+                                <button class="btn btn-dark" style="padding:4px 6px; font-size:10px; border:1px solid var(--border);" title="Cấu hình Fingerprint" onclick="openEditFingerprintModal(${p.id})">🛠️</button>
+                                <button class="btn btn-dark" style="padding:4px 6px; font-size:10px; border:1px solid var(--border);" title="Xóa Profile" onclick="deleteBrowserProfile(${p.id})">🗑️</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         async function submitOtpForProfile(profileId) {
@@ -3654,6 +3836,64 @@ async fn dashboard_handler() -> Html<&'static str> {
             }
         }
 
+        function toggleSelectAllProfiles(masterCb) {
+            const isChecked = masterCb ? masterCb.checked : false;
+            document.querySelectorAll('.prof-checkbox').forEach(cb => {
+                cb.checked = isChecked;
+            });
+        }
+
+        async function startNurtureSelectedProfiles() {
+            const selectedIds = Array.from(document.querySelectorAll('.prof-checkbox:checked')).map(cb => parseInt(cb.value));
+            if (selectedIds.length === 0) {
+                return alert("Vui lòng tích chọn ít nhất 1 Profile!");
+            }
+
+            const autoProxy = document.getElementById('browser-auto-proxy-chk')?.checked ?? true;
+            const proxyNote = autoProxy ? " (Tự động cấp phát Proxy C69 nếu chưa có proxy)" : "";
+
+            if (!confirm(`Bắt đầu nuôi TikTok cho ${selectedIds.length} profiles đã chọn?${proxyNote}`)) {
+                return;
+            }
+
+            let accounts = [];
+            try {
+                const r = await fetch(`${API_BASE}/api/browser/c69/accounts`);
+                const d = await r.json();
+                if (d.success) accounts = d.accounts || [];
+            } catch(_) {}
+
+            let started = 0;
+            for (let i = 0; i < selectedIds.length; i++) {
+                const pid = selectedIds[i];
+                const p = allProfiles.find(x => x.id === pid);
+                if (!p) continue;
+
+                let chosenAcc = null;
+                if (p.c69_account_id) {
+                    chosenAcc = { id: p.c69_account_id, username: p.c69_username, password: null };
+                } else if (accounts.length > 0) {
+                    chosenAcc = accounts[i % accounts.length];
+                }
+
+                fetch(`${API_BASE}/api/browser/nurture/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id: p.id,
+                        c69_account_id: chosenAcc ? chosenAcc.id : null,
+                        c69_username: chosenAcc ? chosenAcc.username : null,
+                        c69_password: chosenAcc ? chosenAcc.password : null,
+                        proxy_string: p.proxy_string || null,
+                        auto_assign_c69_proxy: autoProxy
+                    })
+                }).catch(() => {});
+                started++;
+            }
+            alert(`Đã phát lệnh nuôi TikTok cho ${started} profiles đã chọn!`);
+            setTimeout(syncActiveBrowserProfiles, 1500);
+        }
+
         // ── C69 TikTok Accounts Management Tab ───────────────────────────────
         let c69AllAccounts = [];
 
@@ -3861,17 +4101,52 @@ async fn dashboard_handler() -> Html<&'static str> {
             filterProfiles();
         }
 
+        let currentNurtureFilter = 'all';
+
+        function setNurtureFilter(mode, btn) {
+            currentNurtureFilter = mode;
+            document.querySelectorAll('.nurture-filter-btn').forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+            filterProfiles();
+        }
+
         function filterProfiles() {
             const searchEl = document.getElementById('profile-search');
             const term = searchEl ? searchEl.value.toLowerCase().trim() : '';
             const filtered = allProfiles.filter(p => {
                 const matchesTerm = !term || 
                                     (p.name && p.name.toLowerCase().includes(term)) || 
+                                    (p.c69_username && p.c69_username.toLowerCase().includes(term)) ||
+                                    (p.id && p.id.toString().includes(term)) ||
                                     (p.profile_user_agent && p.profile_user_agent.toLowerCase().includes(term)) ||
-                                    (p.proxy_string && p.proxy_string.toLowerCase().includes(term));
+                                    (p.proxy_string && p.proxy_string.toLowerCase().includes(term)) ||
+                                    (p.last_nurture_status && p.last_nurture_status.toLowerCase().includes(term)) ||
+                                    (p.nurture_stage && p.nurture_stage.toLowerCase().includes(term));
                 const mode = p.engine_mode || 'native';
                 const matchesEngine = currentEngineFilter === 'all' || mode === currentEngineFilter;
-                return matchesTerm && matchesEngine;
+
+                let matchesNurture = true;
+                const isRunning = (p.nurture_status === 'running') || (typeof activeProfileIds !== 'undefined' && activeProfileIds.has && activeProfileIds.has(p.id));
+                const isRateLimited = (p.last_nurture_status && p.last_nurture_status.includes('1h')) || 
+                                      (p.nurture_stage && p.nurture_stage.includes('Chờ'));
+                const isDone = (p.last_nurture_status && p.last_nurture_status.includes('thành công')) || 
+                               (p.nurture_status === 'done');
+                const isError = (p.nurture_status === 'error') || 
+                                (p.last_nurture_status && !p.last_nurture_status.includes('thành công') && !isRateLimited);
+
+                if (currentNurtureFilter === 'running') {
+                    matchesNurture = isRunning;
+                } else if (currentNurtureFilter === 'done') {
+                    matchesNurture = isDone;
+                } else if (currentNurtureFilter === 'ratelimit') {
+                    matchesNurture = isRateLimited;
+                } else if (currentNurtureFilter === 'error') {
+                    matchesNurture = isError;
+                } else if (currentNurtureFilter === 'unassigned') {
+                    matchesNurture = !p.c69_account_id;
+                }
+
+                return matchesTerm && matchesEngine && matchesNurture;
             });
             renderProfiles(filtered);
         }
