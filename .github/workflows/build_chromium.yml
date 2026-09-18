@@ -85,7 +85,11 @@ jobs:
           cd chromium_build\src
           python ..\..\chromium-patches\clean_env.py
           python ..\..\chromium-patches\generate_args.py
-          call gn.bat gen out\Release
+          call gn.bat gen out\Release || (
+            echo ================== GN ERROR LOG ==================
+            call gn.bat gen out\Release --export-compile-commands
+            exit 1
+          )
 
       - name: Compile Chromium Core with Ninja
         shell: cmd
