@@ -1339,38 +1339,12 @@ pub struct GenerateVideoPayload {
 async fn browser_nurture_generate_video_handler(
     Json(payload): Json<GenerateVideoPayload>,
 ) -> Json<serde_json::Value> {
-    let niche_arg = payload.niche.unwrap_or_else(|| "ai_tech".to_string());
-    let py_cmd = format!(
-        "import sys; sys.path.insert(0, r'D:\\Workspace\\Python\\QHTDautomation'); from MunAutomationDesktop.ai_video_engine.pipeline import AIVideoPipeline; p = AIVideoPipeline(); print(p.generate_viral_video('{}')['video_path'])",
-        niche_arg
-    );
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("python")
-            .args(&["-c", &py_cmd])
-            .output()
-    }).await;
-
-    match output {
-        Ok(Ok(out)) => {
-            let path_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !path_str.is_empty() {
-                Json(serde_json::json!({
-                    "success": true,
-                    "video_path": path_str,
-                    "message": "Đã render video Short AI thành công!"
-                }))
-            } else {
-                let err_str = String::from_utf8_lossy(&out.stderr).to_string();
-                Json(serde_json::json!({
-                    "success": false,
-                    "error": err_str
-                }))
-            }
-        }
-        _ => Json(serde_json::json!({
+    match crate::ai_video_engine::generate_viral_video(payload.niche).await {
+        Ok(res) => Json(res),
+        Err(e) => Json(serde_json::json!({
             "success": false,
-            "error": "Lỗi thực thi Python AI Video Pipeline"
-        }))
+            "error": e
+        })),
     }
 }
 

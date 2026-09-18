@@ -1,5 +1,6 @@
 mod adb_manager;
 mod api;
+pub mod ai_video_engine;
 pub mod browser_nurture;
 pub mod cdp_browser;
 mod stream_manager;
