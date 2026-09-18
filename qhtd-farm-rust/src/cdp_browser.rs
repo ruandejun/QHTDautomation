@@ -1216,7 +1216,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                 "method": "Network.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "acceptLanguage": "en-US,en;q=0.9",
                     "platform": platform_str
                 }
             })
@@ -1253,6 +1253,29 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     "id": cmd_id,
                                     "sessionId": session_id,
                                     "method": "Page.enable"
+                                }).to_string()));
+
+                                // 1b. Cố định Timezone và Geolocation chuẩn US để triệt tiêu lệch Fingerprint với Proxy
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setTimezoneOverride",
+                                    "params": {
+                                        "timezoneId": "America/New_York"
+                                    }
+                                }).to_string()));
+
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setGeolocationOverride",
+                                    "params": {
+                                        "latitude": 40.7128,
+                                        "longitude": -74.0060,
+                                        "accuracy": 100
+                                    }
                                 }).to_string()));
 
                                 // 2. Override UA nếu có tùy biến

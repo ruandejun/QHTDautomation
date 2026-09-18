@@ -150,6 +150,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/nurture/stop", post(browser_nurture_stop_handler))
         .route("/api/browser/nurture/status", get(browser_nurture_status_handler))
         .route("/api/browser/nurture/:id/submit-otp", post(browser_nurture_submit_otp_handler))
+        .route("/api/browser/nurture/upload-video", post(browser_nurture_upload_video_handler))
+        .route("/api/browser/nurture/generate-video", post(browser_nurture_generate_video_handler))
+        .route("/api/browser/nurture/auto-reg-gmail", post(browser_nurture_auto_reg_gmail_handler))
         .route("/api/browser/c69/accounts", get(browser_c69_accounts_handler))
         .route("/api/browser/c69/sync-profiles", post(browser_c69_sync_profiles_handler))
         .route("/api/browser/c69/proxies", get(browser_c69_proxies_handler))
@@ -592,6 +595,16 @@ pub fn get_profiles_file_path() -> PathBuf {
         }
     }
     candidates[0].clone()
+}
+
+pub fn get_profile_by_id(profile_id: usize) -> Option<BrowserProfile> {
+    let path = get_profiles_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            return profiles.into_iter().find(|p| p.id == profile_id);
+        }
+    }
+    None
 }
 
 pub fn update_profile_nurture_status(
@@ -1294,6 +1307,90 @@ async fn browser_nurture_submit_otp_handler(
     Json(serde_json::json!({
         "success": true,
         "message": format!("Đã chuyển mã OTP '{}' tới Profile #{}!", otp, profile_id)
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct UploadVideoPayload {
+    pub profile_id: usize,
+    pub video_path: String,
+    pub caption: String,
+}
+
+async fn browser_nurture_upload_video_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<UploadVideoPayload>,
+) -> Json<serde_json::Value> {
+    let bn = state.browser_nurture.clone();
+    tokio::spawn(async move {
+        let _ = bn.upload_tiktok_video(payload.profile_id, payload.video_path, payload.caption).await;
+    });
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã kích hoạt tiến trình upload video lên TikTok cho Profile #{}!", payload.profile_id)
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct GenerateVideoPayload {
+    pub niche: Option<String>,
+}
+
+async fn browser_nurture_generate_video_handler(
+    Json(payload): Json<GenerateVideoPayload>,
+) -> Json<serde_json::Value> {
+    let niche_arg = payload.niche.unwrap_or_else(|| "ai_tech".to_string());
+    let py_cmd = format!(
+        "import sys; sys.path.insert(0, r'D:\\Workspace\\Python\\QHTDautomation'); from MunAutomationDesktop.ai_video_engine.pipeline import AIVideoPipeline; p = AIVideoPipeline(); print(p.generate_viral_video('{}')['video_path'])",
+        niche_arg
+    );
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("python")
+            .args(&["-c", &py_cmd])
+            .output()
+    }).await;
+
+    match output {
+        Ok(Ok(out)) => {
+            let path_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                Json(serde_json::json!({
+                    "success": true,
+                    "video_path": path_str,
+                    "message": "Đã render video Short AI thành công!"
+                }))
+            } else {
+                let err_str = String::from_utf8_lossy(&out.stderr).to_string();
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": err_str
+                }))
+            }
+        }
+        _ => Json(serde_json::json!({
+            "success": false,
+            "error": "Lỗi thực thi Python AI Video Pipeline"
+        }))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AutoRegGmailPayload {
+    pub profile_id: usize,
+    pub email_id: u64,
+}
+
+async fn browser_nurture_auto_reg_gmail_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<AutoRegGmailPayload>,
+) -> Json<serde_json::Value> {
+    let bn = state.browser_nurture.clone();
+    tokio::spawn(async move {
+        let _ = bn.auto_register_tiktok_by_gmail(payload.profile_id, payload.email_id).await;
+    });
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã kích hoạt quy trình tự động Reg nick TikTok qua Gmail cho Profile #{}!", payload.profile_id)
     }))
 }
 

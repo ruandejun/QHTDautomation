@@ -59,4 +59,8 @@ QHTDautomationDesktop/browser_profiles.json
 MunAutomationDesktop/chrome_data/
 *.log
 registered_accounts.json
+
+# Four-Agent Pipeline & Artifacts
 .bangiao/
+rendered_videos/
+MunAutomationDesktop/rendered_videos/
