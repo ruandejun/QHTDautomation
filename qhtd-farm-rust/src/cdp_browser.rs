@@ -1423,9 +1423,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                         "sessionId": session_id,
                                         "method": "Page.bringToFront"
                                     }).to_string()));
-                                    let is_tiktok = start_url_clone.contains("tiktok.com") 
-                                        || profile_tiktok_username.is_some() 
-                                        || profile_tiktok_account_id.is_some();
+                                    let is_tiktok = start_url_clone.contains("tiktok.com");
                                     if is_tiktok {
                                         let s_id = session_id.to_string();
                                         let tx_sub = tx.clone();

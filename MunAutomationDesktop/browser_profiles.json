@@ -37,7 +37,7 @@
     "profile_ram": 16,
     "proxy_string": "socks5://iifcuwil:o6jm2azbq5gs@50.114.98.173:5657",
     "proxy_type": "socks5",
-    "profile_start_url": "https://iphey.com",
+    "profile_start_url": "https://whoer.net",
     "canvas_seed": 1516803648,
     "audio_seed": 640235903,
     "webrtc_mode": null,
@@ -48,8 +48,8 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16809,
     "tiktok_username": "3_bsantana.yandra",
-    "last_nurture_status": "Tiến hành đăng nhập",
-    "last_nurture_time": "2026-09-18 07:35:56",
+    "last_nurture_status": "Kiểm tra đăng nhập",
+    "last_nurture_time": "2026-09-18 08:19:19",
     "last_nurture_error": null,
     "retry_after_epoch": 1789670588
   },
@@ -129,10 +129,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16805,
     "tiktok_username": "m_klein.glaice.429",
-    "last_nurture_status": null,
-    "last_nurture_time": null,
-    "last_nurture_error": null,
-    "retry_after_epoch": null
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-18 15:29:37",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
+    "retry_after_epoch": 1789723777
   },
   {
     "id": 5,
@@ -156,8 +156,8 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16810,
     "tiktok_username": "2_monicafmroquio",
-    "last_nurture_status": null,
-    "last_nurture_time": null,
+    "last_nurture_status": "Tìm form đăng nhập",
+    "last_nurture_time": "2026-09-18 15:32:23",
     "last_nurture_error": null,
     "retry_after_epoch": null
   },
