@@ -48,9 +48,9 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16809,
     "tiktok_username": "3_bsantana.yandra",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-18 00:43:08",
-    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
+    "last_nurture_status": "Tiến hành đăng nhập",
+    "last_nurture_time": "2026-09-18 07:35:56",
+    "last_nurture_error": null,
     "retry_after_epoch": 1789670588
   },
   {

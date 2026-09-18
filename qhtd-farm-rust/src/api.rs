@@ -646,6 +646,24 @@ pub fn update_profile_nurture_status(
     }
 }
 
+pub fn update_profile_proxy(profile_id: usize, new_proxy: &str, proxy_type: &str) {
+    let path = get_profiles_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            for p in &mut profiles {
+                if p.id == profile_id {
+                    p.proxy_string = new_proxy.to_string();
+                    p.proxy_type = proxy_type.to_string();
+                    break;
+                }
+            }
+            if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+                let _ = std::fs::write(&path, json_str);
+            }
+        }
+    }
+}
+
 async fn list_browser_profiles_handler() -> Json<Vec<BrowserProfile>> {
     let path = get_profiles_file_path();
     if let Ok(data) = std::fs::read_to_string(&path) {

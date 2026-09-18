@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub const DEFAULT_C69_API_URL: &str = "https://cu.c69.us";
 pub const DEFAULT_C69_TOKEN: &str = "Token 99b02d3d255a49193950777b1cc3e3db099ceefb";
@@ -451,8 +451,31 @@ impl BrowserNurtureEngine {
         let pid = profile.id;
         let port = get_free_port(9222 + (pid as u16 % 500));
 
+        let mut active_profile = profile.clone();
+
+        // Tự động kiểm tra sức khỏe proxy trước khi mở trình duyệt, nếu chết tự động đảo sang proxy sống
+        if !active_profile.proxy_string.trim().is_empty() && !active_profile.proxy_type.eq_ignore_ascii_case("direct") {
+            let (alive, latency, msg) = test_proxy_connection(&active_profile.proxy_string).await;
+            if !alive {
+                warn!("⚠️ Proxy hiện tại của Profile #{} không khả dụng ({}). Tự động tìm proxy sống...", pid, msg);
+                self.update_log(
+                    pid,
+                    format!("⚠️ Proxy lỗi ({}). Đang tự động đảo sang Proxy US sống dự phòng...", msg),
+                    "Đảo Proxy"
+                );
+                if let Some(healthy) = find_healthy_backup_proxy(&active_profile.proxy_string).await {
+                    info!("🔄 Đã tự động đảo sang Proxy sống cho Profile #{}: {}", pid, healthy);
+                    crate::api::update_profile_proxy(pid, &healthy, "socks5");
+                    active_profile.proxy_string = healthy;
+                    active_profile.proxy_type = "socks5".to_string();
+                }
+            } else {
+                info!("✅ Proxy Profile #{} sống 100% (Latency: {}ms)", pid, latency);
+            }
+        }
+
         // 1. Khởi chạy Profile Pure Rust CDP Browser với Proxy Shield
-        let proxy_desc = if let Some(parsed) = crate::cdp_browser::parse_proxy_string(&profile.proxy_string) {
+        let proxy_desc = if let Some(parsed) = crate::cdp_browser::parse_proxy_string(&active_profile.proxy_string) {
             let auth_tag = if parsed.username.is_some() { " (Auth OK)" } else { "" };
             format!("🛡️ Proxy: {}://{}:{}{}", parsed.scheme.to_uppercase(), parsed.host, parsed.port, auth_tag)
         } else {
@@ -464,7 +487,7 @@ impl BrowserNurtureEngine {
             format!("Đang nạp Anti-Detect [{}] với Mobile & C++ Shield...", proxy_desc),
             "Khởi động browser"
         );
-        if let Err(e) = launch_cdp_profile(&profile).await {
+        if let Err(e) = launch_cdp_profile(&active_profile).await {
             self.set_error(pid, format!("Lỗi khởi chạy browser: {}", e));
             return;
         }
@@ -723,17 +746,32 @@ impl BrowserNurtureEngine {
                 let page_check = cdp.evaluate(r#"(() => {
                     const txt = (document.body ? document.body.innerText : '');
                     if (txt.includes('ERR_SOCKS') || txt.includes('This site can’t be reached') || txt.includes('ERR_CONNECTION')) {
-                        return 'Lỗi mạng SOCKS5: Không thể kết nối tới tiktok.com (ERR_SOCKS_CONNECTION_FAILED)';
+                        return 'ERR_SOCKS_DETECTED';
                     }
                     return '';
                 })()"#).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
 
                 if !page_check.is_empty() {
-                    self.set_error(pid, page_check);
-                    return;
-                }
+                    self.update_log(pid, "🔄 Phát hiện gián đoạn mạng (ERR_SOCKS), tự động reload trang và kết nối lại qua SOCKS5 Bridge...".to_string(), "Reload SOCKS5");
+                    let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
+                    tokio::time::sleep(Duration::from_secs(6)).await;
 
-                self.update_log(pid, "⚠️ Không tìm thấy ô nhập Email/Mật khẩu trên trang login TikTok sau 15s. Vui lòng kiểm tra cửa sổ trình duyệt!".to_string(), "Chờ form login");
+                    // Kiểm tra lại lần 2 sau khi reload
+                    let page_recheck = cdp.evaluate(r#"(() => {
+                        const txt = (document.body ? document.body.innerText : '');
+                        if (txt.includes('ERR_SOCKS') || txt.includes('This site can’t be reached') || txt.includes('ERR_CONNECTION')) {
+                            return 'Lỗi mạng SOCKS5: Không thể kết nối tới tiktok.com (ERR_SOCKS_CONNECTION_FAILED)';
+                        }
+                        return '';
+                    })()"#).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+
+                    if !page_recheck.is_empty() {
+                        self.set_error(pid, page_recheck);
+                        return;
+                    }
+                } else {
+                    self.update_log(pid, "⚠️ Không tìm thấy ô nhập Email/Mật khẩu trên trang login TikTok sau 15s. Vui lòng kiểm tra cửa sổ trình duyệt!".to_string(), "Chờ form login");
+                }
             }
 
             // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
@@ -1945,5 +1983,34 @@ pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
 
     let latency = start.elapsed().as_millis() as u64;
     (true, latency, format!("Proxy Live (Độ trễ: {}ms)", latency))
+}
+
+/// Tìm kiếm và trả về một proxy SOCKS5 sống khỏe mạnh nhất để tự động thay thế proxy chết
+pub async fn find_healthy_backup_proxy(failed_proxy: &str) -> Option<String> {
+    let mut candidate_strings = Vec::new();
+    for c in load_c69_proxies() {
+        candidate_strings.push(c.to_proxy_string());
+    }
+
+    let default_fallbacks = [
+        "socks5://iifcuwil:o6jm2azbq5gs@23.27.210.99:6469",
+        "socks5://iifcuwil:o6jm2azbq5gs@50.114.98.173:5657",
+        "socks5://iifcuwil:o6jm2azbq5gs@104.164.131.28:7207",
+    ];
+    for df in &default_fallbacks {
+        if !candidate_strings.contains(&df.to_string()) {
+            candidate_strings.push(df.to_string());
+        }
+    }
+
+    for p in candidate_strings {
+        if p != failed_proxy {
+            let (alive, _lat, _) = test_proxy_connection(&p).await;
+            if alive {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
