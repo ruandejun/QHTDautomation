@@ -142,6 +142,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/active", get(get_active_browser_profiles_handler))
         .route("/api/browser/core-status", get(browser_core_status_handler))
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
+        .route("/api/browser/tiktok/rate-limit-signal", post(tiktok_rate_limit_signal_handler))
+        .route("/api/browser/tiktok/login-success-signal", post(tiktok_login_success_signal_handler))
         // ── Mun Anti Browser TikTok Nurture & C69 APIs ──
         .route("/api/browser/nurture/start", post(browser_nurture_start_handler))
         .route("/api/browser/nurture/start-selected", post(browser_nurture_start_selected_handler))
@@ -607,6 +609,16 @@ pub fn get_profile_by_id(profile_id: usize) -> Option<BrowserProfile> {
     None
 }
 
+pub fn get_all_profiles() -> Vec<BrowserProfile> {
+    let path = get_profiles_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            return profiles;
+        }
+    }
+    vec![]
+}
+
 pub fn update_profile_nurture_status(
     profile_id: usize,
     status: &str,
@@ -910,6 +922,32 @@ async fn stop_browser_profile_handler(Json(payload): Json<serde_json::Value>) ->
 
 async fn get_active_browser_profiles_handler() -> Json<Vec<usize>> {
     Json(crate::cdp_browser::get_active_profile_ids())
+}
+
+async fn tiktok_rate_limit_signal_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let profile_id = payload.get("profile_id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    if profile_id > 0 {
+        tracing::warn!("⚠️ [Profile #{}] Nhận tín hiệu Rate limit (Maximum attempts) từ trình duyệt TikTok!", profile_id);
+        update_profile_nurture_status(
+            profile_id,
+            "Rate limit (Chờ 1h)",
+            Some("Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)"),
+            Some(3600),
+        );
+        crate::cdp_browser::stop_cdp_profile(profile_id);
+        tracing::info!("🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn để chờ 1h thử lại.", profile_id);
+    }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn tiktok_login_success_signal_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let profile_id = payload.get("profile_id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    if profile_id > 0 {
+        tracing::info!("🎉 [Profile #{}] Nhận tín hiệu đăng nhập TikTok thành công!", profile_id);
+        update_profile_nurture_status(profile_id, "Đã đăng nhập sẵn (Sẵn sàng)", None, None);
+        let _ = crate::cdp_browser::backup_thin_profile(profile_id);
+    }
+    Json(serde_json::json!({ "success": true }))
 }
 
 // ── Mun Anti Browser TikTok Nurture & C69 Handlers ───────────────────────────

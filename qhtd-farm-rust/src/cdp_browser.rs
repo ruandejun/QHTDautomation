@@ -1063,7 +1063,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         || profile.profile_user_agent.contains("Android")
         || profile.profile_user_agent.contains("iPhone");
 
-    let (screen_w, screen_h) = if let Some((w_s, h_s)) = profile.profile_resolution.split_once('x') {
+    let (_screen_w, _screen_h) = if let Some((w_s, h_s)) = profile.profile_resolution.split_once('x') {
         (w_s.trim().parse::<i64>().unwrap_or(390), h_s.trim().parse::<i64>().unwrap_or(844))
     } else if is_mobile {
         (390, 844)
@@ -1764,6 +1764,69 @@ async fn check_and_handle_tiktok_login_cdp(
             let _ = tx.send(Message::Text(cmd_totp.to_string()));
             info!("🔑 [Profile #{}] Đã tự động tính toán mã 2FA TOTP RFC 6238 và gửi vào form xác thực!", profile_id);
         }
+
+        // 4. Giám sát phản hồi đăng nhập TikTok: Tự động phát hiện Rate Limit và Thành công
+        let monitor_script = format!(r#"
+            (function monitorLogin() {{
+                let count = 0;
+                const timer = setInterval(() => {{
+                    count++;
+                    const bodyText = (document.body ? document.body.innerText : '');
+                    const toast = document.querySelector('[data-e2e="toast"]') ||
+                                  document.querySelector('.tiktok-toast') ||
+                                  document.querySelector('.toast-message') ||
+                                  document.querySelector('.toast') ||
+                                  document.querySelector('[role="status"]');
+                    const toastText = toast ? (toast.innerText || '') : '';
+                    const combined = (bodyText + ' ' + toastText).toLowerCase();
+
+                    const isRateLimit = combined.includes('maximum number of attempts reached') || 
+                                        combined.includes('try again later') || 
+                                        combined.includes('too many attempts') ||
+                                        combined.includes('số lần thử tối đa') ||
+                                        combined.includes('vui lòng thử lại sau');
+
+                    if (isRateLimit) {{
+                        clearInterval(timer);
+                        console.warn('QHTD: TikTok Login Rate Limit Detected! Closing and waiting 1h...');
+                        fetch('http://127.0.0.1:9090/api/browser/tiktok/rate-limit-signal', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ profile_id: {} }})
+                        }}).catch(() => {{}});
+                        return;
+                    }}
+
+                    const hasAvatar = !!(
+                        document.querySelector('[data-e2e="profile-icon"]') || 
+                        document.querySelector('img[alt*="avatar"]') || 
+                        document.querySelector('a[href*="/@"]')
+                    );
+                    if (hasAvatar) {{
+                        clearInterval(timer);
+                        console.log('QHTD: TikTok Login Success! Saving session...');
+                        fetch('http://127.0.0.1:9090/api/browser/tiktok/login-success-signal', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ profile_id: {} }})
+                        }}).catch(() => {{}});
+                        return;
+                    }}
+
+                    if (count > 30) clearInterval(timer);
+                }}, 1500);
+            }})();
+        "#, profile_id, profile_id);
+
+        let cmd_monitor = json!({
+            "id": 999906,
+            "sessionId": session_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": monitor_script
+            }
+        });
+        let _ = tx.send(Message::Text(cmd_monitor.to_string()));
     } else {
         // Chưa liên kết tài khoản C69 -> Kiểm tra nếu chưa login thì điều hướng đến trang login để người dùng tiện đăng nhập
         let redirect_script = r#"

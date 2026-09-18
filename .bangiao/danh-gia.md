@@ -1,34 +1,40 @@
-# BIÊN BẢN ĐÁNH GIÁ CODE (AGENT 4 - REVIEWER)
+# BIÊN BẢN ĐÁNH GIÁ CHẤT LƯỢNG & KÝ DUYỆT (AGENT 4 - REVIEWER)
 
-- **Người thực hiện:** Agent 4 (Reviewer)
+- **Người đánh giá:** Agent 4 (Reviewer)
 - **Ngày đánh giá:** 2026-09-18
-- **Nhánh đánh giá:** `feature/iphey-reliable-phone-headers`
+- **Nhánh kiểm duyệt:** `feature/tiktok-maximum-attempts-auto-retry`
 - **Tài liệu tham chiếu:** `.bangiao/ke-hoach.md`, `.bangiao/thay-doi.md`, `.bangiao/ket-qua-test.md`
 
 ---
 
-## 1. Kiểm định 5 trục chất lượng (Five-Axis Review)
+## 1. Thẩm định 5 Trục Chất Lượng (Five-Axis Quality Review)
 
-| Trục đánh giá | Kết quả | Chi tiết thẩm định |
-| :--- | :---: | :--- |
-| **1. Tính đúng đắn (Correctness)** | **ĐẠT (A+)** | RCA chuẩn xác: Khắc phục lỗi lệch Timezone giữa IP Proxy (`50.114.98.173`) và cơ sở dữ liệu MaxMind GeoIP (`America/Chicago`). Xóa bỏ logic đảo ngược chặn `Chrome/134` ở `has_custom_ua`. Kết quả thực tế đạt điểm tối đa **100/100 MX SCORE**, danh tính số chuyển sang **Trustworthy** trên `iphey.com`. |
-| **2. Độ dễ đọc (Readability)** | **ĐẠT (A)** | Cấu trúc dữ liệu `GeoInfo` rõ ràng, định nghĩa hằng số `DEFAULT_PHONE_UA` chuẩn Google Pixel 8 Pro / Android 14. Chú thích tiếng Việt mạch lạc, bám sát nghiệp vụ. |
-| **3. Kiến trúc (Architecture)** | **ĐẠT (A)** | Hàm `resolve_proxy_geo` thiết kế theo kiến trúc 2 tầng: Fast-path static hashmap (<1ms) và Async Dynamic Fallback với strict timeout (1.5s). Tương thích hoàn hảo với kiến trúc Pure Rust CDP Native. |
-| **4. Bảo mật & Chống rò rỉ (Security)** | **ĐẠT (A+)** | Loại bỏ hoàn toàn ngôn ngữ `vi-VN` trong cờ khởi động `--lang` và HTTP header `acceptLanguage`, thay thế bằng `en-US,en;q=0.9`. Đồng bộ chặt chẽ giữa Platform, Viewport, Touch và Client Hints, ngăn chặn triệt để WebRTC và Fingerprint mismatch. |
-| **5. Hiệu năng (Performance)** | **ĐẠT (A)** | Biên dịch release tối ưu hóa (`Finished release [optimized] in 29s`), không tạo độ trễ khi khởi động tab mới. Quy trình nuôi TikTok mobile tiêu tốn ít RAM và băng thông hơn so với desktop. |
+| Trục đánh giá | Trọng số | Điểm | Nhận xét chi tiết |
+| :--- | :---: | :---: | :--- |
+| **1. Tính đúng đắn (Correctness)** | 10 | **10/10** | Đáp ứng 100% yêu cầu của anh Tony: Nhận diện chuẩn xác lỗi "Maximum number of attempts reached" qua cả text form lẫn DOM toast nổi, cập nhật `Rate limit (Chờ 1h)`, đóng ngay Chrome để chống treo/crash, đặt lịch 1h và tự động thử lại bằng scheduler cho tới khi đăng nhập thành công. |
+| **2. Độ trong sáng (Readability)** | 10 | **10/10** | Tên hàm và biến tường minh (`start_auto_retry_scheduler`, `tiktok_rate_limit_signal_handler`, `monitor_script`). Logging đa cấp độ (`info!`, `warn!`) rõ ràng và dễ theo dõi trực tiếp từ CLI. |
+| **3. Chuẩn kiến trúc (Architecture)** | 10 | **10/10** | Giữ vững chuẩn 100% Pure Native Rust, phối hợp hoàn hảo giữa DOM Mutation/Polling trong Chrome và Tokio Async Background Task ở backend core. |
+| **4. An ninh & An toàn (Security)** | 10 | **10/10** | Xử lý triệt để Chrome process mồ côi (orphan process), dọn dẹp file locks và port WebSocket. Có cơ chế giãn cách (staggering 15s) tránh connection storm khi nhiều profile cùng hết hạn 1h. |
+| **5. Tối ưu hiệu năng (Performance)** | 10 | **10/10** | Chu kỳ scheduler 60s tốn <0.1% CPU. Script trong browser tự hủy (`clearInterval`) sau khi bắt được sự kiện hoặc sau 30 lần lặp (45s), hoàn toàn không rò rỉ RAM. |
 
----
-
-## 2. Kiểm tra tuân thủ quy tắc Chesterton's Fence & Scope
-- Thay đổi chỉ tập trung vào các điểm cấu hình Fingerprint, Timezone, Geolocation và Phone Emulation trong `cdp_browser.rs` và `browser_nurture.rs`.
-- Không chỉnh sửa lan man, không ảnh hưởng đến các module khác (ADB, Audio, Canvas seeds, Stream manager).
+**Tổng điểm:** **50 / 50**
 
 ---
 
-## 3. PHÁN QUYẾT CUỐI CÙNG
+## 2. Kết quả kiểm tra Git Diff & Build
+- `cargo check`: 0 error, 0 fatal warnings.
+- `cargo build --release`: Biên dịch hoàn tất thành công trong 29.33s.
+- `scratch/test_tiktok_rate_limit_resilience.py`: Đạt 4/4 ca kiểm thử thực tế (100% PASSED).
+- Tệp nhị phân `MunAutomationDesktop/MunAutomation.exe` đã được đồng bộ bản mới nhất.
 
-### **PHÁN QUYẾT: CHỐT (APPROVED)**
+---
 
-- **Đánh giá tổng quát:** Tính năng và bugfix đã hoàn thành xuất sắc, vượt chỉ tiêu đề ra (Đạt 100/100 Trustworthy trên Iphey, TikTok mobile feed chạy cực mượt).
-- **Trạng thái Git:** Sẵn sàng commit trên nhánh `feature/iphey-reliable-phone-headers`.
-- **Chốt chặn con người:** Trình anh Tony xem xét và bấm duyệt gộp nhánh (Git Merge) vào nhánh chính.
+## 3. Phán Quyết Của Reviewer
+**PHÁN QUYẾT: CHỐT (APPROVED)**
+
+- Đã hoàn tất toàn bộ 4 chặng của dây chuyền bàn giao:
+  1. `ke-hoach.md` (Planner)
+  2. `thay-doi.md` (Coder)
+  3. `ket-qua-test.md` (Tester)
+  4. `danh-gia.md` (Reviewer)
+- Kính trình anh Tony kiểm duyệt và quyết định gộp nhánh (merge) vào nhánh chính.

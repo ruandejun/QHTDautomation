@@ -835,23 +835,35 @@ impl BrowserNurtureEngine {
                     if (bodyText.includes('ERR_SOCKS') || bodyText.includes('ERR_CONNECTION_REFUSED') || bodyText.includes('This site can’t be reached')) {
                         return 'Lỗi mạng SOCKS5 Proxy (ERR_SOCKS_CONNECTION_FAILED hoặc mất mạng)';
                     }
-                    if (bodyText.includes('Maximum number of attempts reached') || bodyText.includes('Try again later')) {
-                        return 'Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)';
+
+                    // Quét Toast thông báo lỗi nổi của TikTok
+                    const toast = document.querySelector('[data-e2e="toast"]') ||
+                                  document.querySelector('.tiktok-toast') ||
+                                  document.querySelector('.toast-message') ||
+                                  document.querySelector('.toast') ||
+                                  document.querySelector('[role="status"]');
+                    const toastText = toast ? (toast.innerText || '') : '';
+                    const combined = (bodyText + ' ' + toastText).toLowerCase();
+
+                    if (combined.includes('maximum number of attempts reached') || 
+                        combined.includes('try again later') || 
+                        combined.includes('too many attempts') ||
+                        combined.includes('số lần thử tối đa') ||
+                        combined.includes('vui lòng thử lại sau')) {
+                        return 'Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)';
                     }
-                    if (bodyText.includes('Incorrect username or password') || bodyText.includes('wrong password')) {
+                    if (combined.includes('incorrect username or password') || combined.includes('wrong password') || combined.includes('sai mật khẩu')) {
                         return 'Sai tên đăng nhập hoặc mật khẩu';
                     }
-                    if (bodyText.includes('Account does not exist')) {
+                    if (combined.includes('account does not exist') || combined.includes('không tồn tại')) {
                         return 'Tài khoản không tồn tại trên TikTok';
-                    }
-                    if (bodyText.includes('Too many attempts')) {
-                        return 'Quá nhiều lần thử thất bại';
                     }
 
                     const err = document.querySelector('.tiktok-input-error') || 
                                 document.querySelector('[role="alert"]') || 
                                 document.querySelector('[class*="error-container"]') ||
-                                document.querySelector('[class*="error-message"]');
+                                document.querySelector('[class*="error-message"]') ||
+                                document.querySelector('.error-text');
                     return err ? err.innerText.trim() : '';
                 })()"#;
                 let err_text = cdp.evaluate(err_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
@@ -1262,7 +1274,9 @@ impl BrowserNurtureEngine {
         let err_lower = err.to_lowercase();
         let is_max_attempts = err_lower.contains("maximum number of attempts") 
             || err_lower.contains("try again later")
-            || err_lower.contains("too many attempts");
+            || err_lower.contains("too many attempts")
+            || err_lower.contains("số lần thử tối đa")
+            || err_lower.contains("thử lại sau");
         let is_wrong_pwd = err_lower.contains("sai tên đăng nhập") || err_lower.contains("sai mật khẩu") || err_lower.contains("incorrect username or password");
         let is_not_exist = err_lower.contains("không tồn tại") || err_lower.contains("does not exist");
         let is_email_error = err_lower.contains("lỗi đọc email");
@@ -1292,6 +1306,54 @@ impl BrowserNurtureEngine {
         if let Some(f) = self.tasks.read().get(&pid) {
             f.store(false, Ordering::Relaxed);
         }
+
+        // Tự động đóng hoàn toàn cửa sổ Chrome của Profile để giải phóng RAM, cổng DevTools và lockfile
+        crate::cdp_browser::stop_cdp_profile(pid);
+        info!("🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn sau trạng thái [{}]. Không để treo máy!", pid, status_label);
+    }
+
+    /// Background scheduler tự động quét và thử lại đăng nhập cho các Profile bị Rate Limit (Chờ 1h)
+    pub fn start_auto_retry_scheduler(self: Arc<Self>) {
+        tokio::spawn(async move {
+            info!("🕒 Khởi chạy TikTok Rate Limit Auto-Retry Scheduler (Chu kỳ quét 60s)...");
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let profiles = crate::api::get_all_profiles();
+                for p in profiles {
+                    if let Some(retry_epoch) = p.retry_after_epoch {
+                        let st_str = p.last_nurture_status.as_deref().unwrap_or("");
+                        let is_rate_limited = st_str.contains("Rate limit") || st_str.contains("Chờ 1h");
+
+                        if is_rate_limited && now_epoch >= retry_epoch {
+                            let pid = p.id;
+                            let is_already_running = self.tasks.read().get(&pid).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
+
+                            if !is_already_running {
+                                info!("⏰ [Profile #{}] Đã hết thời gian giãn cách 1 giờ! Tự động khởi động lại đăng nhập TikTok...", pid);
+                                self.update_log(pid, "⏰ Đã hết 1 giờ giãn cách, đang tự động đăng nhập lại TikTok...".to_string(), "Tự động thử lại sau 1h");
+
+                                let engine = self.clone();
+                                let prof = p.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = engine.start_nurture(prof, None).await {
+                                        warn!("⚠️ Không thể tự động chạy lại Profile #{}: {}", pid, e);
+                                    }
+                                });
+
+                                // Giãn cách 15s giữa các profile để tránh connection storm
+                                tokio::time::sleep(Duration::from_secs(15)).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Tự động đăng video Short lên TikTok Creator Center bằng CDP

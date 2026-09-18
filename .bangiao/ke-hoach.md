@@ -1,82 +1,93 @@
-# KẾ HOẠCH KỸ THUẬT (PLANNER) — KHẮC PHỤC UNRELIABLE TRÊN IPHEY & CHUẨN HÓA PHONE HEADERS NUÔI TIKTOK
+# KẾ HOẠCH KỸ THUẬT: XỬ LÝ LỖI TIKTOK LOGIN 'MAXIMUM ATTEMPTS', TỰ ĐỘNG ĐÓNG BROWSER & AUTO-RETRY SAU 1 GIỜ
 
-> **Mã nhiệm vụ:** `/ship IPHEY_RELIABLE_PHONE_HEADERS`  
-> **Người lập:** Agent 1 — Planner  
-> **Nhánh thi công:** `feature/iphey-reliable-phone-headers`  
-> **Trạng thái:** HOÀN TẤT THIẾT KẾ — BÀN GIAO SANG CODER  
-
----
-
-## 1. Phân tích nguyên nhân gốc (Root Cause Analysis - RCA)
-
-### A. Tại sao `iphey.com` báo "Your Digital Identity Looks Unreliable" và `LOCATION` bị đỏ?
-1. **Lệch múi giờ giữa IP và Browser Intl Timezone (Timezone Mismatch):**
-   - Trong `cdp_browser.rs` (dòng 1326), `Emulation.setTimezoneOverride` bị gán cứng là `"America/New_York"` (múi giờ miền Đông, UTC-4).
-   - Trong khi đó, Proxy IP `50.114.98.173` nằm tại Orem, Utah — thuộc múi giờ `"America/Denver"` (Mountain Time, UTC-6).
-   - Hệ thống phát hiện gian lận của MixVisit / Iphey đối chiếu: IP ở Utah (UTC-6) nhưng JavaScript trình duyệt báo New York (UTC-4) -> Chênh lệch 2 tiếng -> Kích hoạt cảnh báo `Detected masked or inconsistent location data (light)` -> Toàn bộ thẻ `LOCATION` biến thành ĐỎ!
-2. **Lệch tọa độ Geolocation (GPS Spoofing Mismatch):**
-   - Tọa độ gán cứng tại New York (`lat: 40.7128, lon: -74.0060`), trong khi tọa độ thực của IP Utah là `40.3032, -111.675` (cách nhau hơn 3.000 km).
-3. **Lệch ngôn ngữ hệ thống và proxy:**
-   - Chrome khởi chạy với cờ `--lang=vi-VN,vi,en-US,en` khiến header `Accept-Language` ưu tiên tiếng Việt trên một IP Mỹ -> Tăng điểm nghi ngờ vị trí.
-
-### B. Tại sao chuyển đổi sang Phone/Mobile Headers là giải pháp tối ưu cho nuôi TikTok?
-- **Đánh giá của anh Tony:** *"với nuôi tiktok a nghĩ là phải dùng header là phone sẽ đơn giản hơn"*.
-- **Cơ sở kỹ thuật vững chắc:**
-  1. TikTok Web Desktop có hệ thống phòng thủ bot cực nặng (FunCaptcha xoay hình, Wasm sensor, audio/canvas fingerprinting chặt chẽ, dễ bị `Maximum number of attempts reached`).
-  2. TikTok Mobile Web (`m.tiktok.com`) được thiết kế cho điện thoại di động lướt trên mạng 4G/5G/Proxy động, thuật toán đánh giá bot nới lỏng hơn rất nhiều.
-  3. Giao diện mobile dọc (9:16) gọn gàng, tải video nhẹ hơn 40%, thao tác vuốt cuộn (Touch scroll) tự nhiên, không bị vướng form phức tạp của desktop.
+- **Người lập kế hoạch:** Agent 1 (Planner)
+- **Ngày lập:** 2026-09-18
+- **Nhánh triển khai:** `feature/tiktok-maximum-attempts-auto-retry`
+- **Tài liệu tham chiếu:** Yêu cầu từ anh Tony ngày 2026-09-18 16:51
 
 ---
 
-## 2. Thiết kế Giải pháp Kỹ thuật Chi tiết
-
-### Module 1: Dynamic Proxy Geolocation & Timezone Resolver
-- Tạo hàm bất đồng bộ `resolve_proxy_geo(proxy_host)`:
-  - Tra cứu thông tin IP: Thành phố, Bang, Quốc gia, Múi giờ IANA chuẩn (`timezone`), Tọa độ (`latitude`, `longitude`).
-  - Cache cục bộ cho các IP quen thuộc:
-    * `50.114.98.173` -> Utah, `America/Denver`, Lat: `40.3032`, Lon: `-111.675`.
-    * `23.27.210.99` -> Virginia, `America/New_York`, Lat: `38.9586`, Lon: `-77.357`.
-    * `104.164.131.28` -> California, `America/Los_Angeles`, Lat: `37.7749`, Lon: `-122.419`.
-  - Fallback tra cứu qua `http://ip-api.com/json/{host}` nếu gặp proxy mới.
-- Áp dụng vào `Emulation.setTimezoneOverride` và `Emulation.setGeolocationOverride` tương ứng 100% với IP của proxy.
-- Chuyển ngôn ngữ khởi chạy sang `--lang=en-US,en` và `Emulation.setLocaleOverride: "en-US"`.
-
-### Module 2: Chuẩn Hóa Bộ Nhận Diện Điện Thoại (Android Phone Profile Standard)
-Xây dựng pool thiết bị Android cao cấp (Google Pixel 8 Pro, Samsung Galaxy S24 Ultra):
-1. **User Agent:**
-   `Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36`
-2. **Client Hints (`Network.setUserAgentOverride`):**
-   - `sec-ch-ua`: `"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"`
-   - `sec-ch-ua-mobile`: `?1`
-   - `sec-ch-ua-platform`: `"Android"`
-   - `sec-ch-ua-platform-version`: `"14.0.0"`
-   - `sec-ch-ua-model`: `"Pixel 8 Pro"`
-   - `platform`: `"Android"`
-3. **Viewport & Touch Emulation:**
-   - Kích thước màn hình ảo: `width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true`.
-   - `Emulation.setTouchEmulationEnabled: { enabled: true, maxTouchPoints: 5 }`.
-   - Cửa sổ hiển thị trên màn hình Windows: `440x920` (vừa vặn khung điện thoại cho người dùng theo dõi).
-4. **Navigator Stealth JS Injection:**
-   - `navigator.platform = "Linux armv8l"`
-   - `navigator.maxTouchPoints = 5`
-   - `navigator.hardwareConcurrency = 8` (Octa-core CPU)
-   - `navigator.deviceMemory = 8` (8 GB RAM)
-   - `navigator.language = "en-US"`
-   - `navigator.languages = ["en-US", "en"]`
-
-### Module 3: Tối Ưu Hóa Nuôi TikTok Trên Giao Diện Mobile Web (`browser_nurture.rs`)
-- Mặc định khởi chạy nuôi TikTok với chế độ Phone Headers.
-- Tự động điều hướng vào `https://www.tiktok.com` với giao diện Mobile feed.
-- Thao tác cuộn video bằng mô phỏng cảm ứng vuốt chạm Mobile Touch (`Input.dispatchTouchEvent` hoặc mouse drag dọc) thay vì phím mũi tên desktop.
+## 1. Mục tiêu kỹ thuật
+1. **Phát hiện triệt để lỗi `Maximum number of attempts reached`** ở cả 2 luồng:
+   - Luồng 1: Nuôi tự động TikTok (`run_nurture_worker` trong `browser_nurture.rs`).
+   - Luồng 2: Mở profile từ Dashboard (`check_and_handle_tiktok_login_cdp` trong `cdp_browser.rs`).
+   - Hỗ trợ đa ngôn ngữ (Tiếng Anh + Tiếng Việt) và mọi vị trí hiển thị (Toast, Form alert, Error container, Modal).
+2. **Dọn dẹp sạch sẽ & Đóng trình duyệt an toàn (Graceful Shutdown):**
+   - Khi phát hiện lỗi Rate limit / Maximum: lập tức ghi nhận trạng thái `Rate limit (Chờ 1h)`, đặt `retry_after_epoch = now + 3600`.
+   - Gọi ngay `crate::cdp_browser::stop_cdp_profile(pid)` để tắt hoàn toàn cửa sổ Chrome, dọn dẹp lockfile và giải phóng bridge SOCKS5, triệt tiêu tình trạng treo tool / crash / rò rỉ bộ nhớ.
+3. **Cơ chế Auto-Retry Scheduler sau 1 giờ:**
+   - Xây dựng background loop định kỳ (mỗi 60s) quét các profile đang ở trạng thái `Rate limit (Chờ 1h)`.
+   - Khi thời gian hiện tại `now >= retry_after_epoch`:
+     * Tự động khởi động lại chu trình đăng nhập cho profile đó.
+     * Tiếp tục lặp lại: Thử đăng nhập -> Nếu vẫn bị Maximum -> Đóng browser, chờ tiếp 1h -> Thử lại tiếp... Cho tới khi nào đăng nhập thành công.
+     * Khi đăng nhập thành công: Lưu cookies vào tài khoản C69 + backup thin profile (`backup_thin_profile(pid)`). Đổi trạng thái sang `Đã đăng nhập sẵn (Sẵn sàng)`. Từ lần sau mở lên dùng ngay, không bao giờ cần login nữa!
 
 ---
 
-## 3. Kế hoạch Kiểm thử & Tiêu chuẩn Nghiệm thu (Test Criteria)
-1. **Kiểm thử Iphey.com:**
-   - Cả 5 thẻ `BROWSER`, `LOCATION`, `IP ADDRESS`, `HARDWARE`, `SOFTWARE` đều đạt **GREEN CHECKMARK**.
-   - MX Score đạt từ **90 - 100 điểm**.
-   - Headline chuyển thành: **"Your Digital Identity Looks Trustworthy"**.
-2. **Kiểm thử TikTok Mobile Feed:**
-   - Truy cập `https://www.tiktok.com` tải giao diện mobile mượt mà, video tự động play, không bị vướng desktop recaptcha.
-3. **Nghiệm thu Dây chuyền:**
-   - Coder thi công đúng scope -> Tester chạy test thực tế xuất ảnh chứng minh -> Reviewer soi git diff và ban hành phán quyết.
+## 2. Phân tích nguyên nhân gốc rễ (RCA)
+- **Tại sao tool tưởng như bị crash/không nhận ra:**
+  1. Trong `cdp_browser.rs` (hàm `check_and_handle_tiktok_login_cdp`): Chỉ điền thông tin và OTP rồi dừng, không có vòng lặp lắng nghe response của TikTok sau submit. Nếu TikTok bung toast "Maximum number of attempts reached", không có code nào bắt sự kiện này.
+  2. Trong `browser_nurture.rs` (hàm `set_error`): Khi phát hiện lỗi, hàm `set_error` chỉ gán cờ `run_flag = false` và cập nhật JSON, **KHÔNG HỀ GỌI `stop_cdp_profile(pid)`**. Cửa sổ Chrome vẫn mở, cổng WebSocket vẫn giữ kết nối, các file `SingletonLock` chưa được giải phóng -> Tool bị treo cửa sổ cũ, người dùng nhìn vào thấy đơ.
+  3. Thiếu scheduler tự động: Sau khi đặt `retry_after_epoch = now + 3600`, không có thread nào kích hoạt lại worker khi hết hạn 1h.
+
+---
+
+## 3. Thiết kế giải pháp chi tiết
+
+### Chặng A: Cải tiến bộ phát hiện lỗi TikTok Login (`detect_tiktok_login_error_cdp`)
+Xây dựng hàm dùng chung hoặc script JS quét toàn diện:
+- Các chuỗi nhận diện:
+  * `"maximum number of attempts reached"`
+  * `"try again later"`
+  * `"too many attempts"`
+  * `"đã đạt số lần thử tối đa"`
+  * `"vui lòng thử lại sau"`
+  * `"something went wrong"`
+- Các selectors cần quét:
+  * Toast container: `div[data-e2e="toast"]`, `.tiktok-toast`, `.toast-message`
+  * Error container: `[role="alert"]`, `.tiktok-input-error`, `[class*="error-container"]`, `[class*="error-message"]`, `.error-text`
+  * Body text toàn diện: `document.body ? document.body.innerText : ''`
+
+### Chặng B: Dọn dẹp & Tắt trình duyệt khi gặp Maximum Attempts
+Trong `set_error` của `browser_nurture.rs`:
+- Sau khi cập nhật trạng thái `Rate limit (Chờ 1h)` và `retry_after_epoch`:
+- Gọi `crate::cdp_browser::stop_cdp_profile(pid);`
+- Đồng thời gửi thông báo log: `🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn để giải phóng tài nguyên. Sẽ tự động thử đăng nhập lại sau 1 giờ.`
+
+Trong `check_and_handle_tiktok_login_cdp` của `cdp_browser.rs`:
+- Bổ sung vòng lặp 15s sau khi submit form để lắng nghe kết quả:
+  * Nếu thành công: lưu cookies, backup thin profile.
+  * Nếu gặp Maximum attempts: cập nhật `update_profile_nurture_status(pid, "Rate limit (Chờ 1h)", ...)`, đặt `retry_after_epoch`, và gọi `stop_cdp_profile(pid)`.
+
+### Chặng C: Background Auto-Retry Scheduler sau 1 giờ (`tiktok_rate_limit_scheduler`)
+Trong `browser_nurture.rs` hoặc `main.rs`:
+- Khởi chạy một tokio background task vĩnh viễn:
+```rust
+tokio::spawn(async move {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        // Quét danh sách profiles
+        // Nếu profile có retry_after_epoch <= now và status chứa "Rate limit" hoặc "Chờ 1h":
+        // Tự động kích hoạt lại chu trình đăng nhập qua start_nurture
+    }
+});
+```
+
+---
+
+## 4. Kế hoạch kiểm thử (Tester Plan)
+1. **Unit/Integration Test:**
+   - Giả lập trường hợp trang login hiển thị toast "Maximum number of attempts reached. Try again later."
+   - Xác minh tool nhận diện chính xác mã lỗi `is_max_attempts`.
+   - Xác minh `retry_after_epoch` được ghi nhận đúng `now + 3600`.
+   - Xác minh Chrome process của profile bị terminate và lockfile được dọn dẹp sạch sẽ (không còn cửa sổ treo).
+2. **Scheduler Test:**
+   - Test scheduler kích hoạt tự động khi `retry_after_epoch` đến hạn.
+3. **Happy Path Test:**
+   - Khi login thành công: Xác nhận cookies được sync và thin profile được backup, trạng thái chuyển sang sẵn sàng.
+
+---
+
+## 5. Rủi ro & Giải pháp phòng ngừa
+- **Rủi ro:** Khi auto-retry sau 1h, nếu nhiều profile cùng hết hạn cùng lúc có thể gây nghẽn mạng/CPU.
+- **Giải pháp:** Áp dụng jitter/staggering (mỗi profile cách nhau 15-30 giây) khi auto-retry để phân tải mượt mà.
