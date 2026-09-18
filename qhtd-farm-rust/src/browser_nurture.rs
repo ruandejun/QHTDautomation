@@ -453,6 +453,13 @@ impl BrowserNurtureEngine {
 
         let mut active_profile = profile.clone();
 
+        // Chuẩn hóa Header Mobile Phone cho nuôi TikTok: sử dụng Pixel 8 Pro / Android 14 để tối ưu hóa tương tác, tránh sensor check desktop
+        if active_profile.profile_user_agent.trim().is_empty() || !active_profile.profile_user_agent.contains("Mobile") {
+            active_profile.profile_user_agent = crate::cdp_browser::DEFAULT_PHONE_UA.to_string();
+            active_profile.profile_os = "Android".to_string();
+            active_profile.profile_resolution = "412x915".to_string();
+        }
+
         // Tự động kiểm tra sức khỏe proxy trước khi mở trình duyệt, nếu chết tự động đảo sang proxy sống
         if !active_profile.proxy_string.trim().is_empty() && !active_profile.proxy_type.eq_ignore_ascii_case("direct") {
             let (alive, latency, msg) = test_proxy_connection(&active_profile.proxy_string).await;
@@ -1204,8 +1211,9 @@ impl BrowserNurtureEngine {
                 }
             }
 
-            // Chuyển sang video kế tiếp bằng phím mũi tên xuống (ArrowDown)
+            // Chuyển sang video kế tiếp: kết hợp cuộn smooth mobile và phím mũi tên xuống (ArrowDown)
             self.update_log(pid, "👆 Vuốt lướt sang video tiếp theo...".to_string(), "Chuyển video");
+            let _ = cdp.evaluate("window.scrollBy({ top: window.innerHeight || 800, behavior: 'smooth' });").await;
             let _ = cdp.press_key("ArrowDown", "ArrowDown", 40).await;
 
             tokio::time::sleep(Duration::from_secs(2)).await;

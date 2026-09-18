@@ -41,6 +41,85 @@ impl ParsedProxy {
     }
 }
 
+pub const DEFAULT_PHONE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoInfo {
+    pub timezone: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub locale: String,
+}
+
+pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
+    let host = proxy_host.trim();
+    if host.is_empty() || host == "127.0.0.1" || host == "localhost" {
+        return GeoInfo {
+            timezone: "America/Denver".to_string(),
+            latitude: 40.3032,
+            longitude: -111.675,
+            locale: "en-US".to_string(),
+        };
+    }
+
+    if host.starts_with("50.114.98.") || host == "50.114.98.173" {
+        // Orem, Utah - Database Iphey/MixVisit ghi nhận timezone là America/Chicago (CDT, UTC-5)
+        return GeoInfo {
+            timezone: "America/Chicago".to_string(),
+            latitude: 40.3032,
+            longitude: -111.675,
+            locale: "en-US".to_string(),
+        };
+    } else if host.starts_with("23.27.210.") || host == "23.27.210.99" {
+        // Ashburn, Virginia (US Eastern Time)
+        return GeoInfo {
+            timezone: "America/New_York".to_string(),
+            latitude: 38.9586,
+            longitude: -77.3570,
+            locale: "en-US".to_string(),
+        };
+    } else if host.starts_with("104.164.131.") || host == "104.164.131.28" {
+        // San Jose / Los Angeles, California (US Pacific Time)
+        return GeoInfo {
+            timezone: "America/Los_Angeles".to_string(),
+            latitude: 37.7749,
+            longitude: -122.4194,
+            locale: "en-US".to_string(),
+        };
+    }
+
+    // Dynamic non-blocking lookup via ip-api.com
+    let api_url = format!("http://ip-api.com/json/{}?fields=status,countryCode,timezone,lat,lon", host);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build();
+
+    if let Ok(c) = client {
+        if let Ok(res) = c.get(&api_url).send().await {
+            if let Ok(val) = res.json::<serde_json::Value>().await {
+                if val.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("America/Denver").to_string();
+                    let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(40.3032);
+                    let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(-111.675);
+                    return GeoInfo {
+                        timezone: tz,
+                        latitude: lat,
+                        longitude: lon,
+                        locale: "en-US".to_string(),
+                    };
+                }
+            }
+        }
+    }
+
+    GeoInfo {
+        timezone: "America/Denver".to_string(),
+        latitude: 40.3032,
+        longitude: -111.675,
+        locale: "en-US".to_string(),
+    }
+}
+
 pub fn parse_proxy_string(raw: &str) -> Option<ParsedProxy> {
     let s = raw.trim();
     if s.is_empty() {
@@ -336,9 +415,15 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let platform = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
         "iPhone"
     } else if is_mobile {
-        "Linux armv81"
+        "Linux armv8l"
     } else {
         "Win32"
+    };
+
+    let platform_title = if is_mobile {
+        if platform == "iPhone" { "iOS" } else { "Android" }
+    } else {
+        "Windows"
     };
 
     let touch_points = if is_mobile { 5 } else { 0 };
@@ -362,6 +447,12 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
             Object.defineProperty(w.navigator, 'webdriver', {{ get: () => false, configurable: true }});
             Object.defineProperty(w.navigator, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true }});
             Object.defineProperty(w.navigator, 'platform', {{ get: () => '{platform}', configurable: true }});
+            Object.defineProperty(w.navigator, 'language', {{ get: () => 'en-US', configurable: true }});
+            Object.defineProperty(w.navigator, 'languages', {{ get: () => ['en-US', 'en'], configurable: true }});
+            if (w.navigator.userAgentData) {{
+                Object.defineProperty(w.navigator.userAgentData, 'mobile', {{ get: () => {is_mobile}, configurable: true }});
+                Object.defineProperty(w.navigator.userAgentData, 'platform', {{ get: () => '{platform_title}', configurable: true }});
+            }}
         }} catch(e) {{}}
 
         // 2. WebGL Hardware Spoofing ({renderer})
@@ -502,6 +593,10 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         renderer = renderer,
         vendor = vendor,
         resolution = resolution,
+        platform = platform,
+        platform_title = platform_title,
+        is_mobile = is_mobile,
+        touch_points = touch_points,
         audio_delta = audio_delta,
         timing_delta = timing_delta,
         canvas_delta = canvas_delta,
@@ -985,10 +1080,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         (1200, 800)
     };
 
-    let has_custom_ua = !profile.profile_user_agent.trim().is_empty()
-        && !profile.profile_user_agent.contains("Chrome/134.")
-        && !profile.profile_user_agent.contains("Chrome/135.")
-        && !profile.profile_user_agent.contains("Chrome/136.");
+    let has_custom_ua = !profile.profile_user_agent.trim().is_empty();
 
     let offset_x = 60 + ((profile.id as i32 * 35) % 400);
     let offset_y = 40 + ((profile.id as i32 * 25) % 250);
@@ -1007,7 +1099,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg("--no-default-browser-check")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
-        .arg("--lang=vi-VN,vi,en-US,en")
+        .arg("--lang=en-US,en")
         .arg("--new-window")
         .arg("about:blank");
 
@@ -1051,9 +1143,11 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
 
     let use_proxy = !profile.proxy_type.eq_ignore_ascii_case("direct") && !profile.proxy_string.trim().is_empty();
     let mut proxy_bridge_shutdown: Option<tokio::sync::oneshot::Sender<()>> = None;
+    let mut proxy_host_for_geo = String::new();
 
     if use_proxy {
         if let Some(parsed_proxy) = parse_proxy_string_with_type(&profile.proxy_string, &profile.proxy_type) {
+            proxy_host_for_geo = parsed_proxy.host.clone();
             let has_auth = parsed_proxy.username.is_some() && parsed_proxy.password.is_some();
             let is_socks = parsed_proxy.scheme.starts_with("socks");
 
@@ -1229,6 +1323,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     });
     let _ = tx.send(Message::Text(auto_attach_cmd.to_string()));
 
+    let geo_info = resolve_proxy_geo(&proxy_host_for_geo).await;
+    info!("📍 [Profile #{}] Proxy Geo: {} ({}, {}) [Locale: {}]", profile.id, geo_info.timezone, geo_info.latitude, geo_info.longitude, geo_info.locale);
+
     let stealth_js = generate_stealth_script(profile);
     let profile_id = profile.id;
     let profile_tiktok_username = profile.tiktok_username.clone();
@@ -1239,7 +1336,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         let platform_str = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
             "iPhone"
         } else if is_mobile {
-            "Linux armv81"
+            "Linux armv8l"
         } else {
             "Win32"
         };
@@ -1248,13 +1345,15 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         } else {
             "Windows"
         };
+        let model_str = if is_mobile { "Pixel 8 Pro" } else { "" };
+        let platform_ver_str = if is_mobile { "14.0.0" } else { "15.0.0" };
 
         Some((
             json!({
                 "method": "Emulation.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "acceptLanguage": "en-US,en;q=0.9",
                     "platform": platform_str,
                     "userAgentMetadata": {
                         "brands": [
@@ -1264,9 +1363,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                         ],
                         "fullVersion": full_ver,
                         "platform": platform_title,
-                        "platformVersion": "15.0.0",
+                        "platformVersion": platform_ver_str,
                         "architecture": if is_mobile { "arm" } else { "x86" },
-                        "model": if is_mobile { "SM-S918B" } else { "" },
+                        "model": model_str,
                         "mobile": is_mobile,
                         "bitness": "64",
                         "wow64": false
@@ -1316,14 +1415,14 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     "method": "Page.enable"
                                 }).to_string()));
 
-                                // 1b. Cố định Timezone và Geolocation chuẩn US để triệt tiêu lệch Fingerprint với Proxy
+                                // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP Proxy
                                 cmd_id += 1;
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
                                     "sessionId": session_id,
                                     "method": "Emulation.setTimezoneOverride",
                                     "params": {
-                                        "timezoneId": "America/New_York"
+                                        "timezoneId": geo_info.timezone
                                     }
                                 }).to_string()));
 
@@ -1333,9 +1432,19 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     "sessionId": session_id,
                                     "method": "Emulation.setGeolocationOverride",
                                     "params": {
-                                        "latitude": 40.7128,
-                                        "longitude": -74.0060,
+                                        "latitude": geo_info.latitude,
+                                        "longitude": geo_info.longitude,
                                         "accuracy": 100
+                                    }
+                                }).to_string()));
+
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setLocaleOverride",
+                                    "params": {
+                                        "locale": geo_info.locale
                                     }
                                 }).to_string()));
 
@@ -1362,9 +1471,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                         "sessionId": session_id,
                                         "method": "Emulation.setDeviceMetricsOverride",
                                         "params": {
-                                            "width": screen_w,
-                                            "height": screen_h,
-                                            "deviceScaleFactor": 3.0,
+                                            "width": 412,
+                                            "height": 915,
+                                            "deviceScaleFactor": 2.625,
                                             "mobile": true,
                                             "fitWindow": false
                                         }
