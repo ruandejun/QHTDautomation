@@ -1,11 +1,11 @@
 use crate::api::BrowserProfile;
-use crate::cdp_browser::{get_free_port, launch_cdp_profile};
+use crate::cdp_browser::{get_free_port, launch_cdp_profile_with_bounds, calculate_grid_window_bounds};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -46,6 +46,8 @@ pub struct BrowserNurtureStatus {
     pub likes_given: u32,
     #[serde(default)]
     pub comments_posted: u32,
+    #[serde(default)]
+    pub shares_count: u32,
     pub is_running: bool,
     pub last_log: String,
     #[serde(default)]
@@ -310,14 +312,35 @@ pub struct BrowserNurtureEngine {
     tasks: Arc<RwLock<HashMap<usize, Arc<AtomicBool>>>>,
     statuses: Arc<RwLock<HashMap<usize, BrowserNurtureStatus>>>,
     otp_queue: Arc<Mutex<HashMap<usize, String>>>,
+    concurrency_semaphore: Arc<tokio::sync::Semaphore>,
+    available_slots: Arc<Mutex<VecDeque<usize>>>,
 }
 
 impl BrowserNurtureEngine {
     pub fn new() -> Self {
+        let mut slots = VecDeque::new();
+        for i in 0..5 {
+            slots.push_back(i);
+        }
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             statuses: Arc::new(RwLock::new(HashMap::new())),
             otp_queue: Arc::new(Mutex::new(HashMap::new())),
+            concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(5)),
+            available_slots: Arc::new(Mutex::new(slots)),
+        }
+    }
+
+    pub async fn acquire_slot(&self) -> (usize, tokio::sync::OwnedSemaphorePermit) {
+        let permit = self.concurrency_semaphore.clone().acquire_owned().await.unwrap();
+        let slot = self.available_slots.lock().pop_front().unwrap_or(0);
+        (slot, permit)
+    }
+
+    pub fn release_slot(&self, slot: usize) {
+        let mut slots = self.available_slots.lock();
+        if !slots.contains(&slot) && slot < 5 {
+            slots.push_back(slot);
         }
     }
 
@@ -374,6 +397,18 @@ impl BrowserNurtureEngine {
         info!("🛑 [Mun Anti Browser] Đã yêu cầu dừng nuôi TikTok cho Profile #{}", profile_id);
     }
 
+    pub fn set_rate_limit_status(&self, profile_id: usize) {
+        if let Some(flag) = self.tasks.read().get(&profile_id) {
+            flag.store(false, Ordering::Relaxed);
+        }
+        if let Some(st) = self.statuses.write().get_mut(&profile_id) {
+            st.is_running = false;
+            st.status = "Rate limit (Chờ 1h)".to_string();
+            st.last_log = "Maximum number of attempts reached (Tự động đóng trình duyệt và chờ 1h thử lại)".to_string();
+        }
+        info!("⚠️ [Profile #{}] Đã cập nhật trạng thái Rate limit (Chờ 1h) vào bộ nhớ nurture!", profile_id);
+    }
+
     pub fn stop_all(&self) {
         let keys: Vec<usize> = self.tasks.read().keys().cloned().collect();
         for id in keys {
@@ -423,10 +458,11 @@ impl BrowserNurtureEngine {
             profile_id,
             profile_name: profile.name.clone(),
             c69_username: c69_user.clone(),
-            status: "Đang khởi động Anti-Browser...".to_string(),
+            status: "Đang xếp hàng chờ slot màn hình (Tối đa 5)...".to_string(),
             videos_watched: 0,
             likes_given: 0,
             comments_posted: 0,
+            shares_count: 0,
             is_running: true,
             last_log: "Bắt đầu chu trình nuôi TikTok kết hợp C69...".to_string(),
             waiting_otp: false,
@@ -449,6 +485,28 @@ impl BrowserNurtureEngine {
         run_flag: Arc<AtomicBool>,
     ) {
         let pid = profile.id;
+
+        // 1. Chờ slot trống trong tối đa 5 trình duyệt đồng thời (Grid Concurrency Cap = 5)
+        self.update_log(pid, "⏳ Đang chờ slot màn hình (Tối đa 5 trình duyệt song song)...".to_string(), "Chờ slot");
+        let (slot_idx, permit) = self.acquire_slot().await;
+        info!("🎯 [Profile #{}] Đã chiếm Slot #{} trên màn hình (Đang chạy: {}/5)", pid, slot_idx, 5 - self.concurrency_semaphore.available_permits());
+
+        // RAII Guard: Đảm bảo khi worker kết thúc (bất kể return sớm, lỗi, hay hoàn thành), luôn đóng Chrome và trả slot
+        struct SlotGuard<'a> {
+            engine: &'a BrowserNurtureEngine,
+            slot: usize,
+            pid: usize,
+            _permit: tokio::sync::OwnedSemaphorePermit,
+        }
+        impl<'a> Drop for SlotGuard<'a> {
+            fn drop(&mut self) {
+                self.engine.release_slot(self.slot);
+                crate::cdp_browser::stop_cdp_profile(self.pid);
+                info!("🏁 [Profile #{}] Đã tự động đóng trình duyệt an toàn và giải phóng Slot #{} trên màn hình!", self.pid, self.slot);
+            }
+        }
+        let _guard = SlotGuard { engine: self, slot: slot_idx, pid, _permit: permit };
+
         let port = get_free_port(9222 + (pid as u16 % 500));
 
         let mut active_profile = profile.clone();
@@ -481,7 +539,7 @@ impl BrowserNurtureEngine {
             }
         }
 
-        // 1. Khởi chạy Profile Pure Rust CDP Browser với Proxy Shield
+        // 1. Khởi chạy Profile Pure Rust CDP Browser với Tọa độ Grid tương ứng slot (Không đè lên nhau)
         let proxy_desc = if let Some(parsed) = crate::cdp_browser::parse_proxy_string(&active_profile.proxy_string) {
             let auth_tag = if parsed.username.is_some() { " (Auth OK)" } else { "" };
             format!("🛡️ Proxy: {}://{}:{}{}", parsed.scheme.to_uppercase(), parsed.host, parsed.port, auth_tag)
@@ -489,12 +547,19 @@ impl BrowserNurtureEngine {
             "⚡ Direct / Local Network".to_string()
         };
 
+        let is_mobile = active_profile.profile_os.eq_ignore_ascii_case("Android")
+            || active_profile.profile_os.eq_ignore_ascii_case("iOS")
+            || active_profile.profile_user_agent.contains("Mobile")
+            || active_profile.profile_user_agent.contains("Android")
+            || active_profile.profile_user_agent.contains("iPhone");
+
+        let bounds = Some(calculate_grid_window_bounds(slot_idx, is_mobile));
         self.update_log(
             pid,
-            format!("Đang nạp Anti-Detect [{}] với Mobile & C++ Shield...", proxy_desc),
+            format!("Đang mở cửa sổ tại Slot #{} [{}]...", slot_idx, proxy_desc),
             "Khởi động browser"
         );
-        if let Err(e) = launch_cdp_profile(&active_profile).await {
+        if let Err(e) = launch_cdp_profile_with_bounds(&active_profile, bounds).await {
             self.set_error(pid, format!("Lỗi khởi chạy browser: {}", e));
             return;
         }
@@ -1096,6 +1161,7 @@ impl BrowserNurtureEngine {
         let mut watched_count = 0u32;
         let mut likes_count = 0u32;
         let mut comments_count = 0u32;
+        let mut shares_count = 0u32;
 
         while run_flag.load(Ordering::Relaxed) {
             watched_count += 1;
@@ -1114,6 +1180,7 @@ impl BrowserNurtureEngine {
                 watched_count, 
                 likes_count, 
                 comments_count,
+                shares_count,
                 format!("Đang xem video FYP #{} ({} giây)...", watched_count, watch_seconds), 
                 "Đang lướt FYP"
             );
@@ -1144,10 +1211,50 @@ impl BrowserNurtureEngine {
                     watched_count, 
                     likes_count, 
                     comments_count,
+                    shares_count,
                     format!("❤️ Đã thả tim video #{}!", watched_count), 
                     "Đang lướt FYP"
                 );
                 tokio::time::sleep(Duration::from_millis(800)).await;
+            }
+
+            // 30% xác suất chia sẻ video (Share / Copy Link) kích hoạt thuật toán lan truyền
+            let will_share = (watched_count % 5 == 0) || rand::thread_rng().gen_bool(0.30);
+            if will_share {
+                let share_js = r#"(() => {
+                    const shareBtn = document.querySelector('[data-e2e="share-icon"]') || 
+                                     document.querySelector('[data-e2e="feed-share-icon"]') ||
+                                     document.querySelector('button[aria-label*="Share"]') ||
+                                     document.querySelector('button[aria-label*="Chia sẻ"]');
+                    if (shareBtn) { shareBtn.click(); return true; }
+                    return false;
+                })()"#;
+                if let Ok(opened) = cdp.evaluate(share_js).await {
+                    if opened.as_bool().unwrap_or(false) {
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        let copy_link_js = r#"(() => {
+                            const copyBtn = Array.from(document.querySelectorAll('div, button, span, li, p')).find(el => {
+                                const t = (el.innerText || '').trim().toLowerCase();
+                                return t.includes('copy link') || t.includes('sao chép liên kết');
+                            });
+                            if (copyBtn) { copyBtn.click(); return true; }
+                            return false;
+                        })()"#;
+                        let _ = cdp.evaluate(copy_link_js).await;
+                        shares_count += 1;
+                        self.update_stats(
+                            pid,
+                            watched_count,
+                            likes_count,
+                            comments_count,
+                            shares_count,
+                            format!("🔗 Đã nhấn Share & Sao chép liên kết video #{}!", watched_count),
+                            "Đang lướt FYP"
+                        );
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let _ = cdp.press_key("Escape", "Escape", 27).await;
+                    }
+                }
             }
 
             // Tự động bình luận ngẫu nhiên (mỗi 5-7 video hoặc xác suất 20%)
@@ -1210,6 +1317,7 @@ impl BrowserNurtureEngine {
                                                 watched_count,
                                                 likes_count,
                                                 comments_count,
+                                                shares_count,
                                                 format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count),
                                                 "Đang lướt FYP"
                                             );
@@ -1232,7 +1340,7 @@ impl BrowserNurtureEngine {
         }
 
         // Hoàn tất hoặc dừng
-        let summary = format!("Đã xem {} video, thả tim {} lượt, đăng {} bình luận", watched_count, likes_count, comments_count);
+        let summary = format!("Đã xem {} video, thả tim {} lượt, bình luận {} lượt, chia sẻ {} lượt", watched_count, likes_count, comments_count, shares_count);
         self.update_log(
             pid, 
             format!("Chu trình nuôi hoàn tất. Tổng {}.", summary), 
@@ -1258,11 +1366,12 @@ impl BrowserNurtureEngine {
         crate::api::update_profile_nurture_status(pid, status, None, None);
     }
 
-    fn update_stats(&self, pid: usize, watched: u32, likes: u32, comments: u32, log: String, status: &str) {
+    fn update_stats(&self, pid: usize, watched: u32, likes: u32, comments: u32, shares: u32, log: String, status: &str) {
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.videos_watched = watched;
             st.likes_given = likes;
             st.comments_posted = comments;
+            st.shares_count = shares;
             st.last_log = log.clone();
             st.status = status.to_string();
         }

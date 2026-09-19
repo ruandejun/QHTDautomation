@@ -21,10 +21,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16555,
     "tiktok_username": "quang.minh.i58",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-16 10:41:43",
-    "last_nurture_error": "Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
-    "retry_after_epoch": 1789533703
+    "last_nurture_status": "Đang lướt FYP",
+    "last_nurture_time": "2026-09-19 13:24:47",
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 1,
@@ -48,10 +48,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16809,
     "tiktok_username": "3_bsantana.yandra",
-    "last_nurture_status": "Khởi động browser",
-    "last_nurture_time": "2026-09-18 17:10:18",
-    "last_nurture_error": null,
-    "retry_after_epoch": 1789726207
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-19 14:00:58",
+    "last_nurture_error": "Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)",
+    "retry_after_epoch": 1789804858
   },
   {
     "id": 2,
@@ -75,10 +75,10 @@
     "gpu_vendor": "Google Inc. (AMD)",
     "tiktok_account_id": 16806,
     "tiktok_username": "melodysararosalie",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-17 19:06:31",
-    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
-    "retry_after_epoch": 1789650391
+    "last_nurture_status": "Vào FYP Feed",
+    "last_nurture_time": "2026-09-19 14:00:58",
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 3,
@@ -102,10 +102,10 @@
     "gpu_vendor": "Google Inc. (Intel)",
     "tiktok_account_id": 16807,
     "tiktok_username": "user1093481327113",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-17 18:01:35",
-    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
-    "retry_after_epoch": 1789646495
+    "last_nurture_status": "Vào FYP Feed",
+    "last_nurture_time": "2026-09-19 14:01:01",
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 4,
@@ -129,10 +129,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16805,
     "tiktok_username": "m_klein.glaice.429",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-18 15:29:37",
-    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
-    "retry_after_epoch": 1789723777
+    "last_nurture_status": "Kiểm tra đăng nhập",
+    "last_nurture_time": "2026-09-19 14:00:54",
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 5,
@@ -156,8 +156,8 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16810,
     "tiktok_username": "2_monicafmroquio",
-    "last_nurture_status": "Tìm form đăng nhập",
-    "last_nurture_time": "2026-09-18 15:32:23",
+    "last_nurture_status": "Kiểm tra đăng nhập",
+    "last_nurture_time": "2026-09-19 14:01:02",
     "last_nurture_error": null,
     "retry_after_epoch": null
   },
@@ -183,8 +183,8 @@
     "gpu_vendor": "ARM",
     "tiktok_account_id": null,
     "tiktok_username": null,
-    "last_nurture_status": null,
-    "last_nurture_time": null,
+    "last_nurture_status": "Khởi động browser",
+    "last_nurture_time": "2026-09-19 14:01:03",
     "last_nurture_error": null,
     "retry_after_epoch": null
   },
@@ -264,10 +264,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
     "tiktok_username": null,
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-16 11:52:44",
-    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Vui lòng đổi IP/Proxy hoặc thử lại sau)",
-    "retry_after_epoch": 1789537964
+    "last_nurture_status": "Chờ đăng nhập",
+    "last_nurture_time": "2026-09-19 13:24:59",
+    "last_nurture_error": null,
+    "retry_after_epoch": null
   },
   {
     "id": 10,

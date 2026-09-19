@@ -924,7 +924,10 @@ async fn get_active_browser_profiles_handler() -> Json<Vec<usize>> {
     Json(crate::cdp_browser::get_active_profile_ids())
 }
 
-async fn tiktok_rate_limit_signal_handler(Json(payload): Json<serde_json::Value>) -> Json<serde_json::Value> {
+async fn tiktok_rate_limit_signal_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
     let profile_id = payload.get("profile_id").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     if profile_id > 0 {
         tracing::warn!("⚠️ [Profile #{}] Nhận tín hiệu Rate limit (Maximum attempts) từ trình duyệt TikTok!", profile_id);
@@ -934,6 +937,7 @@ async fn tiktok_rate_limit_signal_handler(Json(payload): Json<serde_json::Value>
             Some("Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)"),
             Some(3600),
         );
+        state.browser_nurture.set_rate_limit_status(profile_id);
         crate::cdp_browser::stop_cdp_profile(profile_id);
         tracing::info!("🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn để chờ 1h thử lại.", profile_id);
     }

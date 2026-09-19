@@ -1027,8 +1027,36 @@ async fn handle_socks5_bridge_client(
     Ok(())
 }
 
-/// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
+/// Tính toán tọa độ và kích thước Grid Layout cho tối đa 5 cửa sổ không đè nhau
+pub fn calculate_grid_window_bounds(slot: usize, is_mobile: bool) -> (i32, i32, u32, u32) {
+    let slot_idx = slot % 5;
+    if is_mobile {
+        // 5 cột dọc xếp song song từ trái qua phải, vừa vặn màn hình Full HD (1920x1080)
+        // Chiều ngang mỗi cửa sổ 375px, gap 6px -> 5 cửa sổ chiếm ~1900px, cao 840px
+        let width = 375;
+        let height = 840;
+        let x = 10 + (slot_idx as i32 * 381);
+        let y = 10;
+        (x, y, width, height)
+    } else {
+        // Dạng desktop 2 hàng: hàng trên 3 cửa sổ, hàng dưới 2 cửa sổ
+        let width = 620;
+        let height = 480;
+        let (row, col) = if slot_idx < 3 { (0, slot_idx) } else { (1, slot_idx - 3) };
+        let x = 10 + (col as i32 * 630);
+        let y = 10 + (row as i32 * 500);
+        (x, y, width, height)
+    }
+}
+
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
+    launch_cdp_profile_with_bounds(profile, None).await
+}
+
+pub async fn launch_cdp_profile_with_bounds(
+    profile: &BrowserProfile,
+    custom_bounds: Option<(i32, i32, u32, u32)>,
+) -> Result<(), String> {
     let mode = profile.engine_mode.as_deref().unwrap_or("native");
     let (exec_path_opt, engine_label) = find_executable_for_engine(mode);
     let chrome_path = exec_path_opt
@@ -1074,20 +1102,24 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     // Kích thước cửa sổ hiển thị trên màn hình:
     // Nếu là profile phone/mobile -> hiển thị khung cửa sổ điện thoại gọn gàng 440x920
     // Nếu là desktop -> 1200x800
-    let (window_width, window_height) = if is_mobile {
+    let (_window_w_default, _window_h_default) = if is_mobile {
         (440, 920)
     } else {
         (1200, 800)
     };
 
+    // Tự động tính toán vị trí Grid không đè nhau (5 cột dọc song song cho Phone hoặc 2 hàng cho Desktop)
+    let (offset_x, offset_y, window_width, window_height) = if let Some(b) = custom_bounds {
+        (b.0, b.1, b.2, b.3)
+    } else {
+        calculate_grid_window_bounds(profile.id % 5, is_mobile)
+    };
+
     let has_custom_ua = !profile.profile_user_agent.trim().is_empty();
 
-    let offset_x = 60 + ((profile.id as i32 * 35) % 400);
-    let offset_y = 40 + ((profile.id as i32 * 25) % 250);
-
     info!(
-        "🚀 Khởi chạy trình duyệt cho Profile #{} ({}) [{}] trên port {}",
-        profile.id, profile.name, engine_label, port
+        "🚀 Khởi chạy trình duyệt cho Profile #{} ({}) [{}] trên port {} [Tọa độ Grid: x={}, y={}, {}x{}]",
+        profile.id, profile.name, engine_label, port, offset_x, offset_y, window_width, window_height
     );
 
     // Chuẩn bị các flags Chrome sạch (Clean Stealth)
