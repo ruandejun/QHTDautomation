@@ -122,6 +122,16 @@ exclude_unwind_tables = true
 enable_resource_allowlist_generation = false
 use_remoteexec = false
 use_siso = false
+enable_nacl = false
+disable_fieldtrial_testing_config = true
+build_with_tflite_lib = false
+enable_vr = false
+enable_arcore = false
+enable_media_remoting = false
+enable_hangout_services_extension = false
+enable_service_discovery = false
+enable_mdns = false
+enable_reporting = false
 windows_sdk_version = "{sdk_ver}"
 """
     with open("out/Release/args.gn", "w", encoding="utf-8") as f:
