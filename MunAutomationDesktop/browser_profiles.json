@@ -48,10 +48,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16809,
     "tiktok_username": "3_bsantana.yandra",
-    "last_nurture_status": "Rate limit (Chờ 1h)",
-    "last_nurture_time": "2026-09-19 14:00:58",
-    "last_nurture_error": "Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)",
-    "retry_after_epoch": 1789804858
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-20 08:46:55",
+    "last_nurture_error": "Đã xem 3 video, thả tim 1 lượt, bình luận 0 lượt, chia sẻ 1 lượt",
+    "retry_after_epoch": null
   },
   {
     "id": 2,
@@ -129,9 +129,9 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16805,
     "tiktok_username": "m_klein.glaice.429",
-    "last_nurture_status": "Kiểm tra đăng nhập",
-    "last_nurture_time": "2026-09-19 14:00:54",
-    "last_nurture_error": null,
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-20 08:48:11",
+    "last_nurture_error": "Đã xem 2 video, thả tim 1 lượt, bình luận 0 lượt, chia sẻ 0 lượt",
     "retry_after_epoch": null
   },
   {
@@ -289,10 +289,10 @@
     "profile_audio": null,
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
-    "tiktok_account_id": null,
-    "tiktok_username": null,
-    "last_nurture_status": null,
-    "last_nurture_time": null,
+    "tiktok_account_id": 16802,
+    "tiktok_username": "user9991105082684",
+    "last_nurture_status": "Đã click Log in",
+    "last_nurture_time": "2026-09-20 08:45:25",
     "last_nurture_error": null,
     "retry_after_epoch": null
   },
@@ -316,11 +316,11 @@
     "profile_audio": null,
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
-    "tiktok_account_id": null,
-    "tiktok_username": null,
-    "last_nurture_status": null,
-    "last_nurture_time": null,
-    "last_nurture_error": null,
+    "tiktok_account_id": 16801,
+    "tiktok_username": "user3918235291261",
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-20 08:46:55",
+    "last_nurture_error": "Đã xem 5 video, thả tim 2 lượt, bình luận 0 lượt, chia sẻ 0 lượt",
     "retry_after_epoch": null
   },
   {

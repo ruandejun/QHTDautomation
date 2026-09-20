@@ -636,38 +636,77 @@ impl BrowserNurtureEngine {
             }
         }
 
-        self.update_log(pid, "Mở TikTok để kiểm tra phiên đăng nhập...".to_string(), "Kiểm tra đăng nhập");
+        // 4. STEP 1: VÀO TIKTOK KHOẢNG 10S & KIỂM TRA NÚT LOGIN
+        self.update_log(pid, "Mở TikTok (chờ 10s để tải trang và kiểm tra nút Login)...".to_string(), "Kiểm tra nút Login");
         let _ = cdp.navigate("https://www.tiktok.com").await;
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        if !run_flag.load(Ordering::Relaxed) { return; }
 
-        // Kiểm tra xem đã đăng nhập chưa (Chỉ xác nhận đã login khi có Avatar và KHÔNG có nút Log In trên trang)
-        let check_session_expr = r#"(() => {
-            const hasAvatar = !!(
-                document.querySelector('[data-e2e="profile-icon"]') || 
-                document.querySelector('img[alt*="avatar"]') || 
-                document.querySelector('a[href*="/@"]') || 
-                document.querySelector('[data-e2e="inbox-icon"]')
-            );
-            const hasLoginBtn = !!(
-                document.querySelector('#header-login-button') ||
-                Array.from(document.querySelectorAll('button, a')).some(el => {
-                    const t = (el.innerText || '').trim().toLowerCase();
-                    return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
-                })
-            );
-            return hasAvatar && !hasLoginBtn;
-        })()"#;
+        let mut login_btn_found = false;
+        let mut user_profile_found = false;
 
-        let already_logged_in = cdp.evaluate(check_session_expr).await.ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        // Chờ 10s và quét DOM để kiểm tra sự xuất hiện của nút Login
+        for wait_s in 1..=10 {
+            if !run_flag.load(Ordering::Relaxed) { return; }
+            tokio::time::sleep(Duration::from_secs(1)).await;
 
-        if already_logged_in {
-            self.update_log(pid, "✅ Phát hiện phiên đăng nhập TikTok có sẵn trong profile! Sẵn sàng vào FYP...".to_string(), "Đã đăng nhập");
+            let check_expr = r#"(() => {
+                // 1. Quét tất cả các nút/thẻ a/div có text hoặc attribute liên quan đến Log in
+                const loginEls = Array.from(document.querySelectorAll('button, a, div[role="button"], span, p')).filter(el => {
+                    const text = (el.innerText || '').trim().toLowerCase();
+                    const href = el.getAttribute('href') || '';
+                    const e2e = el.getAttribute('data-e2e') || '';
+                    const id = el.id || '';
+                    const isVisible = el.offsetParent !== null || el.getClientRects().length > 0;
+                    return isVisible && (
+                        text === 'log in' || text === 'đăng nhập' ||
+                        text.includes('log in') || text.includes('đăng nhập') ||
+                        href.includes('/login') || e2e.includes('login') || id.includes('login')
+                    );
+                });
+
+                // 2. Quét avatar hoặc menu của chính tài khoản đã đăng nhập (loại trừ avatar tác giả video trên feed)
+                const userProfile = document.querySelector('[data-e2e="profile-icon"]') || 
+                                    document.querySelector('[data-e2e="inbox-icon"]') ||
+                                    document.querySelector('[data-e2e="nav-profile"]');
+
+                return JSON.stringify({
+                    has_login_btn: loginEls.length > 0,
+                    has_user_profile: !!userProfile
+                });
+            })()"#;
+
+            if let Ok(eval_val) = cdp.evaluate(check_expr).await {
+                if let Some(s) = eval_val.as_str() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+                        let has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let has_prof = parsed.get("has_user_profile").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if has_btn { login_btn_found = true; }
+                        if has_prof { user_profile_found = true; }
+                    }
+                }
+            }
+
+            self.update_log(pid, format!("Đang vào TikTok và kiểm tra nút Login ({}s/10s)...", wait_s), "Kiểm tra nút Login");
+        }
+
+        // Kiểm tra bổ sung session cookies từ CDP
+        let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
+        let has_session_cookie = cookies_val.as_array().map(|arr| {
+            arr.iter().any(|c| {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                (name == "sessionid" || name == "sessionid_ss") &&
+                !c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().is_empty()
+            })
+        }).unwrap_or(false);
+
+        // Điều kiện xác định cần login: nếu thấy nút login, HOẶC không có cookie session VÀ không có user profile icon
+        let need_login = login_btn_found || (!has_session_cookie && !user_profile_found);
+
+        if !need_login {
+            self.update_log(pid, "✅ Không thấy nút Login (Tài khoản đã đăng nhập sẵn)! Bắt đầu nuôi video...".to_string(), "Đã đăng nhập");
             let _ = crate::cdp_browser::backup_thin_profile(pid);
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         } else {
+            self.update_log(pid, "⚠️ Phát hiện nút Login (Tài khoản chưa đăng nhập). Đang tiến hành đăng nhập TikTok...".to_string(), "Tiến hành đăng nhập");
             // Chưa đăng nhập -> Cần thực hiện quy trình đăng nhập
             let has_valid_c69_pwd = c69_acc.as_ref().map(|a| a.password.as_deref().unwrap_or("").trim().len() > 0).unwrap_or(false);
             if !has_valid_c69_pwd {
@@ -677,8 +716,17 @@ impl BrowserNurtureEngine {
                 let mut manual_login_ok = false;
                 for wait_i in 1..=60 {
                     if !run_flag.load(Ordering::Relaxed) { return; }
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    let check_now = cdp.evaluate(check_session_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                    let check_login_ok_expr = r#"(() => {
+                        const userProfile = document.querySelector('[data-e2e="profile-icon"]') || 
+                                            document.querySelector('[data-e2e="inbox-icon"]') ||
+                                            document.querySelector('[data-e2e="nav-profile"]');
+                        const hasLoginBtn = Array.from(document.querySelectorAll('button, a')).some(el => {
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                        });
+                        return !!userProfile && !hasLoginBtn;
+                    })()"#;
+                    let check_now = cdp.evaluate(check_login_ok_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
                     if check_now {
                         manual_login_ok = true;
                         break;
@@ -1152,28 +1200,30 @@ impl BrowserNurtureEngine {
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
 
-        // 5. ĐIỀU HƯỚNG TỚI FEED FYP (FOR YOU PAGE)
-        self.update_log(pid, "Mở trang video For You Page (FYP) để bắt đầu nuôi tương tác...".to_string(), "Vào FYP Feed");
+        // 5. ĐIỀU HƯỚNG TỚI FEED FYP VÀ TIẾN HÀNH NUÔI 30s - 1 PHÚT (THEO CHỈ ĐẠO CỦA ANH TONY)
+        self.update_log(pid, "Mở trang video FYP để bắt đầu nuôi tương tác (thời lượng 30s - 1 phút)...".to_string(), "Vào FYP Feed");
         let _ = cdp.navigate("https://www.tiktok.com/foryou?lang=en").await;
-        tokio::time::sleep(Duration::from_secs(6)).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
 
-        // 6. VÒNG LẶP NUÔI TƯƠNG TÁC FYP (Human-Behavior Simulation)
+        // 6. VÒNG LẶP NUÔI TƯƠNG TÁC FYP (Human-Behavior Simulation: 30s - 1 phút)
+        let nurture_start = tokio::time::Instant::now();
+        // Thời lượng nuôi: 35s đến 55s (khoảng 30s - 1 phút)
+        let target_duration_secs = rand::thread_rng().gen_range(35..=55);
         let mut watched_count = 0u32;
         let mut likes_count = 0u32;
         let mut comments_count = 0u32;
         let mut shares_count = 0u32;
 
         while run_flag.load(Ordering::Relaxed) {
+            let elapsed = nurture_start.elapsed().as_secs();
+            if elapsed >= target_duration_secs {
+                self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s)! Tiến hành hoàn tất và tắt trình duyệt...", elapsed, target_duration_secs), "Hoàn tất nuôi");
+                break;
+            }
+
             watched_count += 1;
-            // Phân phối Gauss sinh học: 70% xem 12-26s, 15% xem sâu 26-45s, 15% lướt nhanh 3-6s
-            let dice = rand::thread_rng().gen_range(1..=100);
-            let watch_seconds = if dice <= 70 {
-                rand::thread_rng().gen_range(12..=26)
-            } else if dice <= 85 {
-                rand::thread_rng().gen_range(26..=45)
-            } else {
-                rand::thread_rng().gen_range(3..=6)
-            };
+            // Xem mỗi video từ 6s - 10s để xem được 4-6 video trong vòng 35-55s
+            let watch_seconds = rand::thread_rng().gen_range(6..=10);
 
             self.update_stats(
                 pid, 
@@ -1181,25 +1231,16 @@ impl BrowserNurtureEngine {
                 likes_count, 
                 comments_count,
                 shares_count,
-                format!("Đang xem video FYP #{} ({} giây)...", watched_count, watch_seconds), 
+                format!("Đang xem video FYP #{} ({}s) [Tiến độ {}s/{}s]...", watched_count, watch_seconds, elapsed, target_duration_secs), 
                 "Đang lướt FYP"
             );
 
             for _ in 0..watch_seconds {
                 if !run_flag.load(Ordering::Relaxed) { break; }
+                if nurture_start.elapsed().as_secs() >= target_duration_secs { break; }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            if !run_flag.load(Ordering::Relaxed) { break; }
-
-            // Nghỉ giải lao tự nhiên sau mỗi 7 video (tránh cày cuốc liên tục bị TikTok AI gắn cờ)
-            if watched_count % 7 == 0 {
-                let rest_secs = rand::thread_rng().gen_range(25..=50);
-                self.update_log(pid, format!("☕ Nghỉ giải lao tự nhiên mô phỏng người dùng ({}s)...", rest_secs), "Tạm nghỉ");
-                for _ in 0..rest_secs {
-                    if !run_flag.load(Ordering::Relaxed) { break; }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
+            if !run_flag.load(Ordering::Relaxed) || nurture_start.elapsed().as_secs() >= target_duration_secs { break; }
 
             // 65% xác suất thả tim (Like) bằng phím tắt 'L'
             let will_like = rand::thread_rng().gen_bool(0.65);
@@ -1215,11 +1256,11 @@ impl BrowserNurtureEngine {
                     format!("❤️ Đã thả tim video #{}!", watched_count), 
                     "Đang lướt FYP"
                 );
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
-            // 30% xác suất chia sẻ video (Share / Copy Link) kích hoạt thuật toán lan truyền
-            let will_share = (watched_count % 5 == 0) || rand::thread_rng().gen_bool(0.30);
+            // 30% xác suất chia sẻ video (Share / Copy Link)
+            let will_share = (watched_count % 3 == 0) || rand::thread_rng().gen_bool(0.30);
             if will_share {
                 let share_js = r#"(() => {
                     const shareBtn = document.querySelector('[data-e2e="share-icon"]') || 
@@ -1231,7 +1272,7 @@ impl BrowserNurtureEngine {
                 })()"#;
                 if let Ok(opened) = cdp.evaluate(share_js).await {
                     if opened.as_bool().unwrap_or(false) {
-                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                         let copy_link_js = r#"(() => {
                             const copyBtn = Array.from(document.querySelectorAll('div, button, span, li, p')).find(el => {
                                 const t = (el.innerText || '').trim().toLowerCase();
@@ -1248,85 +1289,61 @@ impl BrowserNurtureEngine {
                             likes_count,
                             comments_count,
                             shares_count,
-                            format!("🔗 Đã nhấn Share & Sao chép liên kết video #{}!", watched_count),
+                            format!("🔗 Đã chia sẻ / copy link video #{}!", watched_count),
                             "Đang lướt FYP"
                         );
-                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                         let _ = cdp.press_key("Escape", "Escape", 27).await;
                     }
                 }
             }
 
-            // Tự động bình luận ngẫu nhiên (mỗi 5-7 video hoặc xác suất 20%)
-            let will_comment = (watched_count % 6 == 0) || rand::thread_rng().gen_bool(0.20);
-            if will_comment {
+            // 20% xác suất bình luận (Comment)
+            let will_comment = (watched_count == 2) || rand::thread_rng().gen_bool(0.20);
+            if will_comment && comments_count == 0 {
                 let open_comment_js = r#"(() => {
                     const commentBtn = document.querySelector('[data-e2e="comment-icon"]') || 
-                                       document.querySelector('[data-e2e="feed-comment-icon"]');
+                                       document.querySelector('[data-e2e="feed-comment-icon"]') ||
+                                       document.querySelector('button[aria-label*="Comment"]') ||
+                                       document.querySelector('button[aria-label*="Bình luận"]');
                     if (commentBtn) { commentBtn.click(); return true; }
                     return false;
                 })()"#;
-                if let Ok(opened) = cdp.evaluate(open_comment_js).await {
-                    if opened.as_bool().unwrap_or(false) {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        let focus_js = r#"(() => {
-                            const box = document.querySelector('[data-e2e="comment-input"]') || 
-                                        document.querySelector('div[contenteditable="true"]') ||
-                                        document.querySelector('.DraftEditor-editorContainer');
-                            if (box) {
-                                box.focus();
-                                const r = box.getBoundingClientRect();
-                                return JSON.stringify({ found: true, x: r.left + 50, y: r.top + r.height/2 });
-                            }
-                            return JSON.stringify({ found: false });
-                        })()"#;
-                        if let Ok(f_val) = cdp.evaluate(focus_js).await {
-                            if let Some(f_str) = f_val.as_str() {
-                                if let Ok(coord) = serde_json::from_str::<serde_json::Value>(f_str) {
-                                    if coord.get("found").and_then(|v| v.as_bool()).unwrap_or(false) {
-                                        let cx = coord.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                        let cy = coord.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                        if cx > 0.0 && cy > 0.0 {
-                                            let _ = cdp.dispatch_mouse_click(cx, cy).await;
-                                            tokio::time::sleep(Duration::from_millis(500)).await;
-                                            let comments_pool = [
-                                                "So amazing! ❤️",
-                                                "Great video! 🔥",
-                                                "Nice content! 👏",
-                                                "Love this! ✨",
-                                                "Awesome! 👍",
-                                                "Super cool! 😊",
-                                            ];
-                                            let pick = comments_pool[rand::thread_rng().gen_range(0..comments_pool.len())];
-                                            let _ = cdp.insert_text(pick).await;
-                                            tokio::time::sleep(Duration::from_millis(800)).await;
+                if let Ok(c_opened) = cdp.evaluate(open_comment_js).await {
+                    if c_opened.as_bool().unwrap_or(false) {
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        let comments_pool = [
+                            "So amazing! ❤️",
+                            "Great video! 🔥",
+                            "Nice content! 👏",
+                            "Love this! ✨",
+                            "Awesome! 👍",
+                        ];
+                        let pick = comments_pool[rand::thread_rng().gen_range(0..comments_pool.len())];
+                        let _ = cdp.insert_text(pick).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
 
-                                            let post_js = r#"(() => {
-                                                const postBtn = document.querySelector('[data-e2e="comment-post"]') || 
-                                                                Array.from(document.querySelectorAll('div, button')).find(b => {
-                                                                    const t = (b.innerText || '').trim().toLowerCase();
-                                                                    return t === 'post' || t === 'đăng';
-                                                                });
-                                                if (postBtn) { postBtn.click(); return true; }
-                                                return false;
-                                            })()"#;
-                                            let _ = cdp.evaluate(post_js).await;
-                                            comments_count += 1;
-                                            self.update_stats(
-                                                pid,
-                                                watched_count,
-                                                likes_count,
-                                                comments_count,
-                                                shares_count,
-                                                format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count),
-                                                "Đang lướt FYP"
-                                            );
-                                            tokio::time::sleep(Duration::from_secs(2)).await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        let post_js = r#"(() => {
+                            const postBtn = document.querySelector('[data-e2e="comment-post"]') || 
+                                            Array.from(document.querySelectorAll('div, button')).find(b => {
+                                                const t = (b.innerText || '').trim().toLowerCase();
+                                                return t === 'post' || t === 'đăng';
+                                            });
+                            if (postBtn) { postBtn.click(); return true; }
+                            return false;
+                        })()"#;
+                        let _ = cdp.evaluate(post_js).await;
+                        comments_count += 1;
+                        self.update_stats(
+                            pid,
+                            watched_count,
+                            likes_count,
+                            comments_count,
+                            shares_count,
+                            format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count),
+                            "Đang lướt FYP"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                 }
             }
@@ -1336,15 +1353,16 @@ impl BrowserNurtureEngine {
             let _ = cdp.evaluate("window.scrollBy({ top: window.innerHeight || 800, behavior: 'smooth' });").await;
             let _ = cdp.press_key("ArrowDown", "ArrowDown", 40).await;
 
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
-        // Hoàn tất hoặc dừng
+        // Hoàn tất chu trình nuôi
+        let final_elapsed = nurture_start.elapsed().as_secs();
         let summary = format!("Đã xem {} video, thả tim {} lượt, bình luận {} lượt, chia sẻ {} lượt", watched_count, likes_count, comments_count, shares_count);
         self.update_log(
             pid, 
-            format!("Chu trình nuôi hoàn tất. Tổng {}.", summary), 
-            "Đã dừng"
+            format!("✅ Chu trình nuôi hoàn tất trong {}s. Tổng: {}. Đang tự động tắt trình duyệt...", final_elapsed, summary), 
+            "Đã nuôi thành công"
         );
         if watched_count > 0 {
             crate::api::update_profile_nurture_status(pid, "Đã nuôi thành công", Some(&summary), None);
@@ -1352,9 +1370,10 @@ impl BrowserNurtureEngine {
         let _ = crate::cdp_browser::backup_thin_profile(pid);
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
-            st.status = "Đã dừng".to_string();
+            st.status = "Đã nuôi thành công".to_string();
         }
         run_flag.store(false, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(800)).await;
     }
 
     fn update_log(&self, pid: usize, log: String, status: &str) {

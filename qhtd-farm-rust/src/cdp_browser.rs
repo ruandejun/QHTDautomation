@@ -1070,39 +1070,13 @@ pub fn calculate_grid_window_bounds(slot: usize, is_mobile: bool) -> (i32, i32, 
     let (screen_w, screen_h) = get_screen_work_area();
 
     if is_mobile {
-        // Nếu màn hình siêu rộng (>= 2560px, ví dụ 2752x1152) -> xếp 5 cột song song 1 hàng ngang
-        if screen_w >= 2560 {
-            let margin = 10;
-            let gap = 12;
-            let width = ((screen_w - (2 * margin) - (4 * gap)) / 5) as u32;
-            let height = (screen_h - 20) as u32;
-            let x = margin + (slot_idx as i32 * (width as i32 + gap));
-            let y = 10;
-            (x, y, width, height)
-        } else {
-            // Màn hình Full HD (1920x1080) hoặc laptop:
-            // Vì Chrome Windows có min-width là ~516px, 1 hàng chỉ chứa tối đa 3 cửa sổ.
-            // Xếp thành 2 hàng ma trận thông minh (Hàng 1: 3 cửa sổ; Hàng 2: 2 cửa sổ cân đối)
-            let margin = 10;
-            let gap_x = 12;
-            let gap_y = 15;
-            let width = ((screen_w - (2 * margin) - (2 * gap_x)) / 3) as u32;
-            let height = ((screen_h - (2 * margin) - gap_y) / 2) as u32;
-
-            if slot_idx < 3 {
-                // Hàng trên: 3 cửa sổ
-                let x = margin + (slot_idx as i32 * (width as i32 + gap_x));
-                let y = margin;
-                (x, y, width, height)
-            } else {
-                // Hàng dưới: 2 cửa sổ căn giữa cân đối
-                let row2_col = (slot_idx - 3) as i32;
-                let row2_margin = (screen_w - (2 * width as i32 + gap_x)) / 2;
-                let x = row2_margin + (row2_col * (width as i32 + gap_x));
-                let y = margin + height as i32 + gap_y;
-                (x, y, width, height)
-            }
-        }
+        // Kích thước chuẩn smartphone điện thoại: 375px x 820px (tỉ lệ 9:19.5 chuẩn smartphone mỏng gọn)
+        let width = 375;
+        let height = 820;
+        let gap = if screen_w >= 2560 { 20 } else { 10 };
+        let x = 15 + (slot_idx as i32 * (width as i32 + gap));
+        let y = 10;
+        (x, y, width, height)
     } else {
         // Desktop Profile: 2 hàng ma trận (3 trên, 2 dưới)
         let margin = 10;
@@ -1207,9 +1181,13 @@ pub async fn launch_cdp_profile_with_bounds(
         .arg("--no-default-browser-check")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
-        .arg("--lang=en-US,en")
-        .arg("--new-window")
-        .arg("about:blank");
+        .arg("--lang=en-US,en");
+
+    if is_mobile {
+        cmd.arg(format!("--app={}", start_url));
+    } else {
+        cmd.arg("--new-window").arg(&start_url);
+    }
 
     if has_custom_ua {
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
@@ -1573,11 +1551,11 @@ pub async fn launch_cdp_profile_with_bounds(
                                     let _ = tx.send(Message::Text(c2.to_string()));
                                 }
 
-                                // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone (Vừa khít khung cửa sổ)
+                                // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone (Vừa khít khung cửa sổ App Mode)
                                 if is_mobile {
                                     cmd_id += 1;
-                                    let v_width = std::cmp::max(412, win_w.saturating_sub(16));
-                                    let v_height = std::cmp::max(700, win_h.saturating_sub(85));
+                                    let v_width = win_w;
+                                    let v_height = win_h.saturating_sub(35);
                                     let _ = tx.send(Message::Text(json!({
                                         "id": cmd_id,
                                         "sessionId": session_id,

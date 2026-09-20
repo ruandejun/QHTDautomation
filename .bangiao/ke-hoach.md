@@ -1,78 +1,77 @@
 # KẾ HOẠCH THIẾT KẾ KỸ THUẬT (AGENT 1 - PLANNER)
 
-- **Mục tiêu:** Khắc phục triệt để hiện tượng cửa sổ Mobile bị to hơn màn hình hiển thị bên trong và các cửa sổ bị đè lên nhau.
+- **Mục tiêu:** 
+  1. Thu nhỏ kích thước cửa sổ Chrome về đúng chuẩn kích thước và tỷ lệ điện thoại thật (375x820) bằng Chrome App Mode, loại bỏ thanh tab và omnibox cồng kềnh.
+  2. Tái cấu trúc Step 1 kiểm tra Login chuẩn xác: vào TikTok 10s, nếu có nút Login -> tiến hành Login; nếu không có nút Login (đã đăng nhập) -> lướt video, like, share, comment từ 30s - 1 phút rồi tự động tắt trình duyệt.
 - **Ngày lập:** 2026-09-20
-- **Nhánh triển khai:** `feature/dynamic-screen-adaptive-grid`
+- **Nhánh triển khai:** `feature/tiktok-nurture-pipeline-grid-layout`
 - **Người thực hiện:** Agent 1 (Planner)
 
 ---
 
 ## 1. Phân tích nguyên nhân gốc rễ (Root Cause Analysis - RCA)
 
-### 1.1. Chrome Hardcoded Minimum Window Width trên Windows
-- Kiểm tra thực nghiệm trực tiếp qua Win32 API (`GetWindowRect`) và thông điệp `WM_GETMINMAXINFO`:
-  Trình duyệt Google Chrome trên Windows có giới hạn cứng: **Chiều rộng cửa sổ tối thiểu (Minimum Width) là ~516px** (do thanh tab, omnibox, menu và các nút điều khiển).
-- Dù ta truyền cờ `--window-size=375,840` thì Windows và Chromium shell **vẫn ép cửa sổ rộng tối thiểu 516px**!
+### 1.1. Tại sao cửa sổ Chrome trước đó to và không giống điện thoại?
+- Khi mở Chrome ở chế độ cửa sổ bình thường (Regular Window), Chrome có thanh Tabs, thanh địa chỉ Omnibox, nút Extension và điều khiển cửa sổ.
+- Hệ điều hành Windows và Chromium ép giới hạn cứng `min-width = 516px`.
+- **Giải pháp đột phá:** Khi kích hoạt cờ `--app={start_url}` (Chrome Application Mode), Chrome chuyển sang chế độ cửa sổ ứng dụng không tab, không toolbar, không omnibox, và **hoàn toàn gỡ bỏ giới hạn min-width 516px**. Kích thước cửa sổ thu nhỏ chuẩn xác về **`width = 375px, height = 820px`** (tỉ lệ 9:19.5 chuẩn smartphone hiện đại).
 
-### 1.2. Thuật toán cũ bị đè chồng lấn (Window Overlap)
-- Thuật toán cũ đặt:
-  `let width = 375;`
-  `let x = 10 + (slot_idx as i32 * 381);`
-- Vì cửa sổ Chrome thực tế rộng **516px**, nhưng khoảng cách giữa các điểm bắt đầu chỉ là **381px**:
-  * Slot 0: `x = 10` -> kéo dài đến `x = 526`
-  * Slot 1: `x = 391` -> kéo dài đến `x = 907` (**ĐÈ LÊN SLOT 0 TẬN 135px!**)
-  * Slot 2: `x = 772` -> kéo dài đến `x = 1288` (**ĐÈ LÊN SLOT 1 TẬN 135px!**)
-  * Slot 3: `x = 1153` -> kéo dài đến `x = 1669` (**ĐÈ LÊN SLOT 2 TẬN 135px!**)
-  * Slot 4: `x = 1534` -> kéo dài đến `x = 2050` (**ĐÈ LÊN SLOT 3 TẬN 135px!**)
-=> Toàn bộ 5 cửa sổ bị đè chồng lấn lên nhau từ trái qua phải!
-
-### 1.3. Lệch pha giữa Viewport hiển thị bên trong và Cửa sổ bên ngoài
-- Trong `Emulation.setDeviceMetricsOverride` (dòng 1506-1510):
-  Đang gán cứng: `width: 412, height: 915, fitWindow: false`.
-- Cửa sổ ngoài rộng 516px+, nhưng viewport trang web chỉ có 412px và `fitWindow: false` -> dẫn đến trang web bị lọt thỏm ở giữa, hai bên viền thừa khoảng trống xám to đùng, tạo cảm giác "độ rộng trình duyệt to hơn so với màn hình hiển thị"!
+### 1.2. Tại sao kiểm tra Login trước đó bị lỗi nhận diện sai?
+- Script cũ kiểm tra: `hasAvatar && !hasLoginBtn`, trong đó `hasAvatar` dùng selector `img[alt*="avatar"]` hoặc `a[href*="/@"]`.
+- Trên trang chủ TikTok FYP, **mỗi video của khách vãng lai đều có avatar và link kênh của tác giả video**!
+- Trong khi đó, nút Login trên Mobile Web có selector và cấu trúc DOM khác desktop khiến `hasLoginBtn` trả về `false`.
+- Hậu quả: Dù profile chưa hề login, script vẫn kết luận sai là "Đã đăng nhập" và vào lướt video như đã login thành công!
 
 ---
 
-## 2. Giải pháp kiến trúc kỹ thuật (Architectural Solution)
+## 2. Thiết kế giải pháp kỹ thuật
 
-### 2.1. Tự động nhận diện diện tích làm việc màn hình thực tế (Dynamic Work Area Detection)
-- Gọi Win32 API `SystemParametersInfoW(SPI_GETWORKAREA)` trong Rust:
-  * Trả về chính xác `width` và `height` của khu vực làm việc (đã trừ Taskbar Windows và tính toán theo DPI scaling thực tế).
-  * Ví dụ: Trên màn hình máy anh Tony trả về chính xác `2752 x 1112`. Trên màn hình Full HD trả về `1920 x 1040`.
+### 2.1. Kích thước cửa sổ Chuẩn Điện Thoại (375x820) & Grid Layout
+- Khi `is_mobile`:
+  * Sử dụng flag `--app={start_url}` thay vì mở cửa sổ thông thường.
+  * Kích thước cửa sổ cố định chuẩn điện thoại: `width = 375`, `height = 820`.
+  * Grid Layout 5 slot:
+    - Slot 0: `x = 15, y = 10`
+    - Slot 1: `x = 15 + 1 * (375 + 15) = 405, y = 10`
+    - Slot 2: `x = 15 + 2 * (375 + 15) = 795, y = 10`
+    - Slot 3: `x = 15 + 3 * (375 + 15) = 1185, y = 10`
+    - Slot 4: `x = 15 + 4 * (375 + 15) = 1575, y = 10`
+    - Tổng bề ngang cả 5 cửa sổ là `1950px` (vừa vặn, thông thoáng trên màn hình 2752px của anh Tony, và cực kỳ đẹp mắt).
 
-### 2.2. Bố trí Grid Layout thích ứng thông minh (Adaptive Smart Grid)
-Căn cứ vào `screen_width` thực tế:
-
-1. **Nếu `screen_width >= 2600` (Màn hình rộng như 2752px của anh Tony):**
-   - Xếp **5 cột song song trên 1 hàng ngang**:
-     * `window_width = (screen_width - 20 - 4 * 12) / 5` (~536px trên màn hình 2752px, lớn hơn 516px min-width).
-     * `window_height = screen_height - 20` (~1090px).
-     * `x = 10 + slot_idx * (window_width + 12)`.
-     * **Khoảng cách giữa các cửa sổ là 12px, 100% không đè lên nhau dù chỉ 1 pixel!**
-
-2. **Nếu `screen_width < 2600` (Màn hình 1920x1080 Full HD hoặc Laptop):**
-   - Vì min-width của Chrome là ~516px, 1 hàng ngang chỉ chứa tối đa 3 cửa sổ (`1920 / 516 = 3.7`).
-   - Tự động chia thành **2 Hàng Ma Trận Thông Minh (2-Row Smart Grid)**:
-     * Hàng trên: 3 cửa sổ (Slot 0, 1, 2)
-       `width = (screen_width - 20 - 2 * 12) / 3` (~620px trên Full HD).
-       `height = (screen_height - 20 - 15) / 2` (~490px-500px).
-       `x = 10 + col * (width + 12)`, `y = 10`.
-     * Hàng dưới: 2 cửa sổ (Slot 3, 4) căn giữa màn hình cân đối:
-       `margin_x = (screen_width - (2 * width + 12)) / 2`.
-       `x = margin_x + (slot - 3) * (width + 12)`, `y = 10 + height + 15`.
-     * **Cả 5 cửa sổ đều hiển thị trọn vẹn, không cửa sổ nào bị đè lên nhau!**
-
-### 2.3. Khớp khít Viewport bên trong với Cửa sổ bên ngoài
-- Truyền `window_width` và `window_height` vào CDP reader task.
-- Trong `Emulation.setDeviceMetricsOverride`:
-  * `width`: Tính toán vừa khít inner width (`std::cmp::max(412, window_width - 16)`).
-  * `height`: Tính toán vừa khít inner height (`std::cmp::max(700, window_height - 85)`).
-  * `fitWindow`: Đặt thành `true` để trang TikTok tự động căn chỉnh tỷ lệ 100% khít khung hiển thị, không bị thừa lề xám hay lệch kích thước.
+### 2.2. Luồng kiểm tra Login chuẩn xác (Step 1)
+1. **Vào TikTok và chờ 10s:**
+   * Điều hướng vào `https://www.tiktok.com`.
+   * Lắng nghe DOM trong 10s để trang tải đầy đủ các component.
+2. **Kiểm tra nút Login xuất hiện:**
+   * Dùng script kiểm tra DOM chính xác:
+     - Quét các nút có text `"Log in"`, `"Đăng nhập"`, attribute `data-e2e="top-login-button"`, `data-e2e="nav-login-button"`, link `href*="/login"`.
+     - Kiểm tra song song CDP Cookies: có cookie `sessionid` / `sessionid_ss` hay không.
+   * **Nếu CÓ nút Login:**
+     - Xác định tài khoản CHƯA ĐĂNG NHẬP.
+     - Cập nhật log & status: `Chưa đăng nhập TikTok -> Đang tiến hành đăng nhập...`.
+     - Thực hiện quy trình đăng nhập:
+       * Mở form login hoặc click nút Login.
+       * Tự động điền email/username và password từ C69.
+       * Click Log in.
+       * Nếu thành công: lưu thin profile và chuyển sang nuôi.
+       * Nếu gặp captcha/rate limit: báo trạng thái và đóng an toàn.
+   * **Nếu KHÔNG CÓ nút Login (Đã đăng nhập sẵn):**
+     - Xác định tài khoản ĐÃ ĐĂNG NHẬP SẴN.
+     - Cập nhật log: `✅ Đã đăng nhập sẵn -> Bắt đầu lướt video, like, share, comment...`.
+     - Tiến hành lướt video trên FYP:
+       * Thời gian nuôi: **tốn khoảng 30s - 1 phút** (tổng chu kỳ 35s-55s).
+       * Xem 4-6 video (mỗi video 6-12s).
+       * Thả tim (Like) ngẫu nhiên ~65%.
+       * Chia sẻ (Share/Copy link) ngẫu nhiên ~30%.
+       * Bình luận (Comment) ngẫu nhiên ~20%.
+     - **Sau khi nuôi xong (30s - 1 phút):**
+       * Cập nhật status: `Đã nuôi thành công (Xem X video, Y like, Z comment, W share)`.
+       * **TẮT TRÌNH DUYỆT ĐI NGAY LẬP TỨC** để giải phóng RAM, nhả slot cho profile tiếp theo trong hàng đợi!
 
 ---
 
 ## 3. Tiêu chí nghiệm thu (Acceptance Criteria)
-1. Cửa sổ Chrome của các slot không có bất kỳ khoảng đè chồng lấn (overlap) nào.
-2. Tọa độ của cửa sổ sau phải luôn `>=` tọa độ của cửa sổ trước + chiều rộng thực tế của cửa sổ trước (`x_{i+1} >= x_i + w_i`).
-3. Giao diện TikTok bên trong hiển thị vừa vặn, không bị thừa viền hay bóp méo.
-4. Test suite tự động xác thực và chạy live trên Windows.
+1. Cửa sổ Chrome mở ra chuẩn tỷ lệ điện thoại `375x820` bằng App Mode, không có thanh tab và omnibox cồng kềnh.
+2. Không nhận diện nhầm avatar tác giả video thành avatar tài khoản đăng nhập.
+3. Nếu tài khoản chưa login -> tự động phát hiện nút Login và tiến hành login.
+4. Nếu tài khoản đã login -> lướt video, like, share, comment từ 30s - 1 phút rồi tự động đóng trình duyệt.
