@@ -21,9 +21,9 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16555,
     "tiktok_username": "quang.minh.i58",
-    "last_nurture_status": "Đang lướt FYP",
-    "last_nurture_time": "2026-09-19 13:24:47",
-    "last_nurture_error": null,
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-20 09:05:12",
+    "last_nurture_error": "Đã xem 4 video, thả tim 1 lượt, bình luận 1 lượt, chia sẻ 1 lượt",
     "retry_after_epoch": null
   },
   {
@@ -49,8 +49,8 @@
     "tiktok_account_id": 16809,
     "tiktok_username": "3_bsantana.yandra",
     "last_nurture_status": "Đã nuôi thành công",
-    "last_nurture_time": "2026-09-20 08:46:55",
-    "last_nurture_error": "Đã xem 3 video, thả tim 1 lượt, bình luận 0 lượt, chia sẻ 1 lượt",
+    "last_nurture_time": "2026-09-20 09:04:50",
+    "last_nurture_error": "Đã xem 4 video, thả tim 2 lượt, bình luận 1 lượt, chia sẻ 1 lượt",
     "retry_after_epoch": null
   },
   {

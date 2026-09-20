@@ -636,109 +636,87 @@ impl BrowserNurtureEngine {
             }
         }
 
-        // 4. STEP 1: VÀO TIKTOK KHOẢNG 10S & KIỂM TRA NÚT LOGIN
-        self.update_log(pid, "Mở TikTok (chờ 10s để tải trang và kiểm tra nút Login)...".to_string(), "Kiểm tra nút Login");
-        let _ = cdp.navigate("https://www.tiktok.com").await;
+        // 4. STEP 1: XÁC THỰC ĐĂNG NHẬP THỰC TẾ QUA TRANG PROFILE CÁ NHÂN
+        self.update_log(pid, "Mở trang cá nhân để xác thực phiên đăng nhập TikTok...".to_string(), "Xác thực đăng nhập");
+        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
 
-        let mut login_btn_found = false;
-        let mut user_profile_found = false;
+        let mut is_already_logged_in = false;
+        let mut detected_username = String::new();
 
-        // Chờ 10s và quét DOM để kiểm tra sự xuất hiện của nút Login
-        for wait_s in 1..=10 {
+        // Chờ 6 giây để trang profile load và TikTok thực hiện redirect nếu chưa login
+        for wait_s in 1..=6 {
             if !run_flag.load(Ordering::Relaxed) { return; }
             tokio::time::sleep(Duration::from_secs(1)).await;
 
-            let check_expr = r#"(() => {
-                // 1. Quét tất cả các nút/thẻ a/div có text hoặc attribute liên quan đến Log in
-                const loginEls = Array.from(document.querySelectorAll('button, a, div[role="button"], span, p')).filter(el => {
-                    const text = (el.innerText || '').trim().toLowerCase();
-                    const href = el.getAttribute('href') || '';
-                    const e2e = el.getAttribute('data-e2e') || '';
-                    const id = el.id || '';
-                    const isVisible = el.offsetParent !== null || el.getClientRects().length > 0;
-                    return isVisible && (
-                        text === 'log in' || text === 'đăng nhập' ||
-                        text.includes('log in') || text.includes('đăng nhập') ||
-                        href.includes('/login') || e2e.includes('login') || id.includes('login')
-                    );
-                });
-
-                // 2. Quét avatar hoặc menu của chính tài khoản đã đăng nhập (loại trừ avatar tác giả video trên feed)
-                const userProfile = document.querySelector('[data-e2e="profile-icon"]') || 
-                                    document.querySelector('[data-e2e="inbox-icon"]') ||
-                                    document.querySelector('[data-e2e="nav-profile"]');
+            let check_auth_js = r#"(() => {
+                const url = window.location.href;
+                const isLoginUrl = url.includes('/login');
+                const hasLoginBtn = !!(
+                    document.querySelector('[data-e2e="top-login-button"]') ||
+                    Array.from(document.querySelectorAll('button, a')).some(el => {
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                    })
+                );
+                
+                let un = '';
+                const m = url.match(/@([a-zA-Z0-9_.-]+)/);
+                if (m && m[1]) {
+                    un = m[1];
+                }
 
                 return JSON.stringify({
-                    has_login_btn: loginEls.length > 0,
-                    has_user_profile: !!userProfile
+                    url: url,
+                    is_login_url: isLoginUrl,
+                    has_login_btn: hasLoginBtn,
+                    username: un
                 });
             })()"#;
 
-            if let Ok(eval_val) = cdp.evaluate(check_expr).await {
+            let mut is_login_page = false;
+            let mut has_btn = false;
+            let mut un_str = String::new();
+
+            if let Ok(eval_val) = cdp.evaluate(check_auth_js).await {
                 if let Some(s) = eval_val.as_str() {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-                        let has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let has_prof = parsed.get("has_user_profile").and_then(|v| v.as_bool()).unwrap_or(false);
-                        if has_btn { login_btn_found = true; }
-                        if has_prof { user_profile_found = true; }
+                        is_login_page = parsed.get("is_login_url").and_then(|v| v.as_bool()).unwrap_or(false);
+                        has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
+                        un_str = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     }
                 }
             }
 
-            self.update_log(pid, format!("Đang vào TikTok và kiểm tra nút Login ({}s/10s)...", wait_s), "Kiểm tra nút Login");
+            // Kiểm tra session cookies
+            let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
+            let has_session_cookie = cookies_val.as_array().map(|arr| {
+                arr.iter().any(|c| {
+                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    (name == "sessionid" || name == "sessionid_ss") &&
+                    c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
+                })
+            }).unwrap_or(false);
+
+            if has_session_cookie && !is_login_page && !has_btn {
+                is_already_logged_in = true;
+                detected_username = un_str;
+                break;
+            }
+
+            self.update_log(pid, format!("Đang xác thực phiên đăng nhập TikTok ({}s/6s)...", wait_s), "Xác thực đăng nhập");
         }
 
-        // Kiểm tra bổ sung session cookies từ CDP
-        let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
-        let has_session_cookie = cookies_val.as_array().map(|arr| {
-            arr.iter().any(|c| {
-                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                (name == "sessionid" || name == "sessionid_ss") &&
-                !c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().is_empty()
-            })
-        }).unwrap_or(false);
-
-        // Điều kiện xác định cần login: nếu thấy nút login, HOẶC không có cookie session VÀ không có user profile icon
-        let need_login = login_btn_found || (!has_session_cookie && !user_profile_found);
-
-        if !need_login {
-            self.update_log(pid, "✅ Không thấy nút Login (Tài khoản đã đăng nhập sẵn)! Bắt đầu nuôi video...".to_string(), "Đã đăng nhập");
+        if is_already_logged_in {
+            self.update_log(pid, format!("✅ Tài khoản đã đăng nhập sẵn (@{})! Chuẩn bị kiểm tra Profile...", detected_username), "Đã đăng nhập");
             let _ = crate::cdp_browser::backup_thin_profile(pid);
             tokio::time::sleep(Duration::from_secs(1)).await;
         } else {
-            self.update_log(pid, "⚠️ Phát hiện nút Login (Tài khoản chưa đăng nhập). Đang tiến hành đăng nhập TikTok...".to_string(), "Tiến hành đăng nhập");
-            // Chưa đăng nhập -> Cần thực hiện quy trình đăng nhập
+            self.update_log(pid, "⚠️ Phát hiện tài khoản CHƯA ĐĂNG NHẬP! Bắt đầu quy trình đăng nhập TikTok...".to_string(), "Tiến hành đăng nhập");
+            // Chưa đăng nhập -> Kiểm tra mật khẩu C69
             let has_valid_c69_pwd = c69_acc.as_ref().map(|a| a.password.as_deref().unwrap_or("").trim().len() > 0).unwrap_or(false);
             if !has_valid_c69_pwd {
-                self.update_log(pid, "⚠️ Profile chưa đăng nhập TikTok! Đang mở trang đăng nhập https://www.tiktok.com/login... Vui lòng đăng nhập trên cửa sổ trình duyệt (hoặc gắn tài khoản C69 có mật khẩu).".to_string(), "Chờ đăng nhập");
-                let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
-
-                let mut manual_login_ok = false;
-                for wait_i in 1..=60 {
-                    if !run_flag.load(Ordering::Relaxed) { return; }
-                    let check_login_ok_expr = r#"(() => {
-                        const userProfile = document.querySelector('[data-e2e="profile-icon"]') || 
-                                            document.querySelector('[data-e2e="inbox-icon"]') ||
-                                            document.querySelector('[data-e2e="nav-profile"]');
-                        const hasLoginBtn = Array.from(document.querySelectorAll('button, a')).some(el => {
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
-                        });
-                        return !!userProfile && !hasLoginBtn;
-                    })()"#;
-                    let check_now = cdp.evaluate(check_login_ok_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
-                    if check_now {
-                        manual_login_ok = true;
-                        break;
-                    }
-                    if wait_i % 5 == 0 {
-                        self.update_log(pid, format!("Đang chờ bạn đăng nhập TikTok trên trình duyệt (thời gian còn {}s)...", (60 - wait_i) * 2), "Chờ đăng nhập");
-                    }
-                }
-                if !manual_login_ok {
-                    self.set_error(pid, "❌ Quá thời gian chờ đăng nhập TikTok (120s) hoặc chưa hoàn tất đăng nhập. Vui lòng thử lại.".to_string());
-                    return;
-                }
+                self.set_error(pid, "❌ Profile chưa đăng nhập TikTok và không có mật khẩu tài khoản C69! Tự động dừng lại và đóng trình duyệt, tuyệt đối không nuôi dạo vô nghĩa.".to_string());
+                return;
             } else {
                 let acc = c69_acc.as_ref().unwrap();
                 let pwd = acc.password.as_deref().unwrap_or("");
@@ -1195,9 +1173,150 @@ impl BrowserNurtureEngine {
                 }
             }
 
-            self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đã lưu phiên Cookies. Đang chuyển sang Feed FYP...".to_string(), "Đăng nhập thành công");
+            self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đã lưu phiên Cookies. Đang kiểm tra Profile...".to_string(), "Đăng nhập thành công");
             let _ = crate::cdp_browser::backup_thin_profile(pid);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        // 4B. KIỂM TRA XEM USERNAME VÀ AVATAR ĐÃ CÓ CHƯA (NẾU CHƯA THÌ UPLOAD AVATAR VÀ ĐỔI USERNAME)
+        self.update_log(pid, "Đang kiểm tra Avatar và Username của tài khoản...".to_string(), "Kiểm tra Profile");
+        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let check_profile_js = r#"(() => {
+            const url = window.location.href;
+            let un = '';
+            const m = url.match(/@([a-zA-Z0-9_.-]+)/);
+            if (m && m[1]) {
+                un = m[1];
+            } else {
+                const sub = document.querySelector('[data-e2e="user-subtitle"], h2');
+                if (sub) un = (sub.innerText || '').replace('@', '').trim();
+            }
+
+            // Username mặc định: bắt đầu bằng "user" kèm theo chuỗi số dài
+            const isDefaultUsername = /^user\d{6,}/i.test(un) || /^user_/i.test(un) || un.length === 0;
+
+            // Kiểm tra Avatar: xem ảnh hiện tại có phải ảnh mặc định (bóng người) hoặc rỗng không
+            const avatarImg = document.querySelector('[data-e2e="user-avatar"] img, [class*="avatar"] img, img[alt*="avatar"]');
+            const avatarSrc = avatarImg ? (avatarImg.src || '') : '';
+            const isDefaultAvatar = !avatarSrc || 
+                                   avatarSrc.includes('default-avatar') || 
+                                   avatarSrc.includes('avatar-placeholder') ||
+                                   avatarSrc.includes('musically-maliva-obj/default') ||
+                                   avatarSrc.includes('100x100.png');
+
+            return JSON.stringify({
+                username: un,
+                is_default_username: isDefaultUsername,
+                avatar_src: avatarSrc,
+                is_default_avatar: isDefaultAvatar
+            });
+        })()"#;
+
+        let mut need_change_username = false;
+        let mut need_upload_avatar = false;
+        let mut current_un = String::new();
+
+        if let Ok(eval_val) = cdp.evaluate(check_profile_js).await {
+            if let Some(s) = eval_val.as_str() {
+                if let Ok(p) = serde_json::from_str::<serde_json::Value>(s) {
+                    current_un = p.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    need_change_username = p.get("is_default_username").and_then(|v| v.as_bool()).unwrap_or(false);
+                    need_upload_avatar = p.get("is_default_avatar").and_then(|v| v.as_bool()).unwrap_or(false);
+                }
+            }
+        }
+
+        info!("👤 [Profile #{}] Username hiện tại: '{}' (Cần đổi: {}), Avatar (Cần upload: {})",
+            pid, current_un, need_change_username, need_upload_avatar);
+
+        if need_change_username || need_upload_avatar {
+            self.update_log(
+                pid, 
+                format!("Phát hiện tài khoản chưa hoàn thiện Profile (Đổi username: {}, Up avatar: {}). Tiến hành cập nhật...", need_change_username, need_upload_avatar), 
+                "Cập nhật Profile"
+            );
+
+            // 1. Mở modal Edit profile
+            let open_edit_js = r#"(() => {
+                const btn = document.querySelector('[data-e2e="edit-profile-btn"]') ||
+                            Array.from(document.querySelectorAll('button, a, div[role="button"]')).find(el => {
+                                const t = (el.innerText || '').trim().toLowerCase();
+                                return t === 'edit profile' || t === 'sửa hồ sơ';
+                            });
+                if (btn) { btn.click(); return true; }
+                return false;
+            })()"#;
+            let _ = cdp.evaluate(open_edit_js).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // 2. Upload Avatar nếu avatar mặc định hoặc rỗng
+            if need_upload_avatar {
+                self.update_log(pid, "📸 Đang tải lên ảnh đại diện Avatar mới cho tài khoản...".to_string(), "Upload Avatar");
+                if let Ok(path_str) = get_or_create_clean_avatar(pid).await {
+                    let _ = cdp.upload_file_to_input("input[type='file']", &path_str).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    // Bấm Confirm / Apply Crop nếu có
+                    let apply_crop_js = r#"(() => {
+                        const confirmBtn = document.querySelector('[data-e2e="crop-confirm"]') ||
+                                           Array.from(document.querySelectorAll('button')).find(b => {
+                                               const t = (b.innerText || '').trim().toLowerCase();
+                                               return t === 'apply' || t === 'áp dụng' || t === 'confirm' || t === 'xác nhận';
+                                           });
+                        if (confirmBtn) { confirmBtn.click(); return true; }
+                        return false;
+                    })()"#;
+                    let _ = cdp.evaluate(apply_crop_js).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+
+            // 3. Đổi Username nếu là username mặc định (user123456...)
+            if need_change_username {
+                let target_clean_name = if let Some(ref acc) = c69_acc {
+                    clean_tiktok_username(&acc.username)
+                } else if let Some(ref saved) = profile.tiktok_username {
+                    clean_tiktok_username(saved)
+                } else {
+                    clean_tiktok_username(&current_un)
+                };
+
+                self.update_log(pid, format!("✏️ Đang đổi Username sang '@{}'...", target_clean_name), "Đổi Username");
+                let set_un_js = format!(r#"(() => {{
+                    const input = document.querySelector('input[name="username"]') ||
+                                  document.querySelector('input[placeholder*="Username"]') ||
+                                  document.querySelector('input[placeholder*="Tên người dùng"]');
+                    if (input) {{
+                        input.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                        input.focus();
+                        const proto = window.HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                        setter.call(input, '{}');
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return true;
+                    }}
+                    return false;
+                }})()"#, target_clean_name);
+                let _ = cdp.evaluate(&set_un_js).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+
+            // 4. Bấm nút Save / Lưu để xác nhận
+            let save_profile_js = r#"(() => {
+                const saveBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    return (t === 'save' || t === 'lưu') && !b.disabled && b.offsetParent !== null;
+                });
+                if (saveBtn) { saveBtn.click(); return true; }
+                return false;
+            })()"#;
+            let _ = cdp.evaluate(save_profile_js).await;
             tokio::time::sleep(Duration::from_secs(3)).await;
+            self.update_log(pid, "✅ Đã hoàn tất cập nhật Avatar và Username!".to_string(), "Cập nhật thành công");
+        } else {
+            self.update_log(pid, format!("✅ Tài khoản đã có Avatar và Username '@{}' chuẩn chỉnh!", current_un), "Profile chuẩn");
         }
 
         // 5. ĐIỀU HƯỚNG TỚI FEED FYP VÀ TIẾN HÀNH NUÔI 30s - 1 PHÚT (THEO CHỈ ĐẠO CỦA ANH TONY)
@@ -2210,5 +2329,99 @@ pub async fn find_healthy_backup_proxy(failed_proxy: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Làm sạch username TikTok (bỏ tiền tố số C69 như 3_ hoặc 16809_, đảm bảo format TikTok hợp lệ)
+pub fn clean_tiktok_username(raw: &str) -> String {
+    let s = raw.trim();
+    // Bỏ tiền tố số như "3_", "16809_"
+    let s = if let Some(idx) = s.find('_') {
+        let prefix = &s[..idx];
+        if prefix.chars().all(|c| c.is_ascii_digit()) {
+            &s[idx + 1..]
+        } else {
+            s
+        }
+    } else {
+        s
+    };
+
+    let cleaned: String = s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+
+    let cleaned = cleaned.trim_matches(|c| c == '.' || c == '_');
+    if cleaned.len() >= 3 && cleaned.len() <= 24 {
+        cleaned.to_string()
+    } else {
+        format!("user_{:x}", rand::thread_rng().gen::<u32>())
+    }
+}
+
+/// Chuẩn bị ảnh avatar sạch tự nhiên để upload cho profile TikTok
+pub async fn get_or_create_clean_avatar(pid: usize) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("qhtd_avatars");
+    let _ = std::fs::create_dir_all(&dir);
+    let avatar_file = dir.join(format!("avatar_{}.jpg", pid % 20));
+    
+    if avatar_file.exists() && avatar_file.metadata().map(|m| m.len() > 1000).unwrap_or(false) {
+        return Ok(avatar_file.to_string_lossy().to_string());
+    }
+
+    // Tải ảnh avatar chân dung tự nhiên từ kho ảnh miễn phí pravatar.cc
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Lỗi tạo client reqwest: {}", e))?;
+
+    let img_id = (pid % 70) + 1;
+    let url = format!("https://i.pravatar.cc/300?img={}", img_id);
+    
+    if let Ok(resp) = client.get(&url).send().await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if bytes.len() > 1000 {
+                    let _ = std::fs::write(&avatar_file, bytes);
+                    return Ok(avatar_file.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback: Sinh file ảnh BMP hợp lệ (256x256 pixel) nếu không có mạng tải avatar
+    let width = 256u32;
+    let height = 256u32;
+    let mut bmp_data = Vec::new();
+    // BMP Header (14 bytes)
+    bmp_data.extend_from_slice(b"BM");
+    let file_size = 54 + width * height * 3;
+    bmp_data.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bmp_data.extend_from_slice(&[0, 0, 0, 0]);
+    bmp_data.extend_from_slice(&(54u32).to_le_bytes());
+    // DIB Header (40 bytes)
+    bmp_data.extend_from_slice(&(40u32).to_le_bytes());
+    bmp_data.extend_from_slice(&(width as i32).to_le_bytes());
+    bmp_data.extend_from_slice(&(height as i32).to_le_bytes());
+    bmp_data.extend_from_slice(&(1u16).to_le_bytes()); // planes
+    bmp_data.extend_from_slice(&(24u16).to_le_bytes()); // bpp
+    bmp_data.extend_from_slice(&[0; 24]); // compression, etc.
+    
+    // Pixel data gradient tự nhiên
+    let base_r = ((pid * 37) % 200 + 55) as u8;
+    let base_g = ((pid * 73) % 200 + 55) as u8;
+    let base_b = ((pid * 109) % 200 + 55) as u8;
+    for y in 0..height {
+        for x in 0..width {
+            let b = base_b.saturating_add((x % 30) as u8);
+            let g = base_g.saturating_add((y % 30) as u8);
+            let r = base_r;
+            bmp_data.push(b);
+            bmp_data.push(g);
+            bmp_data.push(r);
+        }
+    }
+    let bmp_file = dir.join(format!("avatar_{}.bmp", pid % 20));
+    let _ = std::fs::write(&bmp_file, bmp_data);
+    Ok(bmp_file.to_string_lossy().to_string())
 }
 
