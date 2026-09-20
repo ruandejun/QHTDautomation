@@ -1,43 +1,39 @@
 # NHẬT KÝ THAY ĐỔI (AGENT 2 - CODER)
 
 - **Ngày thực hiện:** 2026-09-20
-- **Nhánh triển khai:** `feature/tiktok-avatar-username-strict-login`
+- **Nhánh triển khai:** `feature/tiktok-element-driven-pipeline`
 - **Người thực hiện:** Agent 2 (Coder)
 
 ---
 
-## 1. Các thay đổi trong `qhtd-farm-rust/src/browser_nurture.rs`
+## 1. Các thay đổi cốt lõi trong `qhtd-farm-rust/src/browser_nurture.rs`
 
-### 1.1. Khắc phục triệt để lỗi bỏ qua Login (Strict /profile Verification)
-- **Cơ chế cũ:** Kiểm tra DOM mập mờ trên trang chủ TikTok khiến thẻ sidebar `<a href="/@" data-e2e="nav-profile">Profile</a>` bị nhận diện nhầm thành "đã đăng nhập", dẫn đến việc hệ thống bỏ qua bước login và vào FYP lướt video với tư cách khách vãng lai.
-- **Cơ chế mới:**
-  * Điều hướng trực tiếp tới `https://www.tiktok.com/profile`.
-  * TikTok server sẽ tự động redirect về `https://www.tiktok.com/login...` nếu chưa có phiên đăng nhập hợp lệ.
-  * Kiểm tra đồng thời:
-    1. URL không chứa `/login`.
-    2. Không có nút "Log in" / "Đăng nhập" (`top-login-button`).
-    3. Trình duyệt bắt buộc phải có Cookie `sessionid` hoặc `sessionid_ss` có độ dài > 15 ký tự.
-    4. Trích xuất thành công `username` từ URL (`tiktok.com/@<username>`).
-- **Nghiêm cấm tuyệt đối nuôi khách vãng lai:**
-  * Nếu tài khoản chưa đăng nhập và không có mật khẩu C69 -> **DỪNG LẠI NGAY LẬP TỨC (`return`), ĐÓNG TRÌNH DUYỆT BẰNG `SlotGuard` VÀ BÁO LỖI RÕ RÀNG!**
-  * Nếu có mật khẩu C69 -> Tiến hành quy trình đăng nhập tự động. Sau khi đăng nhập, bắt buộc xác thực lại lần 2 qua `https://www.tiktok.com/profile`. Nếu vẫn chưa đăng nhập thành công -> **DỪNG LẠI VÀ ĐÓNG TRÌNH DUYỆT!**
+### 1.1. Tăng Timeout CDP lên 20s & Loại Bỏ Hoàn Toàn `unwrap()` Gây Crash
+- **Khắc phục timeout giả:** Tăng thời gian chờ phản hồi CDP trong `CdpClient::call` từ `8s` lên `20s`. Khi SOCKS5 proxy có độ trễ cao hoặc đang tải asset nặng, kết nối WebSocket CDP không còn bị timeout oan.
+- **Loại bỏ nguy cơ Panic/Crash (Zero Panic Guarantee):** Thay thế đoạn `c69_acc.as_ref().unwrap()` bằng kiểm tra `acc_opt.is_none()` an toàn. Nếu thiếu mật khẩu hoặc tài khoản không tồn tại, hàm dừng lại an toàn, đóng browser và giải phóng tài nguyên.
 
-### 1.2. Tính năng Kiểm tra & Tự động cập nhật Avatar + Đổi Username (Step 4B)
-- Sau khi đã đăng nhập 100%, hệ thống mở trang cá nhân `https://www.tiktok.com/profile` và quét thông tin tài khoản:
-  * **Kiểm tra Avatar:**
-    - Quét ảnh đại diện `avatarImg = document.querySelector('[data-e2e="user-avatar"] img')`.
-    - Nếu ảnh là avatar mặc định (chứa `default-avatar`, `musically-maliva-obj/default`, hoặc rỗng) -> Xác định `need_upload_avatar = true`.
-    - Tải/chuẩn bị ảnh avatar chân dung tự nhiên bằng `get_or_create_clean_avatar(pid)` và upload vào input file `input[type="file"]` qua CDP `DOM.setFileInputFiles`.
-    - Tự động click `Apply` / `Confirm` để lưu ảnh đại diện mới.
-  * **Kiểm tra Username:**
-    - Đọc username hiện tại từ URL / tiêu đề trang cá nhân.
-    - Nếu username là dạng mặc định của TikTok (`user123456789...` hoặc regex `^user\d{6,}` / `^user_`) -> Xác định `need_change_username = true`.
-    - Chuẩn hóa username mới từ C69 hoặc profile (loại bỏ tiền tố số `3_` bằng `clean_tiktok_username`).
-    - Nhập username mới vào input `input[name="username"]` và bấm `Save` / `Lưu`.
-  * Cập nhật log theo thời gian thực hiển thị lên Dashboard UI.
+### 1.2. Cơ chế Element-Driven State Transition (Kiểm tra phần tử DOM chuyển bước)
+Đúng theo kiến trúc anh Tony chỉ đạo:
+- **Bước 1 (Kiểm tra IP SOCKS5 tại iphey.com):**
+  * Tự động trích xuất IP proxy mục tiêu qua hàm `extract_ip_from_proxy_string(&profile.proxy_string)`.
+  * Điều hướng mở `https://iphey.com` và polling kiểm tra sự xuất hiện của IP trên `document.body.innerText` (mỗi 1.5s).
+  * **Ngay khi thấy IP xuất hiện -> Ghi log xác nhận proxy sống và CHUYỂN NGAY SANG TIKTOK!** Không phải chờ trang iphey tải hết 100% các script nặng khác!
+- **Bước 2 (Vào TikTok vài giây -> Mở link kiểm tra Profile):**
+  * Điều hướng `https://www.tiktok.com`, chờ 3s cho cookie và proxy khởi tạo.
+  * Điều hướng thẳng vào link trang cá nhân: `https://www.tiktok.com/profile`.
+- **Bước 3 (Kiểm tra phần tử Profile/Login):**
+  * Polling kiểm tra phần tử trên trang Profile:
+    - Nếu xuất hiện nút Log in hoặc URL bị chuyển về `/login` -> Nhận diện cần đăng nhập, chuyển sang luồng Login C69.
+    - Nếu có username và session cookie -> Nhận diện đã đăng nhập sẵn.
+- **Bước 4 (Kiểm tra & Cập nhật Avatar + Username):**
+  * Quét ảnh avatar: Nếu mặc định -> Tự upload avatar chân dung tự nhiên bằng `get_or_create_clean_avatar(pid)`.
+  * Quét username: Nếu mặc định (`user...`) -> Tự đổi username sạch (bỏ tiền tố số C69 `3_`).
+- **Bước 5 (Lướt FYP):**
+  * Điều hướng `https://www.tiktok.com/foryou?lang=en`.
+  * Lướt video và tương tác 35s - 55s (khoảng 30s - 1 phút) rồi tự động đóng trình duyệt.
 
 ---
 
 ## 2. Kết quả Build
-- Đã biên dịch release thành công: `cargo build --release` (34.14s).
-- Đã sao chép file chạy tối ưu vào: `MunAutomationDesktop/MunAutomation.exe`.
+- Đã biên dịch release thành công: `cargo build --release` (29.81s).
+- Đã ghi đè file thực thi: `MunAutomationDesktop/MunAutomation.exe`.

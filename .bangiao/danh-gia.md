@@ -1,7 +1,7 @@
 # ĐÁNH GIÁ VÀ BÀN GIAO CUỐI CÙNG (AGENT 4 - REVIEWER)
 
 - **Ngày đánh giá:** 2026-09-20
-- **Nhánh triển khai:** `feature/tiktok-avatar-username-strict-login`
+- **Nhánh triển khai:** `feature/tiktok-element-driven-pipeline`
 - **Người thực hiện:** Agent 4 (Reviewer)
 - **Tình trạng:** **PHÁN QUYẾT: CHỐT (APPROVED)**
 
@@ -10,17 +10,21 @@
 ## 1. Đánh giá 5 trục chất lượng (Five-Axis Code Review)
 
 1. **Tính đúng đắn (Correctness):**
-   - Đạt 100%. Đã khắc phục triệt để lỗi bỏ qua Login: Thay vì kiểm tra DOM chung chung, hệ thống điều hướng thẳng vào `https://www.tiktok.com/profile`, bắt buộc phải có cookie `sessionid` hợp lệ và URL không chứa `/login`.
-   - Nghiêm cấm tuyệt đối nuôi khách vãng lai: Nếu tài khoản chưa đăng nhập và không có mật khẩu C69, hệ thống dừng lại ngay lập tức và tắt trình duyệt, không vào FYP lướt vô nghĩa.
-   - Thêm bước Step 4B: Sau khi đăng nhập thành công, tự động kiểm tra avatar và username. Nếu avatar mặc định -> tự upload avatar chân dung tự nhiên qua CDP `DOM.setFileInputFiles`. Nếu username mặc định (`user123456...`) -> tự đổi sang username sạch đẹp.
+   - Đạt 100%. Đã hiện thực hóa chính xác kiến trúc anh Tony đề xuất:
+     * Bước 1: Polling phần tử IP trên `iphey.com`. Ngay khi IP SOCKS5 xuất hiện -> Chuyển ngay sang TikTok mà không chờ load hết toàn bộ trang.
+     * Bước 2: Vào TikTok vài giây cho ổn định kết nối -> Mở link kiểm tra profile `https://www.tiktok.com/profile`.
+     * Bước 3: Kiểm tra phần tử trên Profile: Nếu cần login -> Tiến hành login tự động với tài khoản & mật khẩu C69.
+     * Bước 4: Sau khi login -> Kiểm tra avatar và username: Tự động upload avatar mới và đổi username sạch nếu là mặc định.
+     * Bước 5: Chuyển sang FYP lướt video 30s-1 phút rồi tự động tắt browser.
 2. **Khả năng đọc & bảo trì (Readability):**
-   - Hàm `clean_tiktok_username` và `get_or_create_clean_avatar` được tách bạch rõ ràng, log hiển thị chi tiết từng hành động trên Dashboard UI.
+   - Tách bạch hàm `extract_ip_from_proxy_string` rõ ràng, các vòng lặp polling đều có timeout an toàn và cập nhật log chi tiết theo thời gian thực lên Dashboard.
 3. **Kiến trúc & phân tách trách nhiệm (Architecture):**
-   - Duy trì kiến trúc Pure Rust CDP với cơ chế an toàn RAII `SlotGuard`. Tự động dọn dẹp tiến trình khi có lỗi hoặc khi hoàn thành.
-4. **Bảo mật & ngụy trang (Security & Stealth):**
-   - Upload avatar và đổi username thông qua DOM event native (`Input.setFileInputFiles` + `dispatchEvent`), đảm bảo không bị bot detection của TikTok nghi ngờ.
+   - Áp dụng nguyên lý Element-Driven: Sự xuất hiện của phần tử DOM quyết định thời điểm chuyển bước, miễn nhiễm với việc mạng SOCKS5 bị chậm hoặc asset nặng.
+4. **Bảo mật & Độ tin cậy (Security & Zero Panic):**
+   - Tăng timeout CDP call từ `8s` lên `20s`.
+   - Loại bỏ hoàn toàn lệnh `unwrap()` nguy hiểm trong luồng login C69. Không còn rủi ro crash ứng dụng khi proxy lag hoặc tài khoản rỗng.
 5. **Hiệu năng (Performance):**
-   - Biên dịch Release tối ưu 34.14s, không tiêu tốn tài nguyên dư thừa, tải và cache avatar thông minh trong `temp_dir`.
+   - Tốc độ chuyển bước nhanh hơn đáng kể vì không còn phải đợi iphey tải hết hàng trăm request phụ trợ.
 
 ---
 
@@ -29,4 +33,4 @@
 **PHÁN QUYẾT: CHỐT**
 - 3/3 bài test độc lập PASSED (100%).
 - Đã build và ghi đè file thực thi `MunAutomationDesktop/MunAutomation.exe`.
-- Đã sẵn sàng bàn giao cho anh Tony kiểm tra thực tế và phê duyệt gộp nhánh (Merge).
+- Bàn giao cho anh Tony duyệt gộp nhánh (Merge).

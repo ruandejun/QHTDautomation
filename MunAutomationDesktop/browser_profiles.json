@@ -156,8 +156,8 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16810,
     "tiktok_username": "2_monicafmroquio",
-    "last_nurture_status": "Kiểm tra đăng nhập",
-    "last_nurture_time": "2026-09-19 14:01:02",
+    "last_nurture_status": "Chờ form login",
+    "last_nurture_time": "2026-09-20 09:19:07",
     "last_nurture_error": null,
     "retry_after_epoch": null
   },
@@ -183,10 +183,10 @@
     "gpu_vendor": "ARM",
     "tiktok_account_id": null,
     "tiktok_username": null,
-    "last_nurture_status": "Khởi động browser",
-    "last_nurture_time": "2026-09-19 14:01:03",
-    "last_nurture_error": null,
-    "retry_after_epoch": null
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-20 09:16:45",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)",
+    "retry_after_epoch": 1789874205
   },
   {
     "id": 7,
@@ -210,10 +210,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16803,
     "tiktok_username": "user58108599773320",
-    "last_nurture_status": "Chờ form login",
-    "last_nurture_time": "2026-09-19 14:08:28",
-    "last_nurture_error": null,
-    "retry_after_epoch": null
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-20 09:18:23",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)",
+    "retry_after_epoch": 1789874303
   },
   {
     "id": 8,
@@ -345,10 +345,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": null,
     "tiktok_username": null,
-    "last_nurture_status": null,
-    "last_nurture_time": null,
-    "last_nurture_error": null,
-    "retry_after_epoch": null
+    "last_nurture_status": "Rate limit (Chờ 1h)",
+    "last_nurture_time": "2026-09-20 09:17:30",
+    "last_nurture_error": "❌ Đăng nhập TikTok thất bại: Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)",
+    "retry_after_epoch": 1789874250
   },
   {
     "id": 13,

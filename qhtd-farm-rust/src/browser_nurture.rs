@@ -130,12 +130,12 @@ impl CdpClient {
             .await
             .map_err(|e| format!("Lỗi gửi lệnh CDP {}: {}", method, e))?;
 
-        match tokio::time::timeout(Duration::from_secs(8), rx).await {
+        match tokio::time::timeout(Duration::from_secs(20), rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => Err("CDP channel closed".to_string()),
             Err(_) => {
                 self.pending.lock().remove(&id);
-                Err(format!("CDP Command '{}' timeout 8s", method))
+                Err(format!("CDP Command '{}' timeout 20s", method))
             }
         }
     }
@@ -636,17 +636,51 @@ impl BrowserNurtureEngine {
             }
         }
 
-        // 4. STEP 1: XÁC THỰC ĐĂNG NHẬP THỰC TẾ QUA TRANG PROFILE CÁ NHÂN
-        self.update_log(pid, "Mở trang cá nhân để xác thực phiên đăng nhập TikTok...".to_string(), "Xác thực đăng nhập");
+        // 4A. BƯỚC 1: KIỂM TRA PHẦN TỬ IP ĐÃ ĐỔI SANG SOCKS5 CHƯA TẠI IPHEY (ELEMENT-DRIVEN)
+        let proxy_target_ip = extract_ip_from_proxy_string(&profile.proxy_string);
+        if !proxy_target_ip.is_empty() {
+            self.update_log(pid, format!("Đang mở iphey.com để kiểm tra phần tử IP SOCKS5 (Mục tiêu: {})...", proxy_target_ip), "Kiểm tra IP SOCKS5");
+            let _ = cdp.navigate("https://iphey.com").await;
+
+            let mut ip_verified = false;
+            for check_i in 1..=10 {
+                if !run_flag.load(Ordering::Relaxed) { return; }
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+
+                let check_ip_js = format!(r#"(() => {{
+                    const bodyText = document.body ? (document.body.innerText || '') : '';
+                    return bodyText.includes('{}');
+                }})()"#, proxy_target_ip);
+
+                if let Ok(eval_val) = cdp.evaluate(&check_ip_js).await {
+                    if eval_val.as_bool().unwrap_or(false) {
+                        ip_verified = true;
+                        self.update_log(pid, format!("✅ Phần tử IP '{}' đã xuất hiện trên iphey! Proxy SOCKS5 Live 100%. Đang chuyển sang TikTok...", proxy_target_ip), "IP đã đổi");
+                        break;
+                    }
+                }
+                self.update_log(pid, format!("Đang đợi phần tử IP SOCKS5 '{}' xuất hiện trên iphey ({}s)...", proxy_target_ip, check_i * 2), "Kiểm tra IP SOCKS5");
+            }
+            if !ip_verified {
+                self.update_log(pid, format!("Tiếp tục chuyển sang TikTok (Proxy: {})...", proxy_target_ip), "Vào TikTok");
+            }
+        }
+
+        // 4B. BƯỚC 2: VÀO TIKTOK VÀI GIÂY CHO ỔN ĐỊNH RỒI MỞ LINK KIỂM TRA PROFILE
+        self.update_log(pid, "Mở TikTok khoảng vài giây cho ổn định kết nối...".to_string(), "Vào TikTok");
+        let _ = cdp.navigate("https://www.tiktok.com").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        self.update_log(pid, "Mở link kiểm tra hồ sơ cá nhân https://www.tiktok.com/profile...".to_string(), "Kiểm tra Profile");
         let _ = cdp.navigate("https://www.tiktok.com/profile").await;
 
         let mut is_already_logged_in = false;
         let mut detected_username = String::new();
 
-        // Chờ 6 giây để trang profile load và TikTok thực hiện redirect nếu chưa login
-        for wait_s in 1..=6 {
+        // Lắng nghe phần tử trên trang Profile (mỗi 1.5s, tối đa 8 lần)
+        for wait_s in 1..=8 {
             if !run_flag.load(Ordering::Relaxed) { return; }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
 
             let check_auth_js = r#"(() => {
                 const url = window.location.href;
@@ -703,7 +737,7 @@ impl BrowserNurtureEngine {
                 break;
             }
 
-            self.update_log(pid, format!("Đang xác thực phiên đăng nhập TikTok ({}s/6s)...", wait_s), "Xác thực đăng nhập");
+            self.update_log(pid, format!("Đang lắng nghe phần tử trang Profile TikTok ({}s)...", wait_s * 2), "Xác thực đăng nhập");
         }
 
         if is_already_logged_in {
@@ -712,19 +746,20 @@ impl BrowserNurtureEngine {
             tokio::time::sleep(Duration::from_secs(1)).await;
         } else {
             self.update_log(pid, "⚠️ Phát hiện tài khoản CHƯA ĐĂNG NHẬP! Bắt đầu quy trình đăng nhập TikTok...".to_string(), "Tiến hành đăng nhập");
-            // Chưa đăng nhập -> Kiểm tra mật khẩu C69
-            let has_valid_c69_pwd = c69_acc.as_ref().map(|a| a.password.as_deref().unwrap_or("").trim().len() > 0).unwrap_or(false);
-            if !has_valid_c69_pwd {
+            
+            // Chưa đăng nhập -> Kiểm tra mật khẩu C69 an toàn (Zero Panic)
+            let acc_opt = c69_acc.as_ref();
+            if acc_opt.is_none() || acc_opt.and_then(|a| a.password.as_deref()).unwrap_or("").trim().is_empty() {
                 self.set_error(pid, "❌ Profile chưa đăng nhập TikTok và không có mật khẩu tài khoản C69! Tự động dừng lại và đóng trình duyệt, tuyệt đối không nuôi dạo vô nghĩa.".to_string());
                 return;
+            }
+            let acc = acc_opt.unwrap();
+            let pwd = acc.password.as_deref().unwrap_or("");
+            let login_identity = if let Some(ref email) = acc.email {
+                if email.contains('@') { email.clone() } else { acc.username.clone() }
             } else {
-                let acc = c69_acc.as_ref().unwrap();
-                let pwd = acc.password.as_deref().unwrap_or("");
-                let login_identity = if let Some(ref email) = acc.email {
-                    if email.contains('@') { email.clone() } else { acc.username.clone() }
-                } else {
-                    acc.username.clone()
-                };
+                acc.username.clone()
+            };
 
                 // 🛡️ Pre-warming Mode: Lướt dạo TikTok FYP như khách vãng lai 15-25s để tích lũy msToken và trust score chống rate limit
                 self.update_log(pid, "🛡️ Pre-warming: Lướt dạo TikTok FYP như khách để gom msToken & tăng Trust Score chống Rate Limit...".to_string(), "Pre-warming");
@@ -1154,7 +1189,6 @@ impl BrowserNurtureEngine {
                     );
                     return;
                 }
-            }
 
             self.clear_challenge(pid);
 
@@ -2329,6 +2363,24 @@ pub async fn find_healthy_backup_proxy(failed_proxy: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Trích xuất địa chỉ IP từ chuỗi proxy (ví dụ socks5://user:pass@50.114.98.173:5657 -> 50.114.98.173)
+pub fn extract_ip_from_proxy_string(proxy: &str) -> String {
+    let p = proxy.trim();
+    if p.is_empty() { return String::new(); }
+    let host_part = if let Some(idx) = p.rfind('@') {
+        &p[idx + 1..]
+    } else if let Some(idx) = p.find("://") {
+        &p[idx + 3..]
+    } else {
+        p
+    };
+    if let Some(idx) = host_part.find(':') {
+        host_part[..idx].trim().to_string()
+    } else {
+        host_part.trim().to_string()
+    }
 }
 
 /// Làm sạch username TikTok (bỏ tiền tố số C69 như 3_ hoặc 16809_, đảm bảo format TikTok hợp lệ)
