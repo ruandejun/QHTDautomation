@@ -1,96 +1,78 @@
-# KẾ HOẠCH KỸ THUẬT: TÁI CẤU TRÚC LUỒNG NUÔI TIKTOK, CONCURRENCY CAP = 5 & GRID LAYOUT (AGENT 1 - PLANNER)
+# KẾ HOẠCH THIẾT KẾ KỸ THUẬT (AGENT 1 - PLANNER)
 
-- **Người lập kế hoạch:** Agent 1 (Planner)
-- **Ngày lập:** 2026-09-19
-- **Nhánh triển khai:** `feature/tiktok-nurture-pipeline-grid-layout`
-- **Mục tiêu chính:**
-  1. Viết lại luồng nuôi TikTok toàn diện từ Login -> Lướt video -> Like -> Share (Copy Link) -> Comment.
-  2. Bất kỳ bước nào gặp lỗi (lỗi mạng, proxy, sai mật khẩu, maximum attempts, captcha/otp timeout, crash) đều phải lập tức cập nhật status chi tiết và đóng ngay trình duyệt Chrome để giải phóng tài nguyên trước khi mở tài khoản khác.
-  3. Giới hạn đồng thời tối đa **5 trình duyệt** (`Concurrency Cap = 5`).
-  4. Tự động tính toán tọa độ cửa sổ theo dạng **Grid Layout 5 cột dọc** (`--window-position` & `--window-size`), xếp gọn gàng song song trên màn hình, không đè lên nhau để người dùng bao quát được trọn vẹn.
+- **Mục tiêu:** Khắc phục triệt để hiện tượng cửa sổ Mobile bị to hơn màn hình hiển thị bên trong và các cửa sổ bị đè lên nhau.
+- **Ngày lập:** 2026-09-20
+- **Nhánh triển khai:** `feature/dynamic-screen-adaptive-grid`
+- **Người thực hiện:** Agent 1 (Planner)
 
 ---
 
-## 1. Phân tích hiện trạng & Khiếm khuyết kỹ thuật
+## 1. Phân tích nguyên nhân gốc rễ (Root Cause Analysis - RCA)
 
-| Thành phần | Hiện trạng | Vấn đề phát sinh | Giải pháp khắc phục |
-| :--- | :--- | :--- | :--- |
-| **Giới hạn đồng thời (Concurrency)** | Không có giới hạn số luồng trong `start_nurture` | Nếu user chọn nuôi 10-20 profile, máy mở ồ ạt 20 Chrome -> đơ máy, tràn RAM, nghẽn mạng | Tích hợp `Arc<tokio::sync::Semaphore>` với đúng 5 permits + Slot Pool `0..4` |
-| **Bố cục hiển thị (Window Layout)** | `offset_x = 60 + (id * 35) % 400`, `offset_y = 40 + (id * 25) % 250` | Cửa sổ mở đè chồng chéo lên nhau dạng bậc thang, người dùng không nhìn được nội dung các cửa sổ phía sau | Xây dựng thuật toán **Grid Layout 5 cột dọc**: mỗi slot có tọa độ cố định (`x = slot * 380, y = 10, w = 375, h = 840`), xếp vừa khít màn hình 1920x1080 |
-| **Tương tác TikTok** | Chỉ có Lướt (Watch), Like (Thả tim), Comment (Bình luận) | **Thiếu tính năng Share (Chia sẻ / Copy link)** theo yêu cầu của anh Tony | Bổ sung tương tác **Share/Copy link** qua selector `[data-e2e="share-icon"]` và menu action |
-| **Xử lý lỗi & Thu hồi tài nguyên (Fail-safe)** | Một số nhánh lỗi hoặc khi nuôi xong không gọi `stop_cdp_profile` | Chrome chạy mồ côi giữ file locks và port DevTools, slot không được trả lại | Bọc toàn bộ worker trong cơ chế Guard đảm bảo: **Lỗi tại bất kỳ step nào -> Cập nhật status -> Gọi `stop_cdp_profile(pid)` -> Nhả slot** |
+### 1.1. Chrome Hardcoded Minimum Window Width trên Windows
+- Kiểm tra thực nghiệm trực tiếp qua Win32 API (`GetWindowRect`) và thông điệp `WM_GETMINMAXINFO`:
+  Trình duyệt Google Chrome trên Windows có giới hạn cứng: **Chiều rộng cửa sổ tối thiểu (Minimum Width) là ~516px** (do thanh tab, omnibox, menu và các nút điều khiển).
+- Dù ta truyền cờ `--window-size=375,840` thì Windows và Chromium shell **vẫn ép cửa sổ rộng tối thiểu 516px**!
 
----
+### 1.2. Thuật toán cũ bị đè chồng lấn (Window Overlap)
+- Thuật toán cũ đặt:
+  `let width = 375;`
+  `let x = 10 + (slot_idx as i32 * 381);`
+- Vì cửa sổ Chrome thực tế rộng **516px**, nhưng khoảng cách giữa các điểm bắt đầu chỉ là **381px**:
+  * Slot 0: `x = 10` -> kéo dài đến `x = 526`
+  * Slot 1: `x = 391` -> kéo dài đến `x = 907` (**ĐÈ LÊN SLOT 0 TẬN 135px!**)
+  * Slot 2: `x = 772` -> kéo dài đến `x = 1288` (**ĐÈ LÊN SLOT 1 TẬN 135px!**)
+  * Slot 3: `x = 1153` -> kéo dài đến `x = 1669` (**ĐÈ LÊN SLOT 2 TẬN 135px!**)
+  * Slot 4: `x = 1534` -> kéo dài đến `x = 2050` (**ĐÈ LÊN SLOT 3 TẬN 135px!**)
+=> Toàn bộ 5 cửa sổ bị đè chồng lấn lên nhau từ trái qua phải!
 
-## 2. Thiết kế chi tiết kiến trúc giải pháp
-
-### 2.1. Thuật toán Grid Layout (Tọa độ 5 cửa sổ không đè nhau)
-Với màn hình chuẩn Full HD (1920 x 1080) và màn hình tỷ lệ 16:9 / 16:10:
-Kích thước mỗi cửa sổ mô phỏng điện thoại:
-- `width = 375px`
-- `height = 840px` (để chừa 40px thanh Taskbar Windows)
-- `gap = 6px`
-
-Bảng phân bổ 5 Slot:
-- **Slot 0**: `x = 10`, `y = 10`, `width = 375`, `height = 840`
-- **Slot 1**: `x = 391`, `y = 10`, `width = 375`, `height = 840`
-- **Slot 2**: `x = 772`, `y = 10`, `width = 375`, `height = 840`
-- **Slot 3**: `x = 1153`, `y = 10`, `width = 375`, `height = 840`
-- **Slot 4**: `x = 1534`, `y = 10`, `width = 375`, `height = 840`
-
-Tổng chiều ngang chiếm: `1534 + 375 = 1909px <= 1920px`. 5 cửa sổ xếp vừa in từ cạnh trái sang cạnh phải màn hình, tạo góc nhìn bao quát 100% không chồng lấn.
-
-### 2.2. Cơ chế Concurrency Cap = 5 & Slot Pool
-Trong `BrowserNurtureEngine`:
-```rust
-pub struct BrowserNurtureEngine {
-    // ...
-    concurrency_semaphore: Arc<tokio::sync::Semaphore>, // 5 permits
-    available_slots: Arc<parking_lot::Mutex<VecDeque<usize>>>, // [0, 1, 2, 3, 4]
-}
-```
-- Khi bắt đầu: Chờ lấy permit từ semaphore, rút 1 slot từ `available_slots`.
-- Truyền tọa độ `(x, y, w, h)` của slot đó vào hàm khởi chạy Chrome (`launch_cdp_profile_with_bounds`).
-- Khi kết thúc hoặc lỗi: Luôn hoàn trả slot về `available_slots` và thả permit.
-
-### 2.3. Luồng tương tác TikTok 6 bước chuẩn chỉnh
-1. **Step 1: Khởi động & Kiểm tra mạng/Proxy:**
-   - Đảo proxy sống nếu proxy hiện tại lỗi.
-   - Mở Chrome với tọa độ slot. Kết nối CDP. Nếu lỗi -> Set status, đóng Chrome, nhả slot -> Return.
-2. **Step 2: Xác thực phiên đăng nhập (Session Check):**
-   - Nạp Cookies C69 nếu có. Mở `tiktok.com`. Nếu đã đăng nhập -> Chuyển sang Step 4.
-3. **Step 3: Đăng nhập tự động & Xử lý thách thức:**
-   - Pre-warming Explore.
-   - Điền identity/password.
-   - Bắt lỗi tức thời: `Maximum attempts` -> Đóng Chrome, set status `Rate limit (Chờ 1h)`, nhả slot -> Return.
-   - Xử lý 2FA TOTP RFC 6238 tự động từ C69 Secret.
-   - Xử lý Email OTP tự động từ C69 Email DB.
-   - Nếu timeout 90s không qua -> Set status lỗi, đóng Chrome, nhả slot -> Return.
-   - Thành công: Lưu cookies, backup thin profile -> Step 4.
-4. **Step 4: Điều hướng For You Page (FYP):**
-   - Vào `https://www.tiktok.com/foryou?lang=en`.
-   - Kiểm tra mạng định kỳ. Nếu mất mạng/proxy đứt -> Set status lỗi mạng, đóng Chrome, nhả slot -> Return.
-5. **Step 5: Vòng lặp hành vi người thật (Watch -> Like -> Share -> Comment):**
-   - **Watch Video:** Phân phối xem từ 10s - 30s. Nghỉ giải lao tự nhiên sau mỗi 7 video.
-   - **Like:** Xác suất ~65% (phím `l` hoặc click icon Like).
-   - **Share (Copy link):** Xác suất ~30% (click Share icon, click Copy Link hoặc menu share).
-   - **Comment:** Xác suất ~20% (click Comment icon, nhập nội dung tích cực, submit).
-   - **Chuyển video:** Smooth scroll + phím `ArrowDown`.
-6. **Step 6: Hoàn tất chu trình & Dọn dẹp tài nguyên:**
-   - Update status `Đã nuôi thành công`.
-   - Backup thin profile.
-   - **Đóng Chrome hoàn toàn bằng `stop_cdp_profile(pid)`.**
-   - Trả slot về pool cho tài khoản tiếp theo.
+### 1.3. Lệch pha giữa Viewport hiển thị bên trong và Cửa sổ bên ngoài
+- Trong `Emulation.setDeviceMetricsOverride` (dòng 1506-1510):
+  Đang gán cứng: `width: 412, height: 915, fitWindow: false`.
+- Cửa sổ ngoài rộng 516px+, nhưng viewport trang web chỉ có 412px và `fitWindow: false` -> dẫn đến trang web bị lọt thỏm ở giữa, hai bên viền thừa khoảng trống xám to đùng, tạo cảm giác "độ rộng trình duyệt to hơn so với màn hình hiển thị"!
 
 ---
 
-## 3. Kế hoạch kiểm thử của Tester (Agent 3)
-- **TC-01:** Kiểm thử Concurrency Cap: Chạy cùng lúc nhiều hơn 5 profiles, verify số lượng active profiles tại mọi thời điểm không vượt quá 5.
-- **TC-02:** Kiểm thử Grid Layout: Verify các cờ `--window-position` và `--window-size` của 5 slot khớp chính xác tọa độ, không đè lên nhau.
-- **TC-03:** Kiểm thử Fail-Safe: Giả lập lỗi ở các step (lỗi proxy, timeout, rate limit), verify status được cập nhật ngay lập tức và Chrome của profile bị đóng sạch sẽ trong <1s, slot được giải phóng cho profile khác.
-- **TC-04:** Kiểm thử Like - Share - Comment: Verify các selector và event dispatch cho cả 3 hành động tương tác.
+## 2. Giải pháp kiến trúc kỹ thuật (Architectural Solution)
+
+### 2.1. Tự động nhận diện diện tích làm việc màn hình thực tế (Dynamic Work Area Detection)
+- Gọi Win32 API `SystemParametersInfoW(SPI_GETWORKAREA)` trong Rust:
+  * Trả về chính xác `width` và `height` của khu vực làm việc (đã trừ Taskbar Windows và tính toán theo DPI scaling thực tế).
+  * Ví dụ: Trên màn hình máy anh Tony trả về chính xác `2752 x 1112`. Trên màn hình Full HD trả về `1920 x 1040`.
+
+### 2.2. Bố trí Grid Layout thích ứng thông minh (Adaptive Smart Grid)
+Căn cứ vào `screen_width` thực tế:
+
+1. **Nếu `screen_width >= 2600` (Màn hình rộng như 2752px của anh Tony):**
+   - Xếp **5 cột song song trên 1 hàng ngang**:
+     * `window_width = (screen_width - 20 - 4 * 12) / 5` (~536px trên màn hình 2752px, lớn hơn 516px min-width).
+     * `window_height = screen_height - 20` (~1090px).
+     * `x = 10 + slot_idx * (window_width + 12)`.
+     * **Khoảng cách giữa các cửa sổ là 12px, 100% không đè lên nhau dù chỉ 1 pixel!**
+
+2. **Nếu `screen_width < 2600` (Màn hình 1920x1080 Full HD hoặc Laptop):**
+   - Vì min-width của Chrome là ~516px, 1 hàng ngang chỉ chứa tối đa 3 cửa sổ (`1920 / 516 = 3.7`).
+   - Tự động chia thành **2 Hàng Ma Trận Thông Minh (2-Row Smart Grid)**:
+     * Hàng trên: 3 cửa sổ (Slot 0, 1, 2)
+       `width = (screen_width - 20 - 2 * 12) / 3` (~620px trên Full HD).
+       `height = (screen_height - 20 - 15) / 2` (~490px-500px).
+       `x = 10 + col * (width + 12)`, `y = 10`.
+     * Hàng dưới: 2 cửa sổ (Slot 3, 4) căn giữa màn hình cân đối:
+       `margin_x = (screen_width - (2 * width + 12)) / 2`.
+       `x = margin_x + (slot - 3) * (width + 12)`, `y = 10 + height + 15`.
+     * **Cả 5 cửa sổ đều hiển thị trọn vẹn, không cửa sổ nào bị đè lên nhau!**
+
+### 2.3. Khớp khít Viewport bên trong với Cửa sổ bên ngoài
+- Truyền `window_width` và `window_height` vào CDP reader task.
+- Trong `Emulation.setDeviceMetricsOverride`:
+  * `width`: Tính toán vừa khít inner width (`std::cmp::max(412, window_width - 16)`).
+  * `height`: Tính toán vừa khít inner height (`std::cmp::max(700, window_height - 85)`).
+  * `fitWindow`: Đặt thành `true` để trang TikTok tự động căn chỉnh tỷ lệ 100% khít khung hiển thị, không bị thừa lề xám hay lệch kích thước.
 
 ---
 
-## 4. Bàn giao sang Coder (Agent 2)
-Kế hoạch đã chi tiết và bao quát toàn bộ yêu cầu. Chuyển giao sang Agent 2 (Coder) để tiến hành sửa code trong `cdp_browser.rs` và `browser_nurture.rs`.
+## 3. Tiêu chí nghiệm thu (Acceptance Criteria)
+1. Cửa sổ Chrome của các slot không có bất kỳ khoảng đè chồng lấn (overlap) nào.
+2. Tọa độ của cửa sổ sau phải luôn `>=` tọa độ của cửa sổ trước + chiều rộng thực tế của cửa sổ trước (`x_{i+1} >= x_i + w_i`).
+3. Giao diện TikTok bên trong hiển thị vừa vặn, không bị thừa viền hay bóp méo.
+4. Test suite tự động xác thực và chạy live trên Windows.

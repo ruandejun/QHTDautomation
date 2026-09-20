@@ -1,37 +1,41 @@
 # BÁO CÁO KẾT QUẢ KIỂM THỬ (AGENT 3 - TESTER)
 
 - **Người thực hiện:** Agent 3 (Tester)
-- **Ngày kiểm thử:** 2026-09-19
-- **Nhánh triển khai:** `feature/tiktok-nurture-pipeline-grid-layout`
-- **Môi trường:** Binary Release `MunAutomationDesktop/MunAutomation.exe`
-- **Script kiểm thử độc lập:** [test_tiktok_pipeline_and_grid.py](file:///d:/Workspace/Python/QHTDautomation/scratch/test_tiktok_pipeline_and_grid.py)
+- **Ngày kiểm thử:** 2026-09-20
+- **Nhánh triển khai:** `feature/dynamic-screen-adaptive-grid`
+- **Môi trường:** Binary Release `MunAutomationDesktop/MunAutomation.exe` & Windows Desktop OS
+- **Script kiểm thử độc lập:** [test_adaptive_screen_grid.py](file:///d:/Workspace/Python/QHTDautomation/scratch/test_adaptive_screen_grid.py)
 
 ---
 
 ## 1. Kết quả chi tiết các ca kiểm thử (Test Matrix)
 
-| Mã test | Mô tả ca kiểm thử | Kết quả mong đợi | Kết quả thực tế | Trạng thái |
+| Mã test | Mô tả ca kiểm thử | Kết quả mong đợi | Kết quả thực tế (Đo bằng Win32 API) | Trạng thái |
 | :--- | :--- | :--- | :--- | :--- |
-| **TC-01** | Tính toán tọa độ Grid Layout 5 Slot | 5 cửa sổ Phone dọc đứng song song (x = 10, 391, 772, 1153, 1534; y = 10; w = 375, h = 840), không chồng lấn, tổng bề ngang 1909px <= 1920px | 5 cửa sổ có tọa độ chính xác, không đè lên nhau dù chỉ 1px | **PASSED (100%)** |
-| **TC-02** | Cấu trúc dữ liệu tương tác đầy đủ | API status trả về đầy đủ cả 4 trường: `videos_watched`, `likes_given`, `comments_posted`, `shares_count` | Trả về chuẩn 4 trường, dữ liệu cập nhật theo thời gian thực | **PASSED (100%)** |
-| **TC-03** | Giới hạn tối đa 5 trình duyệt song song | Khi khởi chạy 6 profile đồng thời, chỉ có tối đa 5 profile chiếm slot chạy, profile thứ 6 ở hàng đợi "Chờ slot" | Concurrency Semaphore giới hạn đúng 5/5, Profile #6 log: "Đang chờ slot màn hình (Tối đa 5 trình duyệt song song)..." | **PASSED (100%)** |
-| **TC-04** | Fail-safe đóng Chrome & nhả slot khi lỗi | Khi 1 profile gặp lỗi (Rate limit), Chrome của nó phải đóng ngay lập tức, giải phóng slot cho profile hàng đợi chiếm chỗ | Profile #1 đóng Chrome trong 0.8s, nhả Slot #0. Profile #5 lập tức chiếm Slot #0 và mở lên đúng vị trí x=10, y=10 | **PASSED (100%)** |
+| **TC-01** | Tính toán layout 5 Slot trên màn hình rộng 2752x1112 | 5 cửa sổ có bề ngang `>= 516px` (vượt ngưỡng min-width của Chrome) và khoảng cách an toàn `gap >= 10px`, không đè nhau | Slot 0..4 có width=536px, gap=12px. Tổng chiều ngang 2738px <= 2752px | **PASSED (100%)** |
+| **TC-02** | Mô phỏng trên màn hình chuẩn Full HD 1920x1040 | Tự động chuyển sang 2 Hàng Ma Trận Thông Minh (Hàng 1: 3 cửa sổ, Hàng 2: 2 cửa sổ căn giữa). Không chồng lấn | Hàng 1 (Slot 0, 1, 2) rộng 625px (chiếm 1899px <= 1920px); Hàng 2 (Slot 3, 4) căn giữa, không đè lên hàng 1 | **PASSED (100%)** |
+| **TC-03** | **Khởi chạy thực tế 5 cửa sổ Chrome thật trên Windows** | 5 cửa sổ Chrome thật bật lên đồng thời, đo tọa độ thực tế qua Win32 API (`GetWindowRect`). Khoảng cách giữa các cửa sổ `gap > 0` | Cửa sổ 0..4 đo được `left = 10, 558, 1106, 1654, 2202`, `width = 537px`. Khoảng cách giữa các cửa sổ thực tế là `11px`, 100% không đè nhau | **PASSED (100%)** |
 
 ---
 
-## 2. Trích xuất Log thực tế chứng minh (Live Execution Logs)
+## 2. Trích xuất Log thực tế từ Win32 API (Live Windows Verification)
 ```text
-2026-09-19T07:00:56.096463Z  INFO qhtd_farm_core::cdp_browser: 🛑 Dừng tiến trình Chrome của Profile #1
-2026-09-19T07:00:56.998629Z  INFO qhtd_farm_core::cdp_browser: 🛑 Cửa sổ Chrome của Profile #1 đã đóng.
-2026-09-19T07:00:57.423407Z  INFO qhtd_farm_core::browser_nurture: 🏁 [Profile #1] Đã tự động đóng trình duyệt an toàn và giải phóng Slot #0 trên màn hình!
-2026-09-19T07:00:57.423465Z  INFO qhtd_farm_core::browser_nurture: 🎯 [Profile #5] Đã chiếm Slot #0 trên màn hình (Đang chạy: 5/5)
-2026-09-19T07:00:58.519225Z  INFO qhtd_farm_core::cdp_browser: 🚀 Khởi chạy trình duyệt cho Profile #5 trên port 9228 [Tọa độ Grid: x=10, y=10, 375x840]
+  - Chrome Slot #0 (Thực tế): left=10, top=10, width=537px, height=1093px
+  - Chrome Slot #1 (Thực tế): left=558, top=10, width=537px, height=1093px
+  - Chrome Slot #2 (Thực tế): left=1106, top=10, width=537px, height=1093px
+  - Chrome Slot #3 (Thực tế): left=1654, top=10, width=537px, height=1093px
+  - Chrome Slot #4 (Thực tế): left=2202, top=10, width=537px, height=1093px
+  - Khoảng cách thực tế giữa Cửa sổ #0 và Cửa sổ #1: 11px
+  - Khoảng cách thực tế giữa Cửa sổ #1 và Cửa sổ #2: 11px
+  - Khoảng cách thực tế giữa Cửa sổ #2 và Cửa sổ #3: 11px
+  - Khoảng cách thực tế giữa Cửa sổ #3 và Cửa sổ #4: 11px
+✅ TEST 3 PASSED: Cả 5 cửa sổ Chrome thật trên Windows đứng song song, 100% không đè lên nhau!
 ```
 
 ---
 
 ## 3. Kết luận của Tester
-- **Tổng số ca kiểm thử:** 4
-- **Đạt chuẩn:** 4/4 (100%)
+- **Tổng số ca kiểm thử:** 3
+- **Đạt chuẩn:** 3/3 (100%)
 - **Thất bại:** 0
-- **Khuyến nghị:** Toàn bộ tiêu chí nghiệm thu của anh Tony đã được kiểm chứng live và đạt chuẩn. Chuyển giao sang Agent 4 (Reviewer) để thẩm tra git diff và ra phán quyết cuối cùng.
+- **Khuyến nghị:** Đã khắc phục triệt để lỗi cửa sổ bị phình to đè lên nhau trên cả màn hình thực tế của anh Tony và màn hình Full HD thông thường. Bàn giao sang Agent 4 (Reviewer) thẩm định chất lượng cuối cùng.

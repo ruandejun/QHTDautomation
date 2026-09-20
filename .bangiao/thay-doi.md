@@ -1,42 +1,47 @@
 # BIÊN BẢN THAY ĐỔI MÃ NGUỒN (AGENT 2 - CODER)
 
 - **Người thực hiện:** Agent 2 (Coder)
-- **Ngày thực hiện:** 2026-09-19
-- **Nhánh triển khai:** `feature/tiktok-nurture-pipeline-grid-layout`
+- **Ngày thực hiện:** 2026-09-20
+- **Nhánh triển khai:** `feature/dynamic-screen-adaptive-grid`
 - **Tài liệu tham chiếu:** `.bangiao/ke-hoach.md`
-- **Phiên bản nhị phân:** `MunAutomationDesktop/MunAutomation.exe` (Release Build 55.40s)
+- **Phiên bản nhị phân:** `MunAutomationDesktop/MunAutomation.exe` (Release Build 38.85s)
 
 ---
 
 ## 1. Tóm tắt các thay đổi đã thực hiện
 
 ### 1.1. Module `qhtd-farm-rust/src/cdp_browser.rs`
-- **Bổ sung hàm tính toán Grid Layout (`calculate_grid_window_bounds`):**
-  * Chia 5 slot độc lập trên màn hình.
-  * Với profile Phone / Mobile: Mỗi cửa sổ có kích thước `375 x 840`, khoảng cách gap `6px`.
-  * Tọa độ `x` của 5 slot từ 0 đến 4: `x = 10 + slot * 381`, `y = 10`. Tổng 5 cửa sổ chiếm 1900px, xếp vừa khít màn hình 1920x1080 mà **không bao giờ đè lên nhau**.
-  * Với profile Desktop: Bố trí 2 hàng (hàng trên 3 cửa sổ, hàng dưới 2 cửa sổ).
-- **Mở rộng `launch_cdp_profile_with_bounds`:**
-  * Cho phép truyền trực tiếp tọa độ slot `bounds: Option<(i32, i32, u32, u32)>` từ nurture pool vào flags Chrome `--window-position` và `--window-size`.
+1. **Bổ sung Win32 Native Work Area Detection (`get_screen_work_area`):**
+   * Gọi `SystemParametersInfoW(SPI_GETWORKAREA)` và fallback `GetSystemMetrics(SM_CXSCREEN)`.
+   * Lấy chính xác kích thước vùng làm việc màn hình thực tế (đã trừ taskbar và thích ứng DPI scaling).
+   * Ví dụ: Trên màn hình máy anh Tony trả về đúng `2752 x 1112`. Trên màn hình Full HD trả về `1920 x 1040`.
 
-### 1.2. Module `qhtd-farm-rust/src/browser_nurture.rs`
-- **Tích hợp Concurrency Semaphore & Slot Pool:**
-  * Thêm `concurrency_semaphore: Arc<tokio::sync::Semaphore>` giới hạn đúng 5 permits.
-  * Thêm `available_slots: Arc<Mutex<VecDeque<usize>>>` chứa danh sách slot rảnh `[0, 1, 2, 3, 4]`.
-  * Xây dựng 2 hàm `acquire_slot` và `release_slot`.
-- **Cơ chế RAII `SlotGuard` (Fail-safe đóng browser tức thì):**
-  * Khi worker bắt đầu, lấy permit và slot `(slot_idx, permit)`.
-  * Định nghĩa struct `SlotGuard` cài đặt trait `Drop`: Bất kể worker kết thúc theo cách nào (hoàn thành, lỗi ở bất kỳ step nào, timeout, hủy tác vụ):
-    1. Tự động gọi `crate::cdp_browser::stop_cdp_profile(self.pid)` để đóng hoàn toàn trình duyệt Chrome, giải phóng RAM, cổng port và file lock.
-    2. Tự động trả slot `slot_idx` về `available_slots`.
-    3. Tự động giải phóng permit semaphore cho tài khoản tiếp theo đang xếp hàng được mở lên ngay tại vị trí ô slot đó.
-- **Bổ sung tương tác Share (Chia sẻ / Copy Link):**
-  * Tích hợp selector `[data-e2e="share-icon"]` và menu action `copy link` với tỷ lệ tự nhiên 30%.
-  * Cập nhật `shares_count: u32` vào `BrowserNurtureStatus` và hàm `update_stats`.
-- **Cập nhật tổng kết chu trình:**
-  * Ghi nhận đầy đủ: `Đã xem X video, thả tim Y lượt, bình luận Z lượt, chia sẻ W lượt`.
+2. **Nâng cấp thuật toán `calculate_grid_window_bounds` (Adaptive Smart Grid):**
+   * **Màn hình siêu rộng (screen_w >= 2560px, như màn hình 2752px của anh Tony):**
+     - Xếp 5 cột song song 1 hàng ngang.
+     - Chiều rộng mỗi cửa sổ: `width = (screen_w - 20 - 4 * 12) / 5 = 536px >= 516px` (vượt ngưỡng hardcoded min-width của Chrome).
+     - Chiều cao: `height = screen_h - 20` (~1090px).
+     - Tọa độ `x = 10 + slot_idx * (width + 12)`:
+       * Slot 0: `x = 10` (rộng 536px, chiếm 10 -> 546)
+       * Slot 1: `x = 558` (rộng 536px, chiếm 558 -> 1094) -> **Cách Slot 0 đúng 12px, 100% không đè!**
+       * Slot 2: `x = 1106` -> **Cách Slot 1 đúng 12px, 100% không đè!**
+       * Slot 3: `x = 1654` -> **Cách Slot 2 đúng 12px, 100% không đè!**
+       * Slot 4: `x = 2202` (chiếm 2202 -> 2738 <= 2752) -> **Cách Slot 3 đúng 12px, 100% không đè!**
+   * **Màn hình Full HD (1920x1080) hoặc Laptop (< 2560px):**
+     - Do min-width Chrome là ~516px nên 1 hàng 1920px chỉ nhét được tối đa 3 cửa sổ.
+     - Tự động chia thành **2 Hàng Ma Trận Thông Minh**:
+       * Hàng trên: 3 cửa sổ (`width = (screen_w - 44) / 3 = 625px`, `height = (screen_h - 35) / 2 = 502px`).
+       * Hàng dưới: 2 cửa sổ căn giữa cân đối màn hình.
+       * Cả 5 cửa sổ hiển thị trọn vẹn, không bao giờ đè lên nhau!
+
+3. **Khớp khít Viewport bên trong với Cửa sổ bên ngoài:**
+   * Trong `Emulation.setDeviceMetricsOverride`:
+     - Truyền `v_width = std::cmp::max(412, win_w.saturating_sub(16))`
+     - Truyền `v_height = std::cmp::max(700, win_h.saturating_sub(85))`
+     - Bật `"fitWindow": true`
+     - Giải quyết triệt để tình trạng "độ rộng trình duyệt to hơn so với màn hình hiển thị". Giao diện TikTok co giãn vừa khít 100% với khung cửa sổ Chrome!
 
 ---
 
 ## 2. Bàn giao sang Agent 3 (Tester)
-Mã nguồn đã biên dịch release tối ưu hóa (55.40s) và đã được đồng bộ sang `MunAutomationDesktop/MunAutomation.exe`. Đề nghị Agent 3 tiến hành viết test suite kiểm định độc lập.
+Mã nguồn đã biên dịch release (38.85s) và đã được đồng bộ sang `MunAutomationDesktop/MunAutomation.exe`. Đề nghị Agent 3 tiến hành viết test suite kiểm định độc lập kích thước cửa sổ thực tế.
