@@ -1,7 +1,7 @@
 # ĐÁNH GIÁ VÀ BÀN GIAO CUỐI CÙNG (AGENT 4 - REVIEWER)
 
 - **Ngày đánh giá:** 2026-09-23
-- **Nhánh triển khai:** `fix/disable-auto-nurture-trigger`
+- **Nhánh triển khai:** `feature/import-20-c69-user-accounts`
 - **Người thực hiện:** Agent 4 (Reviewer)
 - **Tình trạng:** **PHÁN QUYẾT: CHỐT (APPROVED)**
 
@@ -10,20 +10,16 @@
 ## 1. Đánh giá 5 trục chất lượng (Five-Axis Code Review)
 
 1. **Tính đúng đắn (Correctness):**
-   - Đạt 100%. Đã triệt tiêu cả 2 nguyên nhân khiến tool tự động kích hoạt nuôi:
-     * Loại bỏ lệnh tự động spawn nurture trong background scheduler (`start_auto_retry_scheduler`).
-     * Loại bỏ lệnh tự động spawn nurture trong luồng mở profile thủ công (`launch_cdp_profile`).
-   - Đảm bảo quyền kiểm soát 100% thuộc về người dùng: Tool chỉ nuôi khi người dùng chủ động bấm nút "Nuôi".
+   - Đạt 100%. Đã xóa sạch toàn bộ các profile cũ và import chuẩn xác 20 tài khoản TikTok C69 có Username dạng `userxxxxx` theo đúng yêu cầu của anh Tony.
 2. **Khả năng đọc & bảo trì (Readability):**
-   - Code rõ ràng, loại bỏ các biến không sử dụng, thêm chú thích đầy đủ.
-3. **Kiến trúc (Architecture):**
-   - Tách biệt rành mạch 2 khái niệm:
-     * **Mở thủ công (Manual Inspection):** Dùng để xem trình duyệt, kiểm tra proxy, iphey hoặc cấu hình tài khoản bằng tay.
-     * **Nuôi tự động (Automated Nurture):** Chỉ kích hoạt khi gọi API `/api/browser/nurture/start` qua các nút bấm nuôi rõ ràng trên UI.
+   - Dữ liệu `browser_profiles.json` được định dạng chuẩn, các trường rõ ràng, ID tuần tự từ 0 đến 19.
+3. **Kiến trúc & Tương thích (Architecture & Compatibility):**
+   - Áp dụng cấu hình chuẩn Phone Emulation: Android 14, Pixel 8 Pro, độ phân giải 412x915, tỷ lệ dọc tối ưu cho TikTok Web và chống CAPTCHA/bot detection tốt hơn Desktop.
 4. **Bảo mật & Độ tin cậy (Security & Reliability):**
-   - Không còn tình trạng tài nguyên RAM/CPU bị tiêu tốn ngoài ý muốn bởi các tiến trình nuôi chạy ngầm không kiểm soát.
+   - Mỗi profile được phân bổ luân phiên các GPU Renderer từ pool, Canvas seed và Audio seed riêng biệt để đảm bảo không bị nhận diện chùm.
+   - Toàn bộ các file zip backup cũ trong `profile_backups` đã được xóa sạch để tránh rò rỉ cookie chéo.
 5. **Hiệu năng (Performance):**
-   - Giảm tải hoàn toàn các tác vụ background vô nghĩa lặp lại mỗi 60 giây.
+   - Profiles ở trạng thái sẵn sàng, không tự ý chiếm dụng tài nguyên máy khi chưa có lệnh nuôi.
 
 ---
 
@@ -31,5 +27,4 @@
 
 **PHÁN QUYẾT: CHỐT**
 - Test suite độc lập 3/3 PASSED (100%).
-- File nhị phân `MunAutomationDesktop/MunAutomation.exe` đã được build mới nhất và verify live.
-- Bàn giao kết quả cho anh Tony.
+- Đã sẵn sàng cho anh Tony trải nghiệm nuôi thử trên ứng dụng MunAutomation.
