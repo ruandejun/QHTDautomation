@@ -75,9 +75,9 @@ pub struct BrowserProfile {
     #[serde(default)]
     pub profile_start_url: String,
     #[serde(default)]
-    pub canvas_seed: Option<u32>,
+    pub canvas_seed: Option<u64>,
     #[serde(default)]
-    pub audio_seed: Option<u32>,
+    pub audio_seed: Option<u64>,
     #[serde(default)]
     pub webrtc_mode: Option<String>, // "disabled", "proxy_only", "custom"
     #[serde(default)]
@@ -679,42 +679,48 @@ pub fn update_profile_proxy(profile_id: usize, new_proxy: &str, proxy_type: &str
 async fn list_browser_profiles_handler() -> Json<Vec<BrowserProfile>> {
     let path = get_profiles_file_path();
     if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
-            if !profiles.is_empty() {
-                // Tự động nâng cấp các profile cũ nếu chưa có engine_mode hoặc seeds
-                let mut need_save = false;
-                for p in &mut profiles {
-                    if p.engine_mode.is_none() {
-                        p.engine_mode = Some(if p.id % 2 == 0 { "native".into() } else { "js_stealth".into() });
-                        need_save = true;
+        match serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            Ok(mut profiles) => {
+                if !profiles.is_empty() {
+                    let mut need_save = false;
+                    for p in &mut profiles {
+                        if p.engine_mode.is_none() {
+                            p.engine_mode = Some(if p.id % 2 == 0 { "native".into() } else { "js_stealth".into() });
+                            need_save = true;
+                        }
+                        if p.profile_ram == 0 {
+                            let rams = [8, 16, 16, 32, 64];
+                            p.profile_ram = rams[p.id % rams.len()];
+                            need_save = true;
+                        }
+                        if p.canvas_seed.is_none() {
+                            p.canvas_seed = Some((p.id as u64 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+                            need_save = true;
+                        }
+                        if p.audio_seed.is_none() {
+                            p.audio_seed = Some((p.id as u64 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+                            need_save = true;
+                        }
                     }
-                    if p.profile_ram == 0 {
-                        let rams = [8, 16, 16, 32, 64];
-                        p.profile_ram = rams[p.id % rams.len()];
-                        need_save = true;
+                    if need_save {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+                            let _ = std::fs::write(&path, json_str);
+                        }
                     }
-                    if p.canvas_seed.is_none() {
-                        p.canvas_seed = Some((p.id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
-                        need_save = true;
-                    }
-                    if p.audio_seed.is_none() {
-                        p.audio_seed = Some((p.id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
-                        need_save = true;
-                    }
+                    return Json(profiles);
                 }
-                if need_save {
-                    if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
-                        let _ = std::fs::write(&path, json_str);
-                    }
-                }
-                return Json(profiles);
+            }
+            Err(e) => {
+                eprintln!("⚠️ [JSON PARSE ERROR] Không thể parse profiles từ {}: {}", path.display(), e);
             }
         }
     }
 
     let defaults = get_default_browser_profiles();
-    if let Ok(json_str) = serde_json::to_string_pretty(&defaults) {
-        let _ = std::fs::write(&path, json_str);
+    if !path.exists() {
+        if let Ok(json_str) = serde_json::to_string_pretty(&defaults) {
+            let _ = std::fs::write(&path, json_str);
+        }
     }
     Json(defaults)
 }
@@ -771,10 +777,10 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         new_prof.profile_ram = rams[next_id % rams.len()];
     }
     if new_prof.canvas_seed.is_none() || new_prof.canvas_seed.unwrap() == 0 {
-        new_prof.canvas_seed = Some((next_id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+        new_prof.canvas_seed = Some((next_id as u64 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a);
     }
     if new_prof.audio_seed.is_none() || new_prof.audio_seed.unwrap() == 0 {
-        new_prof.audio_seed = Some((next_id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+        new_prof.audio_seed = Some((next_id as u64 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
     }
     if new_prof.webrtc_mode.is_none() {
         new_prof.webrtc_mode = Some("proxy_only".into());
@@ -880,8 +886,8 @@ async fn launch_browser_profile_handler(Json(payload): Json<serde_json::Value>) 
                 proxy_string: String::new(),
                 proxy_type: "socks5".into(),
                 profile_start_url: "https://iphey.com".into(),
-                canvas_seed: Some((id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a),
-                audio_seed: Some((id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5),
+                canvas_seed: Some((id as u64 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a),
+                audio_seed: Some((id as u64 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5),
                 webrtc_mode: Some("proxy_only".into()),
                 profile_canvas: serde_json::Value::Null,
                 profile_webgl: serde_json::Value::Null,
@@ -1259,8 +1265,8 @@ async fn browser_nurture_create_and_nurture_handler(
         proxy_string: final_proxy,
         proxy_type: "socks5".into(),
         profile_start_url: "https://www.tiktok.com".into(),
-        canvas_seed: Some(rand::random::<u32>()),
-        audio_seed: Some(rand::random::<u32>()),
+        canvas_seed: Some(rand::random::<u64>()),
+        audio_seed: Some(rand::random::<u64>()),
         webrtc_mode: Some("proxy_only".into()),
         profile_canvas: serde_json::Value::Null,
         profile_webgl: serde_json::Value::Null,
@@ -2089,11 +2095,11 @@ async fn dashboard_handler() -> Html<&'static str> {
                 </div>
             </div>
             <ul class="nav-list">
-                <li class="nav-item active" onclick="switchNav('farm')">
+                <li class="nav-item" onclick="switchNav('farm')">
                     <span class="nav-icon">📱</span>
                     <span>Giàn Android Farm</span>
                 </li>
-                <li class="nav-item" onclick="switchNav('browser')">
+                <li class="nav-item active" onclick="switchNav('browser')">
                     <span class="nav-icon">🌐</span>
                     <span>Mun Anti Browser</span>
                 </li>
@@ -2153,7 +2159,7 @@ async fn dashboard_handler() -> Html<&'static str> {
         </div>
 
         <!-- VIEW 1: ANDROID FARM (COMPACT & ULTRA SMOOTH STREAM) -->
-        <div class="view-content active" id="view-farm">
+        <div class="view-content" id="view-farm">
             <div class="action-toolbar">
                 <div class="toolbar-group">
                     <label class="sync-toggle" title="Khi bật, thao tác chuột trên 1 máy sẽ đồng bộ xuống cả 10 máy cùng lúc!">
@@ -2185,7 +2191,7 @@ async fn dashboard_handler() -> Html<&'static str> {
         </div>
 
         <!-- VIEW 2: MUN ANTI BROWSER (TIKTOK FARMING & HARDWARE SHIELD) -->
-        <div class="view-content" id="view-browser">
+        <div class="view-content active" id="view-browser">
             <!-- TIKTOK FARM KPI SUMMARY BAR -->
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:8px; margin-bottom:12px;">
                 <div style="background:rgba(15,23,42,0.6); border:1px solid rgba(56,189,248,0.25); border-radius:8px; padding:8px 12px; display:flex; align-items:center; gap:10px;">
@@ -4666,10 +4672,8 @@ async fn dashboard_handler() -> Html<&'static str> {
             alert(d.message || 'Đã phát lệnh xoay IP!');
         }
 
-        const savedTab = localStorage.getItem('mun_active_tab');
-        if (savedTab && savedTab !== 'farm') {
-            switchNav(savedTab);
-        }
+        const savedTab = localStorage.getItem('mun_active_tab') || 'browser';
+        switchNav(savedTab);
         refreshAll();
         setInterval(refreshDevices, 8000);
     </script>

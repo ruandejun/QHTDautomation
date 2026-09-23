@@ -1955,12 +1955,13 @@ pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, Stri
 /// Lấy danh sách tài khoản TikTok từ C69 Backend API
 pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/dashboard/api/accounts/?type=tiktok&limit=100", DEFAULT_C69_API_URL);
+    let url = format!("{}/dashboard/api/accounts/?type=tiktok&page_size=200", DEFAULT_C69_API_URL);
 
     let resp = client
         .get(&url)
         .header("Authorization", DEFAULT_C69_TOKEN)
-        .timeout(Duration::from_secs(8))
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(12))
         .send()
         .await
         .map_err(|e| format!("Lỗi kết nối server C69: {}", e))?;
@@ -2179,8 +2180,8 @@ pub async fn sync_c69_profiles_to_local(profiles_path: PathBuf) -> Result<usize,
                 proxy_string: proxy.to_string(),
                 proxy_type: if proxy.is_empty() { "".into() } else { "socks5".into() },
                 profile_start_url: "https://www.tiktok.com".into(),
-                canvas_seed: Some((next_id as u32 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a),
-                audio_seed: Some((next_id as u32 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5),
+                canvas_seed: Some((next_id as u64 + 1).wrapping_mul(1664525) ^ 0x5a5a5a5a),
+                audio_seed: Some((next_id as u64 + 1).wrapping_mul(1103515245) ^ 0xa5a5a5a5),
                 webrtc_mode: Some("proxy_only".into()),
                 profile_canvas: serde_json::Value::Null,
                 profile_webgl: serde_json::Value::Null,

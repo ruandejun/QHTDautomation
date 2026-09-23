@@ -54,10 +54,31 @@ pub struct GeoInfo {
 pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
     let host = proxy_host.trim();
     if host.is_empty() || host == "127.0.0.1" || host == "localhost" {
+        // Direct mode: Tra cứu vị trí và timezone thực tế của mạng hiện tại để khớp 100% với IP công cộng
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(1500))
+            .build();
+        if let Ok(c) = client {
+            if let Ok(res) = c.get("http://ip-api.com/json?fields=status,timezone,lat,lon").send().await {
+                if let Ok(val) = res.json::<serde_json::Value>().await {
+                    if val.get("status").and_then(|s| s.as_str()) == Some("success") {
+                        let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("Asia/Ho_Chi_Minh").to_string();
+                        let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(21.0184);
+                        let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(105.8461);
+                        return GeoInfo {
+                            timezone: tz,
+                            latitude: lat,
+                            longitude: lon,
+                            locale: "en-US".to_string(),
+                        };
+                    }
+                }
+            }
+        }
         return GeoInfo {
-            timezone: "America/Denver".to_string(),
-            latitude: 40.3032,
-            longitude: -111.675,
+            timezone: "Asia/Ho_Chi_Minh".to_string(),
+            latitude: 21.0184,
+            longitude: 105.8461,
             locale: "en-US".to_string(),
         };
     }
@@ -388,8 +409,8 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_resolution.clone()
     };
 
-    let canvas_seed_val = profile.canvas_seed.unwrap_or((p_id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a) as u64;
-    let audio_seed_val = profile.audio_seed.unwrap_or((p_id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5) as u64;
+    let canvas_seed_val = profile.canvas_seed.unwrap_or((p_id as u64).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+    let audio_seed_val = profile.audio_seed.unwrap_or((p_id as u64).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
     // Tạo hash 16-hex độc nhất và nhất quán cho từng profile
     let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add(audio_seed_val.wrapping_mul(0x9e3779b97f4a7c15)));
@@ -1224,8 +1245,8 @@ pub async fn launch_cdp_profile_with_bounds(
         profile.profile_ram
     };
 
-    let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a);
-    let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+    let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u64).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+    let audio_seed = profile.audio_seed.unwrap_or((profile.id as u64).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
     let use_proxy = !profile.proxy_type.eq_ignore_ascii_case("direct") && !profile.proxy_string.trim().is_empty();
     let mut proxy_bridge_shutdown: Option<tokio::sync::oneshot::Sender<()>> = None;

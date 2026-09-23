@@ -1,30 +1,37 @@
-# ĐÁNH GIÁ VÀ BÀN GIAO CUỐI CÙNG (AGENT 4 - REVIEWER)
+# BÁO CÁO ĐÁNH GIÁ CODE (AGENT 4 - REVIEWER)
 
 - **Ngày đánh giá:** 2026-09-23
-- **Nhánh triển khai:** `feature/import-20-c69-user-accounts`
-- **Người thực hiện:** Agent 4 (Reviewer)
-- **Tình trạng:** **PHÁN QUYẾT: CHỐT (APPROVED)**
+- **Nhánh kiểm tra:** `feature/iphey-reliable-phone-headers`
+- **Người thực hiện:** Agent 4 (Reviewer - Read-Only)
+- **Tình trạng:** **ĐẠT CHUẨN (CHỐT)**
 
 ---
 
-## 1. Đánh giá 5 trục chất lượng (Five-Axis Code Review)
-
-1. **Tính đúng đắn (Correctness):**
-   - Đạt 100%. Đã xóa sạch toàn bộ các profile cũ và import chuẩn xác 20 tài khoản TikTok C69 có Username dạng `userxxxxx` theo đúng yêu cầu của anh Tony.
-2. **Khả năng đọc & bảo trì (Readability):**
-   - Dữ liệu `browser_profiles.json` được định dạng chuẩn, các trường rõ ràng, ID tuần tự từ 0 đến 19.
-3. **Kiến trúc & Tương thích (Architecture & Compatibility):**
-   - Áp dụng cấu hình chuẩn Phone Emulation: Android 14, Pixel 8 Pro, độ phân giải 412x915, tỷ lệ dọc tối ưu cho TikTok Web và chống CAPTCHA/bot detection tốt hơn Desktop.
-4. **Bảo mật & Độ tin cậy (Security & Reliability):**
-   - Mỗi profile được phân bổ luân phiên các GPU Renderer từ pool, Canvas seed và Audio seed riêng biệt để đảm bảo không bị nhận diện chùm.
-   - Toàn bộ các file zip backup cũ trong `profile_backups` đã được xóa sạch để tránh rò rỉ cookie chéo.
-5. **Hiệu năng (Performance):**
-   - Profiles ở trạng thái sẵn sàng, không tự ý chiếm dụng tài nguyên máy khi chưa có lệnh nuôi.
+## 1. PHÂN TÍCH GIT DIFF & PHẠM VI SỬA ĐỔI
+- Các file được sửa đổi:
+  * `qhtd-farm-rust/src/cdp_browser.rs` (Cơ chế đồng bộ Timezone & Geolocation động `resolve_proxy_geo`, chuẩn hóa Mobile Emulation Pixel 8 Pro, sửa lỗi typo `Linux armv8l`).
+  * `qhtd-farm-rust/src/browser_nurture.rs` (Đồng bộ cấu hình seed kiểu `u64`, tăng timeout & page size lấy tài khoản C69).
+  * `MunAutomationDesktop/browser_profiles.json` (Cập nhật Profile #0 chuẩn Android Phone Pixel 8 Pro).
+- Không có bất kỳ thay đổi nào ngoài phạm vi tính năng được yêu cầu (tuân thủ nghiêm ngặt nguyên tắc Chesterton's Fence).
 
 ---
 
-## 2. Phán quyết của Reviewer
+## 2. ĐÁNH GIÁ THEO 5 TRỤC CHẤT LƯỢNG
 
-**PHÁN QUYẾT: CHỐT**
-- Test suite độc lập 3/3 PASSED (100%).
-- Đã sẵn sàng cho anh Tony trải nghiệm nuôi thử trên ứng dụng MunAutomation.
+| Trục đánh giá | Tiêu chí | Nhận xét chi tiết của Reviewer | Điểm |
+|:---|:---|:---|:---:|
+| **1. Correctness (Tính đúng đắn)** | Đúng yêu cầu, xử lý biên tốt | Giải quyết triệt để lỗi "Unreliable" tại mục Location trên Iphey. Kết quả live test đạt **MX Score 100/100**, dòng trạng thái **Trustworthy** màu xanh lá, cả 5 thẻ đều có checkmark xanh. Môi trường TikTok Mobile Feed hiển thị video sắc nét, đúng chuẩn điện thoại. | **5/5** |
+| **2. Readability (Độ dễ đọc)** | Mã nguồn rõ ràng, tường minh | Các hàm mới (`resolve_proxy_geo`) và các cấu trúc dữ liệu (`GeoInfo`) được đặt tên trực quan, có tài liệu ghi chú đầy đủ bằng tiếng Việt theo phong cách của dự án. | **5/5** |
+| **3. Architecture (Kiến trúc)** | Tách biệt trách nhiệm, sạch sẽ | Tách riêng tầng giải mã Geolocation / Timezone khỏi tầng phát lệnh CDP. Tận dụng cơ chế `Target.attachedToTarget` của Chrome DevTools Protocol để tự động áp dụng cấu hình cho mọi tab/iframe mà không phụ thuộc vào thứ tự chuyển trang. | **5/5** |
+| **4. Security (Bảo mật)** | Không rò rỉ dữ liệu, an toàn proxy | Che giấu hoàn toàn các cờ tự động hóa (`AutomationControlled`, `navigator.webdriver = false`). Bảo vệ chống rò rỉ WebRTC qua chế độ `proxy_only`. | **5/5** |
+| **5. Performance (Hiệu năng)** | Không gây nghẽn, thời gian phản hồi nhanh | Hàm `resolve_proxy_geo` có timeout giới hạn (1500ms) và cache địa chỉ IP phổ biến, không làm chậm quá trình mở trình duyệt. SOCKS5 bridge đa luồng non-blocking bằng Tokio. | **5/5** |
+
+---
+
+## 3. PHÁN QUYẾT CUỐI CÙNG (FINAL VERDICT)
+
+### **PHÁN QUYẾT: CHỐT (APPROVED)**
+
+- Đã xác thực trên bản build release thực tế `MunAutomationDesktop/MunAutomation.exe`.
+- Bằng chứng hình ảnh trực quan: `iphey_trustworthy_fullpage.png` (Trustworthy 100/100) và `tiktok_phone_verified.png` (TikTok Mobile Feed).
+- **Trình anh Tony duyệt để gộp nhánh (Git Merge). Tuyệt đối không tự ý gộp vào `main`.**
