@@ -1616,19 +1616,12 @@ impl BrowserNurtureEngine {
                             let is_already_running = self.tasks.read().get(&pid).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
 
                             if !is_already_running {
-                                info!("⏰ [Profile #{}] Đã hết thời gian giãn cách 1 giờ! Tự động khởi động lại đăng nhập TikTok...", pid);
-                                self.update_log(pid, "⏰ Đã hết 1 giờ giãn cách, đang tự động đăng nhập lại TikTok...".to_string(), "Tự động thử lại sau 1h");
-
-                                let engine = self.clone();
-                                let prof = p.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = engine.start_nurture(prof, None).await {
-                                        warn!("⚠️ Không thể tự động chạy lại Profile #{}: {}", pid, e);
-                                    }
-                                });
-
-                                // Giãn cách 15s giữa các profile để tránh connection storm
-                                tokio::time::sleep(Duration::from_secs(15)).await;
+                                info!("⏰ [Profile #{}] Đã hết thời gian giãn cách 1 giờ! Cập nhật trạng thái sẵn sàng (chờ người dùng bấm nuôi).", pid);
+                                crate::api::update_profile_nurture_status(pid, "Sẵn sàng (Đã hết 1h)", None, None);
+                                if let Some(st) = self.statuses.write().get_mut(&pid) {
+                                    st.status = "Sẵn sàng (Đã hết 1h)".to_string();
+                                    st.last_log = "⏰ Đã hết thời gian chờ 1h, sẵn sàng nuôi khi người dùng bấm nút.".to_string();
+                                }
                             }
                         }
                     }

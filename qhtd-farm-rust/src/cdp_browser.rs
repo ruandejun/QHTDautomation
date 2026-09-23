@@ -1414,8 +1414,6 @@ pub async fn launch_cdp_profile_with_bounds(
 
     let stealth_js = generate_stealth_script(profile);
     let profile_id = profile.id;
-    let profile_tiktok_username = profile.tiktok_username.clone();
-    let profile_tiktok_account_id = profile.tiktok_account_id;
 
     let custom_ua_cmds = if has_custom_ua {
         let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
@@ -1622,17 +1620,6 @@ pub async fn launch_cdp_profile_with_bounds(
                                         "sessionId": session_id,
                                         "method": "Page.bringToFront"
                                     }).to_string()));
-                                    let is_tiktok = start_url_clone.contains("tiktok.com");
-                                    if is_tiktok {
-                                        let s_id = session_id.to_string();
-                                        let tx_sub = tx.clone();
-                                        let p_id = profile_id;
-                                        let u_name = profile_tiktok_username.clone();
-                                        let a_id = profile_tiktok_account_id;
-                                        tokio::spawn(async move {
-                                            check_and_handle_tiktok_login_cdp(p_id, s_id, tx_sub, u_name, a_id).await;
-                                        });
-                                    }
                                 }
 
                                 // 6. Cho phép frame/tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
@@ -1659,6 +1646,7 @@ pub async fn launch_cdp_profile_with_bounds(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_and_handle_tiktok_login_cdp(
     profile_id: usize,
     session_id: String,

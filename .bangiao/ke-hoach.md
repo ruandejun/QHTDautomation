@@ -1,69 +1,39 @@
-# KẾ HOẠCH THIẾT KẾ KỸ THUẬT (AGENT 1 - PLANNER)
+# KẾ HOẠCH KHẮC PHỤC LỖI TỰ ĐỘNG BẤM NUÔI (AGENT 1 - PLANNER)
 
 - **Mục tiêu:** 
-  Tái cấu trúc pipeline theo cơ chế **Element-Driven State Transition (Kiểm tra phần tử DOM để chuyển bước)** theo đúng kiến trúc anh Tony chỉ đạo:
-  1. Kiểm tra IP đã đổi sang SOCKS5 trên `iphey.com` -> Ngay khi phần tử IP xuất hiện -> Chuyển sang TikTok.
-  2. Vào TikTok vài giây -> Mở link kiểm tra trang Profile (`https://www.tiktok.com/profile`).
-  3. Kiểm tra phần tử: Nếu cần login -> Tự động login (bảo vệ an toàn zero raw exception, loại bỏ hoàn toàn `.unwrap()` gây crash).
-  4. Sau khi login: Kiểm tra phần tử Avatar & Username -> Nếu mặc định thì upload avatar và đổi username.
-  5. Sau khi profile chuẩn -> Chuyển sang FYP lướt video 30s-1 phút rồi tự động tắt trình duyệt.
-- **Ngày lập:** 2026-09-20
-- **Nhánh triển khai:** `feature/tiktok-element-driven-pipeline`
+  Chấm dứt hoàn toàn tình trạng tool tự động kích hoạt tiến trình nuôi khi anh Tony chưa chủ động bấm nút "Nuôi".
+- **Ngày lập:** 2026-09-23
+- **Nhánh triển khai:** `fix/disable-auto-nurture-trigger`
 - **Người thực hiện:** Agent 1 (Planner)
 
 ---
 
-## 1. Phân tích nguyên nhân lỗi crash và timeout khi SOCKS5 chậm
+## 1. Phân tích nguyên nhân gốc rễ (Root Cause Analysis - RCA)
 
-### 1.1. Nguyên nhân Crash
-- Trong `browser_nurture.rs`, dòng 721 có lệnh: `let acc = c69_acc.as_ref().unwrap();`.
-- Khi proxy SOCKS5 chậm hoặc mạng chập chờn, API C69 có thể timeout hoặc profile chỉ lưu username rác mà chưa fetch được account object. Khi rơi vào luồng login, lệnh `unwrap()` gây **PANIC trực tiếp trên luồng worker và làm CRASH toàn bộ ứng dụng Rust**!
-- Khắc phục: Thay thế triệt để `unwrap()` bằng `match` / `if let` an toàn tuyệt đối.
+Qua rà soát toàn bộ mã nguồn Rust và Frontend, em đã xác định được **2 nguyên nhân chính** dẫn đến việc tool tự động bấm nuôi:
 
-### 1.2. Nguyên nhân Treo / Không chuyển bước khi SOCKS5 chậm
-- Khi SOCKS5 chậm, `Page.navigate` hoặc `evaluate` với timeout 8s bị ngắt giữa chừng vì trang `iphey.com` tải nhiều script nặng.
-- Thay vì chờ trang tải hết 100% tài nguyên dư thừa, áp dụng **Element-Driven Polling**:
-  Chỉ cần phần tử mục tiêu (Target DOM Element) xuất hiện trên trang là chuyển ngay sang bước tiếp theo!
+### Nguyên nhân 1: Background Scheduler tự động kích hoạt nuôi (`start_auto_retry_scheduler`)
+- Nằm trong `qhtd-farm-rust/src/browser_nurture.rs` (dòng 1597-1638), được gọi từ `main.rs` (dòng 101).
+- Cơ chế cũ: Cứ mỗi 60 giây, scheduler tự quét file `browser_profiles.json`. Nếu một profile trước đó có `retry_after_epoch` (do rate limit hoặc chờ 1h) và thời gian hiện tại đã trôi qua mốc này:
+  -> Hệ thống tự động gọi: `engine.start_nurture(prof, None).await`!
+- Khi anh Tony mở tool lên, các profile có epoch cũ lập tức bị scheduler tự động khởi động và chạy quy trình nuôi!
 
----
-
-## 2. Thiết kế luồng Element-Driven chi tiết 5 Bước
-
-```mermaid
-graph TD
-    A[BƯỚC 1: Mở iphey.com] -->|Polling thấy IP SOCKS5 xuất hiện| B[BƯỚC 2: Mở TikTok 3s -> Chuyển sang /profile]
-    B -->|Phát hiện nút Login hoặc URL /login| C[BƯỚC 3: Đăng nhập tự động C69 an toàn]
-    B -->|Đã có phiên Profile| D[BƯỚC 4: Kiểm tra Avatar & Username]
-    C -->|Login thành công| D
-    D -->|Nếu Avatar/Username mặc định -> Upload & Đổi| E[BƯỚC 5: Lướt video FYP 30s-1p]
-    D -->|Nếu Profile đã chuẩn sẵn| E
-    E -->|Hết thời lượng 30s-1p| F[Tự động đóng trình duyệt Chrome & Hoàn tất]
-```
-
-### Chi tiết các bước:
-1. **Bước 1 (Check IP):**
-   - Mở `https://iphey.com`.
-   - Polling mỗi 1.5s tìm sự xuất hiện của chuỗi IP proxy trong DOM.
-   - Thấy IP -> Ghi log thành công -> Chuyển ngay sang Bước 2!
-2. **Bước 2 (Vào TikTok & Mở /profile):**
-   - Mở `https://www.tiktok.com`, chờ 3s.
-   - Chuyển sang `https://www.tiktok.com/profile`.
-3. **Bước 3 (Xử lý Login):**
-   - Polling kiểm tra: Nếu URL chuyển về `/login` hoặc có nút `top-login-button`:
-     * Lấy user & pass từ C69 (không `unwrap()`). Nếu không có pass -> Dừng an toàn và đóng trình duyệt.
-     * Tự động điền và submit form login, giải quyết OTP/Rate limit.
-4. **Bước 4 (Cập nhật Profile):**
-   - Kiểm tra ảnh avatar: Nếu mặc định -> Mở Edit profile -> Dùng CDP `upload_file_to_input` đưa avatar chân dung tự nhiên vào -> Apply.
-   - Kiểm tra username: Nếu dạng `user\d+` -> Đổi sang username sạch (bỏ tiền tố `3_`).
-5. **Bước 5 (Lướt FYP):**
-   - Mở `https://www.tiktok.com/foryou?lang=en`.
-   - Lướt video và tương tác (Like, Comment, Share) 35s - 55s.
-   - Kết thúc -> Tự động đóng trình duyệt và giải phóng slot!
+### Nguyên nhân 2: Nút "🚀 Mở" Profile (Launch) tự động kích hoạt script nuôi TikTok
+- Nằm trong `qhtd-farm-rust/src/cdp_browser.rs` (dòng 1625-1635).
+- Cơ chế cũ: Khi người dùng bấm nút "🚀 Mở" chỉ để xem trình duyệt thủ công hoặc kiểm tra IP, hàm `launch_cdp_profile` lại kiểm tra nếu URL chứa `tiktok.com` thì tự động `tokio::spawn(check_and_handle_tiktok_login_cdp(...))` -> Tự kiểm tra, tự login và tự chuyển sang lướt `foryou`.
 
 ---
 
-## 3. Tiêu chí nghiệm thu (Acceptance Criteria)
-1. Tuyệt đối không crash khi SOCKS5 chậm hoặc khi thiếu thông tin tài khoản (Zero panic, no unwrap).
-2. Tăng timeout CDP lên 20s.
-3. Chuyển bước dựa trên sự xuất hiện của phần tử DOM thay vì chờ trang tải hết.
-4. Hoàn thành trọn vẹn chu trình từ Check IP -> TikTok -> Login -> Avatar/Username -> FYP 30s-1p -> Đóng Chrome.
+## 2. Kế hoạch sửa đổi kỹ thuật (Proposed Solution)
+
+1. **Vô hiệu hóa tự động nuôi trong `start_auto_retry_scheduler` (`browser_nurture.rs`):**
+   - Khi hết thời gian rate limit / giãn cách 1h, hệ thống CHỈ cập nhật nhãn trạng thái: `"Sẵn sàng (Đã hết 1h)"`, xóa `retry_after_epoch`.
+   - **TUYỆT ĐỐI KHÔNG GỌI `start_nurture`!** Quyền quyết định nuôi thuộc về người dùng.
+2. **Tách biệt hoàn toàn chế độ "Mở thủ công" (`launch_cdp_profile`) và "Chạy nuôi tự động" (`run_nurture_worker`):**
+   - Xóa bỏ việc tự động gọi `check_and_handle_tiktok_login_cdp` trong `cdp_browser.rs` khi mở trình duyệt.
+   - Nút "🚀 Mở" chỉ đơn thuần mở cửa sổ Chrome độc lập để người dùng thao tác bằng tay.
+   - Tiến trình nuôi TikTok CHỈ ĐƯỢC CHẠY khi người dùng chủ động bấm:
+     * Nút **"Nuôi"** của từng profile.
+     * Nút **"Nuôi profiles đã chọn"** (`startNurtureSelectedProfiles`).
+     * Nút **"Nuôi tất cả"** (`startNurtureAllProfiles`).
+3. **Dọn dẹp `retry_after_epoch` tồn đọng trong `browser_profiles.json`** để không còn profile nào bị treo trạng thái kích hoạt ngầm.
