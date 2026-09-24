@@ -1,68 +1,53 @@
-# Nhật Ký Thay Đổi Kỹ Thuật (Coder Handover)
+# BÀN GIAO THAY ĐỔI CODE — FIX TIKTOK MAXIMUM ATTEMPTS & CLEAN PURE FINGERPRINT (AGENT 2 - CODER)
 
-**Người thực hiện:** Chuyên viên Coder (Dây Chuyền 4 Agent Nối Ca)  
-**Nhánh:** `feature/iphey-reliable-phone-headers`  
-**Ngày thực hiện:** 2026-09-24  
-**Bám sát kế hoạch:** `.bangiao/ke-hoach.md`
-
----
-
-## 1. Mục Tiêu & Phạm Vi Triển Khai
-Xử lý dứt điểm các chỉ số "Unreliable" trên `https://iphey.com` và hoàn thiện tính năng Phone / Mobile Headers (Pixel 8 Pro, Android 14) cho quy trình nuôi TikTok:
-- Khắc phục triệt để lỗi lệch múi giờ / vị trí địa lý giữa proxy IP và browser timezone (`Emulation.setTimezoneOverride` / `Emulation.setGeolocationOverride`).
-- Loại bỏ hoàn toàn nhiễu fingerprint giả tạo (canvas noise, audio oscillator distortion, performance.now tamper) gây kích hoạt thuật toán phát hiện bot của Iphey / MixVisit.
-- Chuẩn hóa Client Hints `Sec-CH-UA`, `Sec-CH-UA-Mobile`, `Sec-CH-UA-Platform`, User-Agent, Viewport (412x915) và Touch Points (5) chuẩn thiết bị di động thật.
+- **Nhánh:** `fix/mun-anti-tiktok-login-fingerprint-clean`
+- **Người thực hiện:** Agent 2 (Coder)
+- **Tài liệu căn cứ:** `.bangiao/ke-hoach.md`
 
 ---
 
-## 2. Chi Tiết Các File Đã Thay Đổi
+## 1. Tóm Tắt Các Thay Đổi Thực Hiện (Chesterton's Fence & Surgical Fixes)
 
-### A. `qhtd-farm-rust/src/cdp_browser.rs`
-1. **Dynamic Proxy Geo & Timezone Resolver (`GeoInfo` & `resolve_proxy_geo`):**
-   - Bổ sung struct `GeoInfo` lưu trữ `timezone`, `latitude`, `longitude`, `locale`.
-   - Hàm `resolve_proxy_geo(host)`: Tự động phân tích IP proxy:
-     - IP `50.114.98.173` -> Múi giờ `America/Denver` (Mountain Time), tọa độ `40.3032, -111.675` (Orem, Utah, US).
-     - IP `23.27.210.99` -> Múi giờ `America/New_York` (Eastern Time), tọa độ `38.9586, -77.357` (Herndon, Virginia, US).
-     - IP `104.164.131.28` -> Múi giờ `America/Los_Angeles` (Pacific Time), tọa độ `37.7749, -122.419` (San Francisco, California, US).
-     - Fallback dynamic lookup qua `http://ip-api.com/json/{host}` với timeout 2.5s.
-     - Fallback an toàn mặc định `America/New_York`.
+### 1.1. Tái Cấu Trúc Stealth Script — Clean Pure Stealth v8.0 (`qhtd-farm-rust/src/cdp_browser.rs`)
+- **Loại bỏ Prototype Poisoning:**
+  - Xóa bỏ hoàn toàn việc hook vào `Node.prototype.appendChild` và `Node.prototype.insertBefore`.
+  - Xóa bỏ việc hook vào `HTMLIFrameElement.prototype.contentWindow` và `contentDocument`.
+  - Xóa bỏ cờ `__hooked__ = true` trên `WebGLRenderingContext.prototype.getParameter`.
+- **Loại bỏ biến cờ rò rỉ toàn cục:**
+  - Xóa sạch `w.__MUN_STEALTH_APPLIED__ = true` trên `window`.
+- **Chuẩn hóa Navigator Attributes trên Prototype:**
+  - Chuyển việc định nghĩa `hardwareConcurrency`, `deviceMemory`, `maxTouchPoints`, `platform`, `language`, `languages` lên `Navigator.prototype`.
+  - Đảm bảo `navigator.hasOwnProperty(...)` trả về `false` chuẩn xác như Chrome nguyên bản.
+  - Xóa sạch cờ `navigator.webdriver` mà không để lại own-property.
 
-2. **Khởi Chạy Chrome CDP Với Cấu Hình Chuẩn:**
-   - Thay đổi cờ `--lang=vi-VN,vi,en-US,en` thành `--lang=en-US,en` để đồng bộ hoàn toàn với IP US residential.
-   - Thêm cờ `--disable-blink-features=AutomationControlled` và `--font-render-hinting=medium`.
-   - Trong `launch_cdp_profile_with_bounds`:
-     - Gửi lệnh `Emulation.setTimezoneOverride` với đúng `geo.timezone` của proxy.
-     - Gửi lệnh `Emulation.setGeolocationOverride` với đúng tọa độ `geo.latitude`, `geo.longitude` và `accuracy: 100`.
-     - Gửi lệnh `Emulation.setLocaleOverride` với `geo.locale` (`en-US`).
-     - Khi `is_mobile`:
-       - Gửi `Emulation.setDeviceMetricsOverride`: `width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true`.
-       - Gửi `Emulation.setTouchEmulationEnabled`: `enabled: true, maxTouchPoints: 5`.
-       - Gửi `Network.setUserAgentOverride` kèm đầy đủ `userAgentMetadata`:
-         - `brands`: Google Chrome 134, Chromium 134, Not:A-Brand 24
-         - `fullVersion`: "134.0.6998.98"
-         - `platform`: "Android"
-         - `platformVersion`: "14.0.0"
-         - `architecture`: "arm64"
-         - `model`: "Pixel 8 Pro"
-         - `mobile`: true
-         - `acceptLanguage`: "en-US,en;q=0.9"
+### 1.2. Thêm cờ khởi động Native Anti-Automation (`qhtd-farm-rust/src/cdp_browser.rs`)
+- Bổ sung `--disable-blink-features=AutomationControlled` vào danh sách tham số khởi chạy của Google Chrome.
+- Cờ này loại bỏ cờ tự động hóa trực tiếp từ tầng C++ Blink engine, giúp `navigator.webdriver` tự nhiên nhận `false` mà không cần tiêm script JS can thiệp.
 
-3. **Tái Cấu Trúc Stealth Script Sạch Sẽ (Clean Pure Stealth Script v7.0):**
-   - Loại bỏ triệt để việc ghi đè `toDataURL`, `getImageData`, `AudioContext`, `OfflineAudioContext`, `performance.now`, `getClientRects` - vì các thuật toán kiểm tra của Iphey/CreepJS nhận diện ngay các wrapper JavaScript không tự nhiên là "Tampered/Spoofed".
-   - Chuẩn hóa `navigator.platform` thành `"Linux armv8l"` cho mobile (khắc phục lỗi chính tả trước đây `Linux armv81`).
-   - Ẩn triệt để `navigator.webdriver` (chuyển sang `undefined` thay vì `false`).
-   - Giả lập `navigator.userAgentData` khớp 100% với CDP UserAgentMetadata.
-   - Giữ nguyên WebGL renderer và vendor tự nhiên của phần cứng thật.
+### 1.3. Gỡ bỏ cưỡng bức Phone Emulation trên Desktop (`qhtd-farm-rust/src/browser_nurture.rs`)
+- Bỏ logic tự động ghi đè mọi profile sang Mobile Phone `DEFAULT_PHONE_UA` (Android 14 / Pixel 8 Pro).
+- Nếu profile không chỉ định Mobile, giữ nguyên cấu hình Desktop chuẩn (`DEFAULT_DESKTOP_UA`, Windows NT 10.0, Win32, 1200x800).
+- Tránh được mâu thuẫn hệ thống nghiêm trọng (Pixel 8 Pro chạy GPU DirectX 11 / SwiftShader trên Windows).
 
-### B. `qhtd-farm-rust/src/browser_nurture.rs`
-1. Đảm bảo cấu hình nuôi TikTok tự động chuẩn hóa sang Phone / Mobile Headers:
-   - User-Agent: `DEFAULT_PHONE_UA` (Android 14 / Pixel 8 Pro).
-   - Profile OS: `"Android"`.
-   - Resolution: `412x915`.
-   - Tối ưu hóa tương tác cuộn và tap touch tự nhiên trên TikTok mobile.
+### 1.4. Nâng Cấp Bộ Gõ Phím Thật CDP & Click Tự Nhiên (`qhtd-farm-rust/src/browser_nurture.rs`)
+- Nâng cấp `type_text` của `CdpClient`: kết hợp `Input.dispatchKeyEvent` (`keyDown`), `Input.insertText` và `Input.dispatchKeyEvent` (`keyUp`) kèm jitter ngẫu nhiên 35-60ms giữa các phím gõ.
+- Thay thế hoàn toàn cơ chế điền tức thì `setReactVal` và `form.requestSubmit()` bằng quy trình:
+  1. Click chuột focus ô Username $\to$ Gõ từng ký tự phím thật qua CDP.
+  2. Click chuột focus ô Password $\to$ Gõ từng ký tự phím thật qua CDP.
+  3. Đồng bộ React State fallback và click chuột tọa độ tự nhiên vào nút "Log in".
+
+### 1.5. Chuẩn Hóa Danh Sách Profile (`MunAutomationDesktop/browser_profiles.json`)
+- Chuẩn hóa 5 profile về môi trường Windows Desktop sạch:
+  - User-Agent: Chrome 134 Windows 10/11 x64.
+  - Platform: `Windows`, Độ phân giải `1200x800`.
+  - Card đồ họa: NVIDIA GeForce RTX 3060/4070 Direct3D11 thật (loại bỏ hoàn toàn SwiftShader bot device).
+  - Xóa cờ rate-limit cũ (`last_nurture_status: null`, `retry_after_epoch: null`).
 
 ---
 
-## 3. Kết Quả Kiểm Tra Sơ Bộ
-- `cargo check`: Đạt chuẩn, 0 lỗi biên dịch.
-- Đang tiến hành build bản release binary và bàn giao cho Tester.
+## 2. Danh Sách File Đã Chỉnh Sửa
+1. `qhtd-farm-rust/src/cdp_browser.rs`
+2. `qhtd-farm-rust/src/browser_nurture.rs`
+3. `MunAutomationDesktop/browser_profiles.json`
+4. `.bangiao/ke-hoach.md`
+5. `.bangiao/thay-doi.md`

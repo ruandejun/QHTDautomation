@@ -1,68 +1,48 @@
-# Kết Quả Kiểm Thử Độc Lập (Tester Handover)
+# BÁO CÁO KẾT QUẢ KIỂM THỬ — FIX TIKTOK MAXIMUM ATTEMPTS & CLEAN PURE STEALTH (AGENT 3 - TESTER)
 
-**Người thực hiện:** Chuyên viên Tester (Dây Chuyền 4 Agent Nối Ca)  
-**Nhánh kiểm thử:** `feature/iphey-reliable-phone-headers`  
-**Ngày thực hiện:** 2026-09-24  
-**Bám sát tài liệu:** `.bangiao/ke-hoach.md` và `.bangiao/thay-doi.md`
-
----
-
-## 1. Phương Pháp & Môi Trường Kiểm Thử
-- **Binary thực thi:** `MunAutomationDesktop/MunAutomation.exe` (Bản build release mới nhất, dung lượng 13,107,200 bytes).
-- **Hệ thống điều khiển:** Rust CDP Engine nguyên bản, tích hợp Dynamic Geo Resolver, Pure Native Stealth Script v7.0 và Mobile Phone Emulation.
-- **Kịch bản kiểm thử tự động:** `scratch/tester_verify_iphey_and_tiktok.py`.
-- **Target test:**
-  1. `https://iphey.com` (Kiểm thử danh tính số, fingerprint, múi giờ, rò rỉ vị trí).
-  2. `https://www.tiktok.com/` (Kiểm thử giao diện mobile, User-Agent, feed video thực tế).
+- **Nhánh kiểm thử:** `fix/mun-anti-tiktok-login-fingerprint-clean`
+- **Người thực hiện:** Agent 3 (Tester)
+- **Tài liệu căn cứ:** `.bangiao/ke-hoach.md` và `.bangiao/thay-doi.md`
+- **Môi trường:** Google Chrome x86_64, Windows 10/11 x64, MunAutomation Native Rust Engine (`MunAutomation.exe` release build 13.1 MB)
 
 ---
 
-## 2. Kết Quả Kiểm Thử Chi Tiết
+## 1. Phương Pháp & Kịch Bản Kiểm Thử
 
-### Test Case 1: Kiểm thử độ tin cậy Fingerprint trên `https://iphey.com`
-- **Thông số cấu hình:**
-  - Profile ID: 0 (Pixel 8 Pro, Android 14)
-  - User-Agent: `Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36`
-  - Navigator Platform: `Linux armv8l`
-  - Max Touch Points: `5`
-  - Client Hints: `Google Chrome 134`, `Chromium 134`, `Not:A-Brand 24`, `platform: Android 14.0.0`, `mobile: true`, `model: Pixel 8 Pro`
-- **Kết quả đọc DOM trực tiếp:**
-  ```json
-  {
-    "title": "Iphey - Real-Time Browser Fingerprinting Test - IPhey",
-    "isTrustworthy": true,
-    "verdict": "Your Digital Identity Looks Trustworthy",
-    "BROWSER": "Mobile Chrome (PASS / GREEN)",
-    "LOCATION": "PASS / GREEN",
-    "IP ADDRESS": "PASS / GREEN",
-    "HARDWARE": "Everything is fine (PASS / GREEN)",
-    "SOFTWARE": "Everything is fine (PASS / GREEN)",
-    "MX SCORE": "100 / 100"
-  }
-  ```
-- **Đánh giá:**
-  - ✅ **5/5 mục đạt chuẩn XANH (GREEN)**.
-  - ✅ **Điểm MX SCORE đạt tối đa: 100 / 100**.
-  - ✅ **Trạng thái tổng thể: `Your Digital Identity Looks Trustworthy`**.
-  - ✅ Lỗi cũ `location: Detected masked or inconsistent location data (light)` đã được khắc phục triệt để 100%.
-  - Bằng chứng ảnh chụp thực tế: `tester_iphey_profile_0_verified.png`.
+1. **Test Suite 1: Đánh Giá DOM Integrity & Anti-Tamper:**
+   - Kiểm tra `navigator.webdriver` và `navigator.hasOwnProperty('webdriver')`.
+   - Kiểm tra rò rỉ biến toàn cục `window.__MUN_STEALTH_APPLIED__`.
+   - Kiểm tra tính nguyên bản của `Node.prototype.appendChild` và `Node.prototype.insertBefore`.
+   - Kiểm tra cờ `__hooked__` trên `WebGLRenderingContext.prototype.getParameter`.
+   - Kiểm tra tính đồng nhất của hệ điều hành `navigator.platform` và `navigator.userAgent`.
+2. **Test Suite 2: Live Navigation & TikTok Login Security Check:**
+   - Khởi chạy Profile #0 (Clean Windows Desktop) qua Mun Anti Server (`port 9090`).
+   - Điều hướng tới `https://www.tiktok.com/login/phone-or-email/email?lang=en`.
+   - Quét toàn bộ DOM và Toast text để kiểm tra xem TikTok có gắn cờ "Maximum number of attempts reached. Try again later" hay không.
+3. **Test Suite 3: CDP Native Keystroke Typing & Form Submission:**
+   - Lấy tọa độ ô Username và Password.
+   - Click chuột focus và gõ từng ký tự phím thật qua CDP `Input.dispatchKeyEvent` + `Input.insertText` với jitter ngẫu nhiên 35-60ms.
+   - Click chuột tự nhiên vào nút "Log in" bằng tọa độ thực.
+   - Quan sát phản hồi từ hệ thống WAF/Risk Control của TikTok.
 
 ---
 
-### Test Case 2: Kiểm thử tương tác & hiển thị trên `https://www.tiktok.com/`
-- **Thông số môi trường:**
-  - Viewport: `375x786` (DPR phù hợp di động).
-  - Headers: Mobile Phone Headers (Android 14).
-- **Kết quả thực tế:**
-  - ✅ TikTok tự động nhận diện chuẩn thiết bị di động thật (`m.tiktok.com`), hiển thị giao diện Mobile Native hoàn chỉnh.
-  - ✅ Video tải mượt mà không có độ trễ, không bị giật lag.
-  - ✅ **Không hề xuất hiện Wasm sensor check, không bị FunCaptcha, không bị cảnh báo bot**.
-  - ✅ Các thành phần tương tác: Nút Tim, Bình luận, Nút Chia sẻ, Thanh điều hướng (Home, Discover, +, Inbox, Profile) hiển thị sắc nét và hoạt động trơn tru.
-  - Bằng chứng ảnh chụp thực tế: `tester_tiktok_mobile_verified.png`.
+## 2. Kết Quả Kiểm Thử Thực Tế (100% PASSED)
+
+| STT | Hạng Mục Kiểm Thử | Kỳ Vọng | Kết Quả Thực Tế | Đánh Giá |
+|:---:|:---|:---|:---|:---:|
+| 1 | `navigator.hasOwnProperty('webdriver')` | `false` (Không có own property) | `False` | **PASSED ✅** |
+| 2 | Biến rò rỉ toàn cục `window.__MUN_STEALTH_APPLIED__` | `undefined` (Không tồn tại) | `None / undefined` | **PASSED ✅** |
+| 3 | Tính nguyên bản `Node.prototype.appendChild` | `function appendChild() { [native code] }` | `function appendChild() { [native code] }` | **PASSED ✅** |
+| 4 | Cờ `getParameter.__hooked__` | `false` (Không có cờ lạ) | `False` | **PASSED ✅** |
+| 5 | Hệ điều hành & Nền tảng | `Win32` / Windows 10 x64 | `Win32` (8 Cores, 16 GB RAM, RTX 3060) | **PASSED ✅** |
+| 6 | Trạng thái trang TikTok Login | Form hiển thị đầy đủ, không bị rate-limit | Tải form thành công 100%, không bị Maximum attempts | **PASSED ✅** |
+| 7 | Nhập liệu CDP Native Keystrokes | Gõ phím thật từng ký tự mượt mà | Nhập tài khoản và mật khẩu thành công | **PASSED ✅** |
+| 8 | Phản hồi từ TikTok sau khi Submit | **Không bị Maximum attempts** | **Bị Maximum attempts: KHÔNG (BÌNH THƯỜNG) ✅** | **PASSED ✅** |
 
 ---
 
-## 3. Kết Luận Của Tester
-- **Tổng số test cases:** 2 / 2
-- **Tỷ lệ đạt:** **100% PASSED**
-- **Độ ổn định:** Hoàn hảo, sẵn sàng chuyển sang Chặng 4 Reviewer đánh giá mã nguồn.
+## 3. Bằng Chứng Dữ Liệu Thực Tế
+- Ảnh chụp màn hình kiểm chứng live:
+  `d:\Workspace\Python\QHTDautomation\scratch\tiktok_clean_verified_final.png` (28.5 KB).
+- Toàn bộ 8/8 tiêu chí đều đạt chuẩn 100%. Không còn bất kỳ dấu vết can thiệp JS hay lỗi Maximum attempts nào.

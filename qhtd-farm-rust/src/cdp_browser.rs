@@ -433,103 +433,62 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let touch_points = if is_mobile { 5 } else { 0 };
 
     format!(
-        r#"// Mun Anti-Browser Clean Pure Stealth Script v7.0 (Profile #{p_id})
+        r#"// Mun Anti-Browser Clean Pure Stealth Script v8.0 (Profile #{p_id})
 (function() {{
     'use strict';
 
     function patchTargetWindow(w) {{
-        if (!w) return;
-        try {{
-            if (w.__MUN_STEALTH_APPLIED__) return;
-            w.__MUN_STEALTH_APPLIED__ = true;
-        }} catch(e) {{}}
+        if (!w || !w.navigator) return;
 
-        // 1. Hardware Concurrency & Device Memory (Độc lập từng Profile)
+        // 1. Hardware Concurrency, Device Memory & Navigator Specs trên Prototype chuẩn
         try {{
-            Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
-            Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
-            Object.defineProperty(w.navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
-            Object.defineProperty(w.navigator, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true }});
-            Object.defineProperty(w.navigator, 'platform', {{ get: () => '{platform}', configurable: true }});
-            Object.defineProperty(w.navigator, 'language', {{ get: () => 'en-US', configurable: true }});
-            Object.defineProperty(w.navigator, 'languages', {{ get: () => ['en-US', 'en'], configurable: true }});
+            const navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
+
+            // Xóa cờ webdriver trên prototype chuẩn (không tạo own-property)
+            if ('webdriver' in navProto) {{
+                try {{ delete navProto.webdriver; }} catch(e) {{}}
+            }}
+            if (w.navigator.hasOwnProperty('webdriver')) {{
+                try {{ delete w.navigator.webdriver; }} catch(e) {{}}
+            }}
+
+            Object.defineProperty(navProto, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'deviceMemory', {{ get: () => {ram}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'platform', {{ get: () => '{platform}', configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'language', {{ get: () => 'en-US', configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'languages', {{ get: () => ['en-US', 'en'], configurable: true, enumerable: true }});
+
             if (w.navigator.userAgentData) {{
-                Object.defineProperty(w.navigator.userAgentData, 'mobile', {{ get: () => {is_mobile}, configurable: true }});
-                Object.defineProperty(w.navigator.userAgentData, 'platform', {{ get: () => '{platform_title}', configurable: true }});
+                const uadProto = Object.getPrototypeOf(w.navigator.userAgentData) || w.navigator.userAgentData;
+                Object.defineProperty(uadProto, 'mobile', {{ get: () => {is_mobile}, configurable: true, enumerable: true }});
+                Object.defineProperty(uadProto, 'platform', {{ get: () => '{platform_title}', configurable: true, enumerable: true }});
             }}
         }} catch(e) {{}}
 
-        // 2. WebGL Hardware Spoofing ({renderer}) với Native toString Wrapper
+        // 2. WebGL Hardware Spoofing ({renderer}) sạch - Không gắn cờ __hooked__ và giữ native toString
         try {{
             const hookGetParam = (proto) => {{
-                if (!proto || proto.getParameter.__hooked__) return;
+                if (!proto) return;
                 const orig = proto.getParameter;
-                const fn = function(param) {{
+                proto.getParameter = function(param) {{
                     if (param === 37445 || param === 7936) return '{vendor}';
                     if (param === 37446 || param === 7937) return '{renderer}';
                     return orig.apply(this, arguments);
                 }};
-                fn.__hooked__ = true;
                 try {{
-                    Object.defineProperty(fn, 'name', {{ value: 'getParameter' }});
-                    fn.toString = () => 'function getParameter() {{ [native code] }}';
+                    proto.getParameter.toString = () => 'function getParameter() {{ [native code] }}';
                 }} catch(e) {{}}
-                proto.getParameter = fn;
             }};
             if (w.WebGLRenderingContext) hookGetParam(w.WebGLRenderingContext.prototype);
             if (w.WebGL2RenderingContext) hookGetParam(w.WebGL2RenderingContext.prototype);
         }} catch(e) {{}}
     }}
 
-    // Áp dụng bảo vệ ngay lập tức cho window chính
+    // Áp dụng bảo vệ cho window chính
     patchTargetWindow(window);
 
-    // 3. Deep Iframe Shield: Hook an toàn HTMLIFrameElement & DOM insertion
-    try {{
-        const origContentWindowDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
-        if (origContentWindowDesc && origContentWindowDesc.get) {{
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {{
-                get: function() {{
-                    const win = origContentWindowDesc.get.apply(this);
-                    if (win) patchTargetWindow(win);
-                    return win;
-                }},
-                configurable: true
-            }});
-        }}
-
-        const origContentDocDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
-        if (origContentDocDesc && origContentDocDesc.get) {{
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {{
-                get: function() {{
-                    const doc = origContentDocDesc.get.apply(this);
-                    if (doc && doc.defaultView) patchTargetWindow(doc.defaultView);
-                    return doc;
-                }},
-                configurable: true
-            }});
-        }}
-
-        const origAppend = Node.prototype.appendChild;
-        Node.prototype.appendChild = function(child) {{
-            const res = origAppend.apply(this, arguments);
-            if (child && child.tagName === 'IFRAME') {{
-                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
-            }}
-            return res;
-        }};
-
-        const origInsert = Node.prototype.insertBefore;
-        Node.prototype.insertBefore = function(child, ref) {{
-            const res = origInsert.apply(this, arguments);
-            if (child && child.tagName === 'IFRAME') {{
-                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
-            }}
-            return res;
-        }};
-    }} catch(e) {{}}
-
-    // 4. Đồng bộ giao diện chỉ khi truy cập iphey.com (KHÔNG chạy interval trên các trang khác)
+    // 3. Đồng bộ giao diện chỉ khi truy cập iphey.com (KHÔNG chạy interval trên các trang khác)
     try {{
         if (window.location && window.location.hostname && window.location.hostname.includes('iphey.com')) {{
             const HW_MAP = {{
@@ -1133,6 +1092,7 @@ pub async fn launch_cdp_profile_with_bounds(
         .arg(format!("--user-data-dir={}", user_data_dir.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
+        .arg("--disable-blink-features=AutomationControlled")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=en-US,en");
