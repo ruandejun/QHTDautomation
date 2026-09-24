@@ -235,14 +235,10 @@ impl CdpClient {
                 json!({ "type": "keyDown", "text": s, "unmodifiedText": s }),
             ).await;
             let _ = self.call(
-                "Input.insertText",
-                json!({ "text": s }),
-            ).await;
-            let _ = self.call(
                 "Input.dispatchKeyEvent",
                 json!({ "type": "keyUp", "text": s, "unmodifiedText": s }),
             ).await;
-            tokio::time::sleep(Duration::from_millis(35 + (ch as u64 % 25))).await;
+            tokio::time::sleep(Duration::from_millis(60 + (ch as u64 % 40))).await;
         }
         Ok(())
     }
@@ -777,10 +773,13 @@ impl BrowserNurtureEngine {
             }
             let acc = acc_opt.unwrap();
             let pwd = acc.password.as_deref().unwrap_or("");
-            let login_identity = if let Some(ref email) = acc.email {
-                if email.contains('@') { email.clone() } else { acc.username.clone() }
+            // Ưu tiên dùng username (không bị rate-limit domain email như Outlook, pass 100% vào thẳng 2FA)
+            let login_identity = if !acc.username.trim().is_empty() {
+                acc.username.trim().to_string()
+            } else if let Some(ref email) = acc.email {
+                email.trim().to_string()
             } else {
-                acc.username.clone()
+                acc.username.trim().to_string()
             };
 
                 // 🛡️ Pre-warming Mode: Lướt dạo TikTok FYP như khách vãng lai 15-25s để tích lũy msToken và trust score chống rate limit
@@ -796,6 +795,7 @@ impl BrowserNurtureEngine {
                 self.update_log(pid, format!("Mở trang đăng nhập TikTok cho tài khoản: {}", login_identity), "Tiến hành đăng nhập");
 
             let _ = cdp.navigate("https://www.tiktok.com/login/phone-or-email/email?lang=en").await;
+            tokio::time::sleep(Duration::from_secs(4)).await;
 
             let mut form_found_and_submitted = false;
             for form_try in 1..=15 {
@@ -805,24 +805,6 @@ impl BrowserNurtureEngine {
 
                 let detect_and_fill_script = r#"
                     (() => {
-                        // 1. Nếu đang ở màn hình chọn phương thức login chung, click vào "Use phone / email / username"
-                        const methodBtn = Array.from(document.querySelectorAll('div, a, button, p, span')).find(el => {
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            return t === 'use phone / email / username' || t === 'sử dụng số điện thoại / email / tên người dùng';
-                        });
-                        if (methodBtn && methodBtn.offsetParent !== null) {
-                            methodBtn.click();
-                        }
-
-                        // 2. Nếu đang ở tab Phone, click chuyển sang tab "Log in with email or username"
-                        const emailTab = Array.from(document.querySelectorAll('a, button, span, div')).find(el => {
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            return t === 'log in with email or username' || t === 'đăng nhập bằng email hoặc tên người dùng';
-                        });
-                        if (emailTab && emailTab.offsetParent !== null) {
-                            emailTab.click();
-                        }
-
                         const u = document.querySelector('input[name="username"]') || 
                                   document.querySelector('input[placeholder*="Email"]') || 
                                   document.querySelector('input[placeholder*="Username"]') ||
@@ -832,13 +814,10 @@ impl BrowserNurtureEngine {
                                     Array.from(document.querySelectorAll('button')).find(b => (b.innerText || '').trim().toLowerCase().includes('log in'));
 
                         if (u && p) {
-                            u.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             const ur = u.getBoundingClientRect();
                             const pr = p.getBoundingClientRect();
                             let btn_coords = { x: 0.0, y: 0.0 };
                             if (btn) {
-                                btn.disabled = false;
-                                btn.removeAttribute('disabled');
                                 const br = btn.getBoundingClientRect();
                                 btn_coords = { x: br.left + br.width / 2, y: br.top + br.height / 2 };
                             }
@@ -881,34 +860,38 @@ impl BrowserNurtureEngine {
                         let _ = cdp.type_text(&pwd).await;
                         tokio::time::sleep(Duration::from_millis(450)).await;
 
-                        // 3. Đảm bảo React state đồng bộ và mở khóa nút submit
-                        let sync_script = format!(r#"(() => {{
-                            function syncVal(selector, val) {{
-                                const el = document.querySelector(selector);
-                                if (el && el.value !== val) {{
-                                    const proto = window.HTMLInputElement.prototype;
-                                    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                                    if (setter) setter.call(el, val);
-                                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                }}
-                            }}
-                            syncVal('input[name="username"], input[type="text"], input[placeholder*="Email"], input[placeholder*="Username"]', "{}");
-                            syncVal('input[type="password"]', "{}");
+                        // 3. Cho React state cap nhat tu dong qua native keyboard events va click nut Log in
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        self.update_log(pid, "🖱️ Click nút Log in...".to_string(), "Click Log in");
+                        
+                        // Lay toa do nut Log in moi nhat de click chinh xac
+                        let btn_check_script = r#"(() => {
                             const b = document.querySelector('button[type="submit"]') || 
                                       Array.from(document.querySelectorAll('button')).find(btn => (btn.innerText || '').trim().toLowerCase().includes('log in'));
-                            if (b) {{
-                                b.disabled = false;
-                                b.removeAttribute('disabled');
-                            }}
-                        }})()"#, login_identity.replace('\\', "\\\\").replace('"', "\\\""), pwd.replace('\\', "\\\\").replace('"', "\\\""));
-                        let _ = cdp.evaluate(&sync_script).await;
-                        tokio::time::sleep(Duration::from_millis(400)).await;
+                            if (b) {
+                                try { b.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch(e) {}
+                                const r = b.getBoundingClientRect();
+                                return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+                            }
+                            return JSON.stringify({ x: 0.0, y: 0.0 });
+                        })()"#;
+                        let mut final_bx = bx;
+                        let mut final_by = by;
+                        if let Ok(b_val) = cdp.evaluate(btn_check_script).await {
+                            if let Some(b_str) = b_val.as_str() {
+                                if let Ok(b_json) = serde_json::from_str::<serde_json::Value>(b_str) {
+                                    let nx = b_json.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let ny = b_json.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    if nx > 0.0 && ny > 0.0 {
+                                        final_bx = nx;
+                                        final_by = ny;
+                                    }
+                                }
+                            }
+                        }
 
-                        // 4. Click chuột tự nhiên vào nút Log in
-                        self.update_log(pid, "🖱️ Click nút Log in...".to_string(), "Click Log in");
-                        if bx > 0.0 && by > 0.0 {
-                            let _ = cdp.dispatch_mouse_click(bx, by).await;
+                        if final_bx > 0.0 && final_by > 0.0 {
+                            let _ = cdp.dispatch_mouse_click(final_bx, final_by).await;
                         } else {
                             let _ = cdp.evaluate("(() => { const b = document.querySelector('button[type=\"submit\"]'); if (b) b.click(); })()").await;
                         }
@@ -1046,17 +1029,20 @@ impl BrowserNurtureEngine {
 
                 // 4. Kiểm tra thách thức 2FA / Email Code / SMS Code
                 let challenge_detect_expr = r#"(() => {
+                    const url = window.location.href.toLowerCase();
                     const bodyText = (document.body ? document.body.innerText : '').toLowerCase();
-                    const is2fa = bodyText.includes('2-step verification') || 
-                                  bodyText.includes('authenticator app') || 
-                                  bodyText.includes('enter the 6-digit code generated');
-                    const isEmail = bodyText.includes('enter 6-digit code') || 
+                    const is2fa = url.includes('/2sv/totp') ||
+                                  (bodyText.includes('2-step verification') && (bodyText.includes('authenticator app') || bodyText.includes('enter the 6-digit code generated')));
+                    const isEmail = url.includes('/2sv/email') || 
+                                    bodyText.includes('your code was emailed to') ||
+                                    bodyText.includes('enter 6-digit code') || 
                                     bodyText.includes('sent a code to') || 
                                     bodyText.includes('code sent to') ||
                                     bodyText.includes('verify with email') ||
                                     bodyText.includes('email verification') ||
                                     bodyText.includes('we sent a code');
-                    const isPhone = bodyText.includes('enter sms code') || 
+                    const isPhone = url.includes('/2sv/sms') ||
+                                    bodyText.includes('enter sms code') || 
                                     bodyText.includes('sent an sms') ||
                                     bodyText.includes('sms verification');
 
@@ -1200,13 +1186,11 @@ impl BrowserNurtureEngine {
                                         }
                                     }
                                 } else {
-                                    let err_msg = "Lỗi đọc email: Tài khoản TikTok chưa liên kết Email ID hoặc không tìm thấy địa chỉ email trong C69 Email Database để lấy OTP!".to_string();
-                                    self.set_error(pid, format!("❌ {}", err_msg));
-                                    let aid = acc.id;
-                                    tokio::spawn(async move {
-                                        let _ = update_c69_account_note(aid, &err_msg).await;
-                                    });
-                                    return;
+                                    self.update_challenge(
+                                        pid, 
+                                        "Email OTP", 
+                                        format!("🔑 TikTok yêu cầu mã Email OTP (gửi về {})! Vui lòng nhập mã OTP trên Dashboard hoặc trên trình duyệt (Thời gian còn {}s)...", acc.email.as_deref().unwrap_or("email"), (90 - cycle) * 2)
+                                    );
                                 }
                             } else if is_phone || (is_2fa && !totp_submitted) {
                                 let c_type = if is_phone { "SMS OTP" } else { "2FA" };
@@ -1882,6 +1866,39 @@ impl BrowserNurtureEngine {
 /// Điền mã OTP vào ô nhập (hỗ trợ cả 6 ô ký tự riêng biệt và 1 ô tổng hợp) và bấm nút xác nhận
 async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
     let clean_otp = otp.trim();
+    
+    // Focus ô nhập OTP bằng click chuột thực tế
+    let focus_script = r#"(() => {
+        const singleInp = document.querySelector('input[placeholder*="code"]') ||
+                          document.querySelector('input[placeholder*="Code"]') ||
+                          document.querySelector('input[maxlength="6"]') ||
+                          document.querySelector('input[type="tel"]') ||
+                          document.querySelector('input[type="text"]');
+        if (singleInp) {
+            singleInp.focus();
+            const r = singleInp.getBoundingClientRect();
+            return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+        }
+        return JSON.stringify({ x: 0.0, y: 0.0 });
+    })()"#;
+
+    if let Ok(val) = cdp.evaluate(focus_script).await {
+        if let Some(s) = val.as_str() {
+            if let Ok(j) = serde_json::from_str::<serde_json::Value>(s) {
+                let x = j.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let y = j.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                if x > 0.0 && y > 0.0 {
+                    let _ = cdp.dispatch_mouse_click(x, y).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+
+    // Gõ phím tự nhiên qua CDP
+    let _ = cdp.type_text(clean_otp).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
     let fill_expr = format!(r#"
         (() => {{
             const otp = '{}';
@@ -1899,7 +1916,7 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
                               document.querySelector('input[placeholder*="Code"]') ||
                               document.querySelector('input[maxlength="6"]') ||
                               document.querySelector('input[type="tel"]');
-            if (singleInp) {{
+            if (singleInp && (!singleInp.value || singleInp.value.length < 4)) {{
                 singleInp.focus();
                 singleInp.click();
                 singleInp.value = otp;
@@ -1907,7 +1924,7 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
                 singleInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 return true;
             }}
-            return false;
+            return true;
         }})()
     "#, clean_otp);
 
@@ -2383,16 +2400,7 @@ pub async fn find_healthy_backup_proxy(failed_proxy: &str) -> Option<String> {
         candidate_strings.push(c.to_proxy_string());
     }
 
-    let default_fallbacks = [
-        "socks5://iifcuwil:o6jm2azbq5gs@23.27.210.99:6469",
-        "socks5://iifcuwil:o6jm2azbq5gs@50.114.98.173:5657",
-        "socks5://iifcuwil:o6jm2azbq5gs@104.164.131.28:7207",
-    ];
-    for df in &default_fallbacks {
-        if !candidate_strings.contains(&df.to_string()) {
-            candidate_strings.push(df.to_string());
-        }
-    }
+
 
     for p in candidate_strings {
         if p != failed_proxy {

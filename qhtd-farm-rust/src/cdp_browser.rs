@@ -465,24 +465,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
                 Object.defineProperty(uadProto, 'platform', {{ get: () => '{platform_title}', configurable: true, enumerable: true }});
             }}
         }} catch(e) {{}}
-
-        // 2. WebGL Hardware Spoofing ({renderer}) sạch - Không gắn cờ __hooked__ và giữ native toString
-        try {{
-            const hookGetParam = (proto) => {{
-                if (!proto) return;
-                const orig = proto.getParameter;
-                proto.getParameter = function(param) {{
-                    if (param === 37445 || param === 7936) return '{vendor}';
-                    if (param === 37446 || param === 7937) return '{renderer}';
-                    return orig.apply(this, arguments);
-                }};
-                try {{
-                    proto.getParameter.toString = () => 'function getParameter() {{ [native code] }}';
-                }} catch(e) {{}}
-            }};
-            if (w.WebGLRenderingContext) hookGetParam(w.WebGLRenderingContext.prototype);
-            if (w.WebGL2RenderingContext) hookGetParam(w.WebGL2RenderingContext.prototype);
-        }} catch(e) {{}}
     }}
 
     // Áp dụng bảo vệ cho window chính
@@ -516,7 +498,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         cpu = cpu,
         ram = ram,
         renderer = renderer,
-        vendor = vendor,
         resolution = resolution,
         platform = platform,
         platform_title = platform_title,
@@ -1415,38 +1396,40 @@ pub async fn launch_cdp_profile_with_bounds(
                                     "method": "Page.enable"
                                 }).to_string()));
 
-                                // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP Proxy
-                                cmd_id += 1;
-                                let _ = tx.send(Message::Text(json!({
-                                    "id": cmd_id,
-                                    "sessionId": session_id,
-                                    "method": "Emulation.setTimezoneOverride",
-                                    "params": {
-                                        "timezoneId": geo_info.timezone
-                                    }
-                                }).to_string()));
+                                // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP Proxy (Chỉ kích hoạt khi dùng Proxy)
+                                if use_proxy {
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setTimezoneOverride",
+                                        "params": {
+                                            "timezoneId": geo_info.timezone
+                                        }
+                                    }).to_string()));
 
-                                cmd_id += 1;
-                                let _ = tx.send(Message::Text(json!({
-                                    "id": cmd_id,
-                                    "sessionId": session_id,
-                                    "method": "Emulation.setGeolocationOverride",
-                                    "params": {
-                                        "latitude": geo_info.latitude,
-                                        "longitude": geo_info.longitude,
-                                        "accuracy": 100
-                                    }
-                                }).to_string()));
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setGeolocationOverride",
+                                        "params": {
+                                            "latitude": geo_info.latitude,
+                                            "longitude": geo_info.longitude,
+                                            "accuracy": 100
+                                        }
+                                    }).to_string()));
 
-                                cmd_id += 1;
-                                let _ = tx.send(Message::Text(json!({
-                                    "id": cmd_id,
-                                    "sessionId": session_id,
-                                    "method": "Emulation.setLocaleOverride",
-                                    "params": {
-                                        "locale": geo_info.locale
-                                    }
-                                }).to_string()));
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setLocaleOverride",
+                                        "params": {
+                                            "locale": geo_info.locale
+                                        }
+                                    }).to_string()));
+                                }
 
                                 // 2. Override UA nếu có tùy biến
                                 if let Some((ref ua_cmd, ref net_cmd)) = custom_ua_cmds {
