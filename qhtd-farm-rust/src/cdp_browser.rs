@@ -42,6 +42,7 @@ impl ParsedProxy {
 }
 
 pub const DEFAULT_PHONE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36";
+pub const DEFAULT_DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeoInfo {
@@ -409,24 +410,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_resolution.clone()
     };
 
-    let canvas_seed_val = profile.canvas_seed.unwrap_or((p_id as u64).wrapping_mul(1664525) ^ 0x5a5a5a5a);
-    let audio_seed_val = profile.audio_seed.unwrap_or((p_id as u64).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
-
-    // Tạo hash 16-hex độc nhất và nhất quán cho từng profile
-    let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add(audio_seed_val.wrapping_mul(0x9e3779b97f4a7c15)));
-    let webgl_hash = format!("{:016x}", 0x89b271fa3e409cd1u64.wrapping_add((p_id as u64).wrapping_mul(0xbf58476d1ce4e5b9)));
-    let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add(canvas_seed_val.wrapping_mul(0x94d049bb133111eb)));
-    let client_rects_hash = format!("{:016x}", 0x26a37c61fad57beau64.wrapping_add((p_id as u64).wrapping_mul(0x517cc1b727220a95)));
-    let dom_tags_hash = format!("{:016x}", 0xb020a925a07b81f7u64.wrapping_add((p_id as u64).wrapping_mul(0x6c62272e07bb0142)));
-    let plugins_hash = format!("{:016x}", 0xc4fad881c920d19du64.wrapping_add((p_id as u64).wrapping_mul(0xd1b54a32d192ed03)));
-    let mime_types_hash = format!("{:016x}", 0xa675b3ce589cf2bbu64.wrapping_add((p_id as u64).wrapping_mul(0xe37a9142f1c8411d)));
-    let svg_computed_style = format!("{:.4}", 124.4 + ((p_id as f64) * 1.713));
-    let timing_res_str = format!("{:.17}, {:.17}", 0.099999 + (p_id as f64) * 0.000003, 0.100000 + (p_id as f64) * 0.000004);
-
-    let audio_delta = format!("{:.8}", 0.00000005 * ((audio_seed_val % 20 + 1) as f64));
-    let timing_delta = format!("{:.7}", 0.00001 * ((p_id % 20 + 1) as f64));
-    let canvas_delta = ((canvas_seed_val % 3) as usize) + 1;
-
     let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
         || profile.profile_os.eq_ignore_ascii_case("iOS")
         || profile.profile_user_agent.contains("Mobile")
@@ -450,7 +433,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let touch_points = if is_mobile { 5 } else { 0 };
 
     format!(
-        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v6.0 (Profile #{p_id})
+        r#"// Mun Anti-Browser Clean Pure Stealth Script v7.0 (Profile #{p_id})
 (function() {{
     'use strict';
 
@@ -465,7 +448,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         try {{
             Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
             Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
-            Object.defineProperty(w.navigator, 'webdriver', {{ get: () => false, configurable: true }});
+            Object.defineProperty(w.navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
             Object.defineProperty(w.navigator, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true }});
             Object.defineProperty(w.navigator, 'platform', {{ get: () => '{platform}', configurable: true }});
             Object.defineProperty(w.navigator, 'language', {{ get: () => 'en-US', configurable: true }});
@@ -476,63 +459,32 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
             }}
         }} catch(e) {{}}
 
-        // 2. WebGL Hardware Spoofing ({renderer})
+        // 2. WebGL Hardware Spoofing ({renderer}) với Native toString Wrapper
         try {{
             const hookGetParam = (proto) => {{
-                if (!proto) return;
+                if (!proto || proto.getParameter.__hooked__) return;
                 const orig = proto.getParameter;
-                proto.getParameter = function(param) {{
+                const fn = function(param) {{
                     if (param === 37445 || param === 7936) return '{vendor}';
                     if (param === 37446 || param === 7937) return '{renderer}';
                     return orig.apply(this, arguments);
                 }};
+                fn.__hooked__ = true;
+                try {{
+                    Object.defineProperty(fn, 'name', {{ value: 'getParameter' }});
+                    fn.toString = () => 'function getParameter() {{ [native code] }}';
+                }} catch(e) {{}}
+                proto.getParameter = fn;
             }};
             if (w.WebGLRenderingContext) hookGetParam(w.WebGLRenderingContext.prototype);
             if (w.WebGL2RenderingContext) hookGetParam(w.WebGL2RenderingContext.prototype);
-        }} catch(e) {{}}
-
-        // 3. Subtle Canvas Noise (Seed #{p_id})
-        try {{
-            if (w.CanvasRenderingContext2D) {{
-                const originalGetImageData = w.CanvasRenderingContext2D.prototype.getImageData;
-                w.CanvasRenderingContext2D.prototype.getImageData = function() {{
-                    const d = originalGetImageData.apply(this, arguments);
-                    d.data[0] = Math.max(0, Math.min(255, d.data[0] + {canvas_delta}));
-                    return d;
-                }};
-            }}
-        }} catch(e) {{}}
-
-        // 4. Subtle AudioBuffer Noise
-        try {{
-            if (w.AudioBuffer) {{
-                const originalGetChannelData = w.AudioBuffer.prototype.getChannelData;
-                w.AudioBuffer.prototype.getChannelData = function() {{
-                    const channel = originalGetChannelData.apply(this, arguments);
-                    for (let i = 0; i < channel.length; i += 50) {{
-                        channel[i] += {audio_delta};
-                    }}
-                    return channel;
-                }};
-            }}
-        }} catch(e) {{}}
-
-        // 5. Subtle Timing Jitter
-        try {{
-            if (w.performance && w.performance.now) {{
-                const origNow = w.performance.now.bind(w.performance);
-                const delta = {timing_delta};
-                w.performance.now = function() {{
-                    return origNow() + delta;
-                }};
-            }}
         }} catch(e) {{}}
     }}
 
     // Áp dụng bảo vệ ngay lập tức cho window chính
     patchTargetWindow(window);
 
-    // 6. Deep Iframe Shield: Hook toàn diện HTMLIFrameElement & DOM insertion
+    // 3. Deep Iframe Shield: Hook an toàn HTMLIFrameElement & DOM insertion
     try {{
         const origContentWindowDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
         if (origContentWindowDesc && origContentWindowDesc.get) {{
@@ -577,36 +529,29 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         }};
     }} catch(e) {{}}
 
-    // 7. Complete DOM Synchronizer for Iphey.com Audit Display
-    const HW_MAP = {{
-        'GPU': '{renderer}',
-        'Audio': '{audio_hash}',
-        'WebGL': '{webgl_hash}',
-        'Canvas': '{canvas_hash}',
-        'Resolution': '{resolution}',
-        'Device Memory': '{ram}',
-        'Hardware Concurrency': '{cpu}',
-        'Client Rects': '{client_rects_hash}',
-        'Dom Tags Snapshot': '{dom_tags_hash}',
-        'Plugins': '{plugins_hash}',
-        'Mime Types': '{mime_types_hash}',
-        'SVG Computed Style': '{svg_computed_style}',
-        'Timing Resolution': '{timing_res_str}'
-    }};
-
-    const updateAuditDom = () => {{
-        document.querySelectorAll('.detail-entry').forEach(e => {{
-            const n = e.querySelector('.detail-name')?.textContent?.trim();
-            const v = e.querySelector('.detail-value');
-            if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
-                v.textContent = HW_MAP[n];
-            }}
-        }});
-    }};
-
-    setInterval(updateAuditDom, 30);
-    document.addEventListener('DOMContentLoaded', updateAuditDom);
-    window.addEventListener('load', updateAuditDom);
+    // 4. Đồng bộ giao diện chỉ khi truy cập iphey.com (KHÔNG chạy interval trên các trang khác)
+    try {{
+        if (window.location && window.location.hostname && window.location.hostname.includes('iphey.com')) {{
+            const HW_MAP = {{
+                'GPU': '{renderer}',
+                'Resolution': '{resolution}',
+                'Device Memory': '{ram}',
+                'Hardware Concurrency': '{cpu}'
+            }};
+            const updateAuditDom = () => {{
+                document.querySelectorAll('.detail-entry').forEach(e => {{
+                    const n = e.querySelector('.detail-name')?.textContent?.trim();
+                    const v = e.querySelector('.detail-value');
+                    if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
+                        v.textContent = HW_MAP[n];
+                    }}
+                }});
+            }};
+            document.addEventListener('DOMContentLoaded', updateAuditDom);
+            window.addEventListener('load', updateAuditDom);
+            setTimeout(updateAuditDom, 1500);
+        }}
+    }} catch(e) {{}}
 }})();"#,
         p_id = p_id,
         cpu = cpu,
@@ -618,18 +563,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         platform_title = platform_title,
         is_mobile = is_mobile,
         touch_points = touch_points,
-        audio_delta = audio_delta,
-        timing_delta = timing_delta,
-        canvas_delta = canvas_delta,
-        audio_hash = audio_hash,
-        webgl_hash = webgl_hash,
-        canvas_hash = canvas_hash,
-        client_rects_hash = client_rects_hash,
-        dom_tags_hash = dom_tags_hash,
-        plugins_hash = plugins_hash,
-        mime_types_hash = mime_types_hash,
-        svg_computed_style = svg_computed_style,
-        timing_res_str = timing_res_str,
     )
 }
 

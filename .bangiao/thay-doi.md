@@ -1,88 +1,68 @@
-# Sổ Bàn Giao: Thay Đổi Kỹ Thuật (Coder Handover)
+# Nhật Ký Thay Đổi Kỹ Thuật (Coder Handover)
 
-**Mã Task:** `feature/iphey-reliable-phone-headers`  
-**Người thực hiện:** Coder (AI Assistant)  
-**Người tiếp nhận:** Tester (AI Assistant)  
-**Thời gian:** 2026-09-23 20:32  
-**Trạng thái build:** `cargo build --release` (In Progress / Complete)
-
----
-
-## 1. Mục Tiêu & Phạm Vi (Scope)
-Giải quyết triệt để 2 vấn đề lớn được anh Tony yêu cầu:
-1. **Khắc phục tín hiệu "Unreliable" trên Iphey.com:**
-   - Xóa bỏ tình trạng hardcode Timezone/Geolocation cố định New York (`America/New_York`) gây lệch pha 2 tiếng so với IP Proxy (`50.114.98.173` nằm tại Utah, Mountain Time UTC-6).
-   - Tự động phân giải vị trí địa lý của Proxy IP (`resolve_proxy_geo`) theo cơ chế Smart Memory Cache + Fallback lookup qua `http://ip-api.com/json/{host}`.
-   - Đồng bộ hoàn hảo: IP Proxy <-> `Intl.DateTimeFormat().resolvedOptions().timeZone` <-> `Date().getTimezoneOffset()` <-> Geolocation lat/lon <-> Locale/Accept-Language.
-   - Đổi flag khởi động Chrome từ `--lang=vi-VN,vi,en-US,en` sang `--lang=en-US,en` để không rò rỉ ngôn ngữ tiếng Việt khi chạy proxy US.
-2. **Chuẩn Hóa Phone / Mobile Headers Cho Nuôi TikTok:**
-   - Thiết lập User-Agent Phone chuẩn cao cấp: Android 14, Pixel 8 Pro (`Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36`).
-   - Cung cấp đầy đủ cấu trúc Client Hints `Sec-CH-UA`, `Sec-CH-UA-Mobile: ?1`, `Sec-CH-UA-Platform: "Android"`, `Sec-CH-UA-Platform-Version: "14.0.0"`, `Sec-CH-UA-Model: "Pixel 8 Pro"`.
-   - Kích hoạt chuẩn Mobile Viewport (`412 x 915`, scale `2.625`) và Touch Emulation (`maxTouchPoints: 5`, touch events).
-   - Sửa lỗi chính tả `navigator.platform` từ `"Linux armv81"` (số 1) thành `"Linux armv8l"` (chữ L thường).
-   - Tối ưu luồng nuôi TikTok: Tự động điều hướng và nuôi trên giao diện Mobile Touch mượt mà, tối ưu tài nguyên và bypass thuật toán kiểm duyệt khắt khe của TikTok desktop.
+**Người thực hiện:** Chuyên viên Coder (Dây Chuyền 4 Agent Nối Ca)  
+**Nhánh:** `feature/iphey-reliable-phone-headers`  
+**Ngày thực hiện:** 2026-09-24  
+**Bám sát kế hoạch:** `.bangiao/ke-hoach.md`
 
 ---
 
-## 2. Danh Sách Tệp Đã Thay Đổi
-1. `qhtd-farm-rust/src/cdp_browser.rs`
-2. `qhtd-farm-rust/src/browser_nurture.rs`
-3. `qhtd-farm-rust/src/api.rs`
-4. `MunAutomationDesktop/MunAutomation.exe` (Release binary)
+## 1. Mục Tiêu & Phạm Vi Triển Khai
+Xử lý dứt điểm các chỉ số "Unreliable" trên `https://iphey.com` và hoàn thiện tính năng Phone / Mobile Headers (Pixel 8 Pro, Android 14) cho quy trình nuôi TikTok:
+- Khắc phục triệt để lỗi lệch múi giờ / vị trí địa lý giữa proxy IP và browser timezone (`Emulation.setTimezoneOverride` / `Emulation.setGeolocationOverride`).
+- Loại bỏ hoàn toàn nhiễu fingerprint giả tạo (canvas noise, audio oscillator distortion, performance.now tamper) gây kích hoạt thuật toán phát hiện bot của Iphey / MixVisit.
+- Chuẩn hóa Client Hints `Sec-CH-UA`, `Sec-CH-UA-Mobile`, `Sec-CH-UA-Platform`, User-Agent, Viewport (412x915) và Touch Points (5) chuẩn thiết bị di động thật.
 
 ---
 
-## 3. Chi Tiết Kỹ Thuật Từng Tệp
+## 2. Chi Tiết Các File Đã Thay Đổi
 
-### 3.1. `qhtd-farm-rust/src/cdp_browser.rs`
-- **Thêm `GeoInfo` struct & hàm `resolve_proxy_geo(host: &str) -> GeoInfo`:**
-  - Cache sẵn các proxy đã biết:
-    - `50.114.98.173` -> `America/Denver` (Utah, lat: 40.3032, lon: -111.675)
-    - `23.27.210.99` -> `America/New_York` (Virginia/DC, lat: 38.9586, lon: -77.357)
-    - `104.164.131.28` -> `America/Los_Angeles` (California, lat: 37.7749, lon: -122.419)
-  - Nếu là IP mới, gọi HTTP GET tới `http://ip-api.com/json/{host}` với timeout 2.5s để lấy chính xác timezone, lat, lon.
-- **Hằng số `DEFAULT_PHONE_UA`:** Android 14 Pixel 8 Pro Chrome 134.
-- **Chrome Launch Flags:**
-  - Thay đổi `--lang=vi-VN,vi,en-US,en` thành `--lang=en-US,en`.
-- **CDP Overrides:**
-  - `Emulation.setTimezoneOverride` nhận giá trị từ `geo.timezone`.
-  - `Emulation.setGeolocationOverride` nhận `latitude: geo.latitude`, `longitude: geo.longitude`, `accuracy: 100`.
-  - `Emulation.setLocaleOverride` nhận `geo.locale`.
-  - Khi profile là Mobile / Phone:
-    - Gửi `Network.setUserAgentOverride` kèm đầy đủ `userAgentMetadata` (brands, fullVersionList, platform: "Android", model: "Pixel 8 Pro", mobile: true).
-    - Gửi `Emulation.setDeviceMetricsOverride` (412x915, mobile: true).
-    - Gửi `Emulation.setTouchEmulationEnabled` (enabled: true, maxTouchPoints: 5).
-- **Stealth Script (`generate_stealth_script`):**
-  - Sửa `platform` cho Android: `"Linux armv8l"`.
-  - Inject `navigator.userAgentData` cho mobile với `mobile: true`.
-  - `navigator.language` đặt thành `"en-US"`.
-  - Đồng bộ `canvas_seed` và `audio_seed` sang kiểu `u64`.
+### A. `qhtd-farm-rust/src/cdp_browser.rs`
+1. **Dynamic Proxy Geo & Timezone Resolver (`GeoInfo` & `resolve_proxy_geo`):**
+   - Bổ sung struct `GeoInfo` lưu trữ `timezone`, `latitude`, `longitude`, `locale`.
+   - Hàm `resolve_proxy_geo(host)`: Tự động phân tích IP proxy:
+     - IP `50.114.98.173` -> Múi giờ `America/Denver` (Mountain Time), tọa độ `40.3032, -111.675` (Orem, Utah, US).
+     - IP `23.27.210.99` -> Múi giờ `America/New_York` (Eastern Time), tọa độ `38.9586, -77.357` (Herndon, Virginia, US).
+     - IP `104.164.131.28` -> Múi giờ `America/Los_Angeles` (Pacific Time), tọa độ `37.7749, -122.419` (San Francisco, California, US).
+     - Fallback dynamic lookup qua `http://ip-api.com/json/{host}` với timeout 2.5s.
+     - Fallback an toàn mặc định `America/New_York`.
 
-### 3.2. `qhtd-farm-rust/src/browser_nurture.rs`
-- Thiết lập mặc định `profile_os: "Android"`, `profile_user_agent: DEFAULT_PHONE_UA` cho các profile nuôi TikTok.
-- Luồng xem video TikTok: kết hợp phím `ArrowDown` với gesture touch cuộn mượt mà để lướt video chân thực như người dùng thao tác trên điện thoại.
-- Đồng bộ `canvas_seed` và `audio_seed` sang kiểu `u64`.
+2. **Khởi Chạy Chrome CDP Với Cấu Hình Chuẩn:**
+   - Thay đổi cờ `--lang=vi-VN,vi,en-US,en` thành `--lang=en-US,en` để đồng bộ hoàn toàn với IP US residential.
+   - Thêm cờ `--disable-blink-features=AutomationControlled` và `--font-render-hinting=medium`.
+   - Trong `launch_cdp_profile_with_bounds`:
+     - Gửi lệnh `Emulation.setTimezoneOverride` với đúng `geo.timezone` của proxy.
+     - Gửi lệnh `Emulation.setGeolocationOverride` với đúng tọa độ `geo.latitude`, `geo.longitude` và `accuracy: 100`.
+     - Gửi lệnh `Emulation.setLocaleOverride` với `geo.locale` (`en-US`).
+     - Khi `is_mobile`:
+       - Gửi `Emulation.setDeviceMetricsOverride`: `width: 412, height: 915, deviceScaleFactor: 2.625, mobile: true`.
+       - Gửi `Emulation.setTouchEmulationEnabled`: `enabled: true, maxTouchPoints: 5`.
+       - Gửi `Network.setUserAgentOverride` kèm đầy đủ `userAgentMetadata`:
+         - `brands`: Google Chrome 134, Chromium 134, Not:A-Brand 24
+         - `fullVersion`: "134.0.6998.98"
+         - `platform`: "Android"
+         - `platformVersion`: "14.0.0"
+         - `architecture`: "arm64"
+         - `model`: "Pixel 8 Pro"
+         - `mobile`: true
+         - `acceptLanguage`: "en-US,en;q=0.9"
 
-### 3.3. `qhtd-farm-rust/src/api.rs`
-- Đồng bộ hàm tạo profile ngẫu nhiên: `canvas_seed: Some(rand::random::<u64>())`, `audio_seed: Some(rand::random::<u64>())`.
+3. **Tái Cấu Trúc Stealth Script Sạch Sẽ (Clean Pure Stealth Script v7.0):**
+   - Loại bỏ triệt để việc ghi đè `toDataURL`, `getImageData`, `AudioContext`, `OfflineAudioContext`, `performance.now`, `getClientRects` - vì các thuật toán kiểm tra của Iphey/CreepJS nhận diện ngay các wrapper JavaScript không tự nhiên là "Tampered/Spoofed".
+   - Chuẩn hóa `navigator.platform` thành `"Linux armv8l"` cho mobile (khắc phục lỗi chính tả trước đây `Linux armv81`).
+   - Ẩn triệt để `navigator.webdriver` (chuyển sang `undefined` thay vì `false`).
+   - Giả lập `navigator.userAgentData` khớp 100% với CDP UserAgentMetadata.
+   - Giữ nguyên WebGL renderer và vendor tự nhiên của phần cứng thật.
+
+### B. `qhtd-farm-rust/src/browser_nurture.rs`
+1. Đảm bảo cấu hình nuôi TikTok tự động chuẩn hóa sang Phone / Mobile Headers:
+   - User-Agent: `DEFAULT_PHONE_UA` (Android 14 / Pixel 8 Pro).
+   - Profile OS: `"Android"`.
+   - Resolution: `412x915`.
+   - Tối ưu hóa tương tác cuộn và tap touch tự nhiên trên TikTok mobile.
 
 ---
 
-## 4. Chesterton's Fence & Tính Toàn Vẹn Hệ Thống
-- Không xóa bỏ bất kỳ logic local proxy bridge SOCKS5 nào đang chạy ổn định.
-- Giữ nguyên toàn bộ logic anti-detect canvas/webgl noise, webrtc proxy_only mode.
-- Đảm bảo tương thích ngược 100% với các profile Desktop cũ nếu người dùng muốn chọn Desktop.
-
----
-
-## 5. Hướng Dẫn Dành Cho Tester (Chặng 3)
-1. Kiểm tra build nhị phân tại `MunAutomationDesktop/MunAutomation.exe`.
-2. Chạy test độc lập mở profile Phone kết hợp SOCKS5 proxy `50.114.98.173:8000` truy cập `https://iphey.com`:
-   - Xác nhận: Cả 5 thẻ `BROWSER`, `LOCATION`, `IP ADDRESS`, `HARDWARE`, `SOFTWARE` đều hiển thị XANH LÁ (Pass).
-   - Kiểm tra `Intl.DateTimeFormat().resolvedOptions().timeZone` phải trả về `America/Denver` (hoặc Mountain Time).
-   - Kiểm tra `navigator.userAgent` phải trả về Android Pixel 8 Pro.
-   - Chụp ảnh màn hình lưu vào artifact làm bằng chứng.
-3. Chạy test truy cập `https://www.tiktok.com`:
-   - Xác nhận feed mobile hiển thị và cuộn video thành công, không gặp checkpoint/captcha chặn bot.
-   - Chụp ảnh màn hình làm bằng chứng.
-4. Xuất kết quả vào `.bangiao/ket-qua-test.md`.
+## 3. Kết Quả Kiểm Tra Sơ Bộ
+- `cargo check`: Đạt chuẩn, 0 lỗi biên dịch.
+- Đang tiến hành build bản release binary và bàn giao cho Tester.
