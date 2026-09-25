@@ -1262,7 +1262,7 @@ impl BrowserNurtureEngine {
             const isDefaultUsername = /^user\d{6,}/i.test(un) || /^user_/i.test(un) || un.length === 0;
 
             // Kiểm tra Avatar: xem ảnh hiện tại có phải ảnh mặc định (bóng người) hoặc rỗng không
-            const avatarImg = document.querySelector('[data-e2e="user-avatar"] img, [class*="avatar"] img, img[alt*="avatar"]');
+            const avatarImg = document.querySelector('[data-e2e="user-avatar"] img, [class*="Avatar"] img, [class*="avatar"] img, img[alt*="avatar"], img[src*="tiktokcdn"]');
             const avatarSrc = avatarImg ? (avatarImg.src || '') : '';
             const isDefaultAvatar = !avatarSrc || 
                                    avatarSrc.includes('default-avatar') || 
@@ -1439,10 +1439,19 @@ impl BrowserNurtureEngine {
             }
             if !run_flag.load(Ordering::Relaxed) || nurture_start.elapsed().as_secs() >= target_duration_secs { break; }
 
-            // 65% xác suất thả tim (Like) bằng phím tắt 'L'
+            // 65% xác suất thả tim (Like) bằng DOM click hoặc phím tắt 'L'
             let will_like = rand::thread_rng().gen_bool(0.65);
             if will_like {
                 likes_count += 1;
+                let like_js = r#"(() => {
+                    const likeBtn = document.querySelector('[data-e2e="like-icon"]') || 
+                                     document.querySelector('[data-e2e="feed-like-icon"]') ||
+                                     document.querySelector('button[aria-label*="Like"]') ||
+                                     document.querySelector('button[aria-label*="Thích"]');
+                    if (likeBtn) { likeBtn.click(); return true; }
+                    return false;
+                })()"#;
+                let _ = cdp.evaluate(like_js).await;
                 let _ = cdp.press_key("l", "KeyL", 76).await;
                 self.update_stats(
                     pid, 
