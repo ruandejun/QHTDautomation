@@ -47,10 +47,10 @@
     "gpu_renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16940,
-    "tiktok_username": "flashkey899s",
-    "last_nurture_status": "Thách thức: Email OTP",
-    "last_nurture_time": "2026-09-24 22:47:00",
-    "last_nurture_error": "🔑 TikTok yêu cầu mã Email OTP (gửi về UraPaolantonio82448@outlook.com)! Vui lòng nhập mã OTP trên Dashboard hoặc trên trình duyệt (Thời gian còn 22s)...",
+    "tiktok_username": "l.phng.tin650",
+    "last_nurture_status": "Đã đăng nhập thành công",
+    "last_nurture_time": null,
+    "last_nurture_error": null,
     "retry_after_epoch": null
   },
   {

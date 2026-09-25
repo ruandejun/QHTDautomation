@@ -1867,29 +1867,38 @@ impl BrowserNurtureEngine {
 async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
     let clean_otp = otp.trim();
     
-    // Focus ô nhập OTP bằng click chuột thực tế
+    // Focus ô nhập OTP bằng click chuột thực tế nếu chưa focus
     let focus_script = r#"(() => {
-        const singleInp = document.querySelector('input[placeholder*="code"]') ||
+        const act = document.activeElement;
+        if (act && act.tagName === 'INPUT') {
+            return JSON.stringify({ x: 0.0, y: 0.0, already_focused: true });
+        }
+        const singleInp = document.querySelector('input[type="tel"]') ||
+                          document.querySelector('input[placeholder*="code"]') ||
                           document.querySelector('input[placeholder*="Code"]') ||
                           document.querySelector('input[maxlength="6"]') ||
-                          document.querySelector('input[type="tel"]') ||
                           document.querySelector('input[type="text"]');
         if (singleInp) {
             singleInp.focus();
             const r = singleInp.getBoundingClientRect();
-            return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+            if (r.width > 0 && r.left >= 0) {
+                return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2, already_focused: false });
+            }
         }
-        return JSON.stringify({ x: 0.0, y: 0.0 });
+        return JSON.stringify({ x: 0.0, y: 0.0, already_focused: false });
     })()"#;
 
     if let Ok(val) = cdp.evaluate(focus_script).await {
         if let Some(s) = val.as_str() {
             if let Ok(j) = serde_json::from_str::<serde_json::Value>(s) {
-                let x = j.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let y = j.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                if x > 0.0 && y > 0.0 {
-                    let _ = cdp.dispatch_mouse_click(x, y).await;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                let already_focused = j.get("already_focused").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !already_focused {
+                    let x = j.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = j.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    if x > 0.0 && y > 0.0 {
+                        let _ = cdp.dispatch_mouse_click(x, y).await;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
                 }
             }
         }
@@ -1918,7 +1927,6 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
                               document.querySelector('input[type="tel"]');
             if (singleInp && (!singleInp.value || singleInp.value.length < 4)) {{
                 singleInp.focus();
-                singleInp.click();
                 singleInp.value = otp;
                 singleInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 singleInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
@@ -1935,10 +1943,11 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
         (() => {
             const buttons = Array.from(document.querySelectorAll('button'));
             const btn = buttons.find(b => {
-                const t = b.innerText.trim().toLowerCase();
+                const t = (b.innerText || '').trim().toLowerCase();
                 return (t.includes('log in') || t.includes('verify') || t.includes('next') || t.includes('confirm') || t.includes('xác nhận') || t.includes('tiếp tục')) && !b.disabled;
             });
             if (btn) {
+                try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch(e) {}
                 btn.click();
                 return true;
             }
