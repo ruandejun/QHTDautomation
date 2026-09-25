@@ -547,6 +547,23 @@ pub fn get_profile_backup_dir() -> PathBuf {
     fallback
 }
 
+/// Lấy thư mục lưu trữ profile thực tế (ưu tiên browser_profiles_data persistent, fallback sang temp_dir)
+pub fn get_profile_data_dir(profile_id: usize) -> PathBuf {
+    let p1 = PathBuf::from(format!(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles_data\mun_profile_{}", profile_id));
+    if p1.exists() {
+        return p1;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p2 = parent.join("browser_profiles_data").join(format!("mun_profile_{}", profile_id));
+            if p2.exists() {
+                return p2;
+            }
+        }
+    }
+    std::env::temp_dir().join(format!("mun_profile_{}", profile_id))
+}
+
 /// Helper duyệt tất cả các file trong thư mục con
 fn walk_dir_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -565,7 +582,7 @@ fn walk_dir_files(dir: &std::path::Path) -> Vec<PathBuf> {
 
 /// Sao lưu Thin Profile (chỉ nén 7 file/thư mục phiên cốt lõi: Local State, Cookies, Storage... ~200KB/profile)
 pub fn backup_thin_profile(profile_id: usize) -> Result<(PathBuf, u64), String> {
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     if !user_data_dir.exists() {
         return Err(format!("Thư mục profile không tồn tại: {}", user_data_dir.display()));
     }
@@ -656,7 +673,7 @@ pub fn restore_thin_profile(profile_id: usize) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     let _ = std::fs::create_dir_all(&user_data_dir);
 
     let file = std::fs::File::open(&zip_path)
@@ -674,7 +691,7 @@ pub fn restore_thin_profile(profile_id: usize) -> Result<bool, String> {
 /// Dừng profile Chrome đang chạy, tự động sao lưu Thin Profile và xóa trạng thái
 pub fn stop_cdp_profile(profile_id: usize) {
     info!("🛑 Dừng tiến trình Chrome của Profile #{}", profile_id);
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     cleanup_profile_process_and_locks(profile_id, &user_data_dir);
 
     // Tự động sao lưu phiên đăng nhập (Thin Profile Backup) khi trình duyệt tắt
@@ -1010,7 +1027,7 @@ pub async fn launch_cdp_profile_with_bounds(
     let port = get_free_port(9222 + (profile.id as u16 % 500));
     
     // Thư mục dữ liệu riêng biệt cho từng profile
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile.id));
+    let user_data_dir = get_profile_data_dir(profile.id);
     let _ = std::fs::create_dir_all(&user_data_dir);
 
     // Xóa triệt để zombie chrome và lockfile của profile này

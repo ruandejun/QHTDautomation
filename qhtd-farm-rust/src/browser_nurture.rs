@@ -1405,6 +1405,20 @@ impl BrowserNurtureEngine {
             }
 
             watched_count += 1;
+            // Tự động đóng modal pop-up "Get the full app experience" hoặc "Not now"
+            let dismiss_modal_js = r#"(() => {
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"], a'));
+                const notNow = btns.find(b => {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    return t === 'not now' || t === 'không phải bây giờ' || t === 'để sau';
+                });
+                if (notNow) { notNow.click(); return true; }
+                const closeBtn = document.querySelector('button[aria-label*="close" i], button[aria-label*="đóng" i], .modal-close');
+                if (closeBtn) { closeBtn.click(); return true; }
+                return false;
+            })()"#;
+            let _ = cdp.evaluate(dismiss_modal_js).await;
+
             // Xem mỗi video từ 6s - 10s để xem được 4-6 video trong vòng 35-55s
             let watch_seconds = rand::thread_rng().gen_range(6..=10);
 
