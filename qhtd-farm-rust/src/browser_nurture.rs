@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 pub const DEFAULT_C69_API_URL: &str = "https://cu.c69.us";
 pub const DEFAULT_C69_TOKEN: &str = "Token 99b02d3d255a49193950777b1cc3e3db099ceefb";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct C69Account {
     pub id: u64,
     pub username: String,
@@ -34,6 +34,84 @@ pub struct C69Account {
     pub note: Option<String>,
     #[serde(default)]
     pub accounts_emails: Option<u64>,
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub created: Option<String>,
+    #[serde(default)]
+    pub modified_by: Option<String>,
+    #[serde(default)]
+    pub modified: Option<String>,
+    #[serde(default)]
+    pub subscription: Option<String>,
+    #[serde(default)]
+    pub subscription_owner: Option<String>,
+    #[serde(default)]
+    pub email_info: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct C69Session {
+    pub logged_in: bool,
+    pub username: String,
+    #[serde(default)]
+    pub server_url: String,
+    #[serde(default)]
+    pub cookies: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub is_staff: bool,
+    #[serde(default)]
+    pub last_login: Option<String>,
+}
+
+pub fn get_c69_session_file_path() -> std::path::PathBuf {
+    let candidates = [
+        std::path::PathBuf::from(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\c69_session.json"),
+        std::path::PathBuf::from("MunAutomationDesktop").join("c69_session.json"),
+        std::path::PathBuf::from("c69_session.json"),
+        std::path::PathBuf::from("..").join("MunAutomationDesktop").join("c69_session.json"),
+    ];
+    for c in &candidates {
+        if c.exists() {
+            return c.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
+pub fn load_c69_session() -> Option<C69Session> {
+    let path = get_c69_session_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(sess) = serde_json::from_str::<C69Session>(&data) {
+            if sess.logged_in {
+                return Some(sess);
+            }
+        }
+    }
+    None
+}
+
+pub fn save_c69_session(sess: &C69Session) -> Result<(), String> {
+    let path = get_c69_session_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let data = serde_json::to_string_pretty(sess).map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+pub fn clear_c69_session() -> Result<(), String> {
+    let path = get_c69_session_file_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,6 +322,20 @@ impl CdpClient {
     }
 
 
+    pub async fn capture_screenshot(&self) -> Result<Vec<u8>, String> {
+        let resp = self.call("Page.captureScreenshot", json!({ "format": "png" })).await?;
+        let b64 = resp
+            .get("result")
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| "Không lấy được dữ liệu base64 từ Page.captureScreenshot".to_string())?;
+
+        use base64::prelude::*;
+        BASE64_STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("Lỗi giải mã base64 ảnh screenshot: {}", e))
+    }
+
     pub async fn get_all_cookies(&self) -> Result<serde_json::Value, String> {
         let resp = self.call("Network.getCookies", json!({ "urls": ["https://www.tiktok.com", "https://tiktok.com"] })).await?;
         let cookies = resp.get("result").and_then(|r| r.get("cookies")).cloned().unwrap_or(json!([]));
@@ -431,6 +523,31 @@ impl BrowserNurtureEngine {
         let keys: Vec<usize> = self.tasks.read().keys().cloned().collect();
         for id in keys {
             self.stop_nurture(id);
+        }
+    }
+
+    pub async fn save_screenshot_proof(&self, cdp: &CdpClient, filename: &str) -> Result<(), String> {
+        match cdp.capture_screenshot().await {
+            Ok(data) => {
+                let paths = [
+                    format!("scratch/{}", filename),
+                    format!("../scratch/{}", filename),
+                    format!("d:/Workspace/Python/QHTDautomation/scratch/{}", filename),
+                ];
+                for p_str in &paths {
+                    let p = std::path::Path::new(p_str);
+                    if let Some(parent) = p.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(p, &data);
+                }
+                info!("📸 [Rust Core] Đã lưu ảnh bằng chứng: scratch/{}", filename);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("⚠️ [Rust Core] Không thể chụp ảnh {}: {}", filename, e);
+                Err(e)
+            }
         }
     }
 
@@ -1383,6 +1500,16 @@ impl BrowserNurtureEngine {
             self.update_log(pid, format!("✅ Tài khoản đã có Avatar và Username '@{}' chuẩn chỉnh!", current_un), "Profile chuẩn");
         }
 
+        // Chụp ảnh bằng chứng Profile TikTok (hiển thị Username và Avatar trên trang cá nhân)
+        let safe_un = if current_un.is_empty() {
+            c69_acc.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| format!("user_{}", pid))
+        } else {
+            current_un.clone()
+        };
+        let proof_profile = format!("rust_proof_acc_{}_{}_profile.png", pid, safe_un);
+        let _ = self.save_screenshot_proof(&cdp, &proof_profile).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
         // 5. ĐIỀU HƯỚNG TỚI FEED FYP VÀ TIẾN HÀNH NUÔI 30s - 1 PHÚT (THEO CHỈ ĐẠO CỦA ANH TONY)
         self.update_log(pid, "Mở trang video FYP để bắt đầu nuôi tương tác (thời lượng 30s - 1 phút)...".to_string(), "Vào FYP Feed");
         let _ = cdp.navigate("https://www.tiktok.com/foryou?lang=en").await;
@@ -1399,10 +1526,6 @@ impl BrowserNurtureEngine {
 
         while run_flag.load(Ordering::Relaxed) {
             let elapsed = nurture_start.elapsed().as_secs();
-            if elapsed >= target_duration_secs {
-                self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s)! Tiến hành hoàn tất và tắt trình duyệt...", elapsed, target_duration_secs), "Hoàn tất nuôi");
-                break;
-            }
 
             watched_count += 1;
             // Tự động đóng modal pop-up "Get the full app experience" hoặc "Not now"
@@ -1419,7 +1542,7 @@ impl BrowserNurtureEngine {
             })()"#;
             let _ = cdp.evaluate(dismiss_modal_js).await;
 
-            // Xem mỗi video từ 6s - 10s để xem được 4-6 video trong vòng 35-55s
+            // Xem mỗi video từ 6s - 10s
             let watch_seconds = rand::thread_rng().gen_range(6..=10);
 
             self.update_stats(
@@ -1437,10 +1560,10 @@ impl BrowserNurtureEngine {
                 if nurture_start.elapsed().as_secs() >= target_duration_secs { break; }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            if !run_flag.load(Ordering::Relaxed) || nurture_start.elapsed().as_secs() >= target_duration_secs { break; }
+            if !run_flag.load(Ordering::Relaxed) { break; }
 
-            // 65% xác suất thả tim (Like) bằng DOM click hoặc phím tắt 'L'
-            let will_like = rand::thread_rng().gen_bool(0.65);
+            // 1. Thả tim (Like): Bắt buộc thực hiện ở video #1 hoặc khi chưa thả tim lần nào
+            let will_like = (likes_count == 0) || (watched_count == 1) || rand::thread_rng().gen_bool(0.65);
             if will_like {
                 likes_count += 1;
                 let like_js = r#"(() => {
@@ -1457,16 +1580,16 @@ impl BrowserNurtureEngine {
                     pid, 
                     watched_count, 
                     likes_count, 
-                    comments_count,
-                    shares_count,
+                    comments_count, 
+                    shares_count, 
                     format!("❤️ Đã thả tim video #{}!", watched_count), 
                     "Đang lướt FYP"
                 );
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
-            // 30% xác suất chia sẻ video (Share / Copy Link)
-            let will_share = (watched_count % 3 == 0) || rand::thread_rng().gen_bool(0.30);
+            // 2. Chia sẻ video (Share / Copy Link): Bắt buộc thực hiện khi chưa share lần nào
+            let will_share = (shares_count == 0 && watched_count >= 2) || (watched_count % 3 == 0) || rand::thread_rng().gen_bool(0.40);
             if will_share {
                 let share_js = r#"(() => {
                     const shareBtn = document.querySelector('[data-e2e="share-icon"]') || 
@@ -1504,8 +1627,8 @@ impl BrowserNurtureEngine {
                 }
             }
 
-            // 20% xác suất bình luận (Comment)
-            let will_comment = (watched_count == 2) || rand::thread_rng().gen_bool(0.20);
+            // 3. Bình luận (Comment): Bắt buộc thực hiện ở video #2 hoặc khi chưa có bình luận
+            let will_comment = (comments_count == 0 && watched_count >= 2) || rand::thread_rng().gen_bool(0.30);
             if will_comment && comments_count == 0 {
                 let open_comment_js = r#"(() => {
                     const commentBtn = document.querySelector('[data-e2e="comment-icon"]') || 
@@ -1554,6 +1677,19 @@ impl BrowserNurtureEngine {
                 }
             }
 
+            // Chụp ảnh bằng chứng tương tác FYP (có video + thả tim/bình luận/chia sẻ)
+            if (likes_count > 0 || comments_count > 0) && watched_count >= 2 {
+                let proof_interaction = format!("rust_proof_acc_{}_{}_interaction.png", pid, safe_un);
+                let _ = self.save_screenshot_proof(&cdp, &proof_interaction).await;
+            }
+
+            // Kiểm tra điều kiện hoàn tất nuôi theo chuẩn của anh Tony:
+            // Đã xem tối thiểu 3 video VÀ đã có ít nhất: 1 Like, 1 Comment, 1 Share VÀ đạt thời lượng
+            if elapsed >= target_duration_secs && watched_count >= 3 && likes_count >= 1 && (comments_count >= 1 || shares_count >= 1) {
+                self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s) và hoàn tất Like, Comment, Share! Đang kết thúc...", elapsed, target_duration_secs), "Hoàn tất nuôi");
+                break;
+            }
+
             // Chuyển sang video kế tiếp: kết hợp cuộn smooth mobile và phím mũi tên xuống (ArrowDown)
             self.update_log(pid, "👆 Vuốt lướt sang video tiếp theo...".to_string(), "Chuyển video");
             let _ = cdp.evaluate("window.scrollBy({ top: window.innerHeight || 800, behavior: 'smooth' });").await;
@@ -1574,6 +1710,24 @@ impl BrowserNurtureEngine {
             crate::api::update_profile_nurture_status(pid, "Đã nuôi thành công", Some(&summary), None);
         }
         let _ = crate::cdp_browser::backup_thin_profile(pid);
+
+        // 7. ĐỒNG BỘ KẾT QUẢ NUÔI LÊN C69 SERVER
+        let target_acc_id = c69_acc.as_ref().map(|a| a.id).or(profile.tiktok_account_id);
+        if let Some(aid) = target_acc_id {
+            if aid > 0 {
+                let un_clone = safe_un.clone();
+                let _ = sync_nurture_done_to_c69(
+                    aid,
+                    &un_clone,
+                    watched_count,
+                    likes_count,
+                    comments_count,
+                    shares_count,
+                    final_elapsed,
+                ).await;
+            }
+        }
+
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
             st.status = "Đã nuôi thành công".to_string();
@@ -2005,6 +2159,61 @@ pub async fn sync_cookies_to_c69(acc_id: u64, cookies_json: String, username: St
     }
 }
 
+/// Đồng bộ kết quả hoàn tất nuôi tài khoản lên C69 Server (Log Nurture + Patch Status)
+pub async fn sync_nurture_done_to_c69(
+    acc_id: u64,
+    username: &str,
+    watched: u32,
+    likes: u32,
+    comments: u32,
+    shares: u32,
+    duration_secs: u64,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+
+    // 1. Ghi log thống kê phiên nuôi vào endpoint /dashboard/api/accounts/<id>/log-nurture/
+    let log_url = format!("{}/dashboard/api/accounts/{}/log-nurture/", DEFAULT_C69_API_URL, acc_id);
+    let log_payload = json!({
+        "videos_watched": watched,
+        "likes": likes,
+        "comments": comments,
+        "follows": 0,
+        "session_duration_secs": duration_secs,
+        "success": true,
+        "error": ""
+    });
+    let _ = client.post(&log_url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
+        .json(&log_payload)
+        .send()
+        .await;
+
+    // 2. Cập nhật trạng thái active & note chi tiết
+    let acc_url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, acc_id);
+    let summary = format!("Đã nuôi thành công ({} video, {} like, {} comment, {} share - {}s)", watched, likes, comments, shares, duration_secs);
+    let patch_payload = json!({
+        "status": "active",
+        "note": summary,
+        "username": username
+    });
+    let resp = client.patch(&acc_url)
+        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
+        .json(&patch_payload)
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+
+    if resp.status().is_success() {
+        info!("🎉 [C69 Sync] Đã đồng bộ thành công kết quả nuôi tài khoản #{} lên C69!", acc_id);
+        Ok(())
+    } else {
+        warn!("⚠️ [C69 Sync] Server C69 trả về HTTP {}: {}", resp.status(), acc_id);
+        Ok(())
+    }
+}
+
 /// Lấy chi tiết tài khoản TikTok từ C69 Backend API theo Account ID
 pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, String> {
     let client = reqwest::Client::new();
@@ -2044,20 +2253,37 @@ pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, Stri
         status: st,
         note: nt,
         accounts_emails: acc_emails,
+        ..Default::default()
     })
 }
 
 /// Lấy danh sách tài khoản TikTok từ C69 Backend API
 pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/dashboard/api/accounts/?type=tiktok&page_size=200", DEFAULT_C69_API_URL);
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
 
-    let resp = client
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/?type=tiktok&page_size=200", server_url);
+
+    let mut req = client
         .get(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
-        .timeout(Duration::from_secs(12))
-        .send()
+        .timeout(Duration::from_secs(12));
+
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send()
         .await
         .map_err(|e| format!("Lỗi kết nối server C69: {}", e))?;
 
@@ -2080,6 +2306,14 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
             let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
             let acc_emails = item.get("accounts_emails").and_then(|v| v.as_u64())
                 .or_else(|| item.get("email_info").and_then(|v| v.get("id")).and_then(|v| v.as_u64()));
+            let item_type = item.get("type").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let created_by = item.get("created_by").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let created = item.get("created").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let modified_by = item.get("modified_by").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let modified = item.get("modified").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let subscription = item.get("subscription").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let subscription_owner = item.get("subscription_owner").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let email_info = item.get("email_info").cloned();
 
             accounts.push(C69Account {
                 id,
@@ -2091,11 +2325,256 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
                 status: st,
                 note: nt,
                 accounts_emails: acc_emails,
+                r#type: item_type,
+                created_by,
+                created,
+                modified_by,
+                modified,
+                subscription,
+                subscription_owner,
+                email_info,
             });
         }
     }
 
     Ok(accounts)
+}
+
+/// Đăng nhập tài khoản C69 lưu session vào c69_session.json
+pub async fn login_c69(username: &str, password: &str, server_url_opt: Option<&str>) -> Result<C69Session, String> {
+    let raw_url = server_url_opt.unwrap_or(DEFAULT_C69_API_URL).trim();
+    let server_url = if raw_url.is_empty() { DEFAULT_C69_API_URL } else { raw_url }.trim_end_matches('/');
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| format!("Lỗi tạo HTTP client: {}", e))?;
+
+    let login_url = format!("{}/dashboard/login/", server_url);
+    let payload = serde_json::json!({
+        "username": username,
+        "password": password
+    });
+
+    let resp = client.post(&login_url)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối máy chủ C69: {}", e))?;
+
+    let status = resp.status();
+    let mut cookies = Vec::new();
+    for val in resp.headers().get_all(reqwest::header::SET_COOKIE) {
+        if let Ok(s) = val.to_str() {
+            if let Some(first_part) = s.split(';').next() {
+                cookies.push(first_part.to_string());
+            }
+        }
+    }
+    let cookie_str = if !cookies.is_empty() { Some(cookies.join("; ")) } else { None };
+
+    let body_text = resp.text().await.unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&body_text)
+        .unwrap_or_else(|_| serde_json::json!({ "success": status.is_success() }));
+
+    let success = parsed.get("success").and_then(|v| v.as_bool()).unwrap_or(status.is_success());
+    if !success {
+        let msg = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("Sai tài khoản hoặc mật khẩu C69.");
+        return Err(msg.to_string());
+    }
+
+    // Lấy thông tin user qua /dashboard/api/me/ (nếu có cookie)
+    let mut email_opt = None;
+    let mut is_staff = false;
+    if let Some(ref c) = cookie_str {
+        let me_url = format!("{}/dashboard/api/me/", server_url);
+        if let Ok(me_resp) = client.get(&me_url).header("Cookie", c).send().await {
+            if let Ok(me_json) = me_resp.json::<serde_json::Value>().await {
+                email_opt = me_json.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+                is_staff = me_json.get("is_staff").and_then(|v| v.as_bool()).unwrap_or(false);
+            }
+        }
+    }
+
+    let session = C69Session {
+        logged_in: true,
+        username: username.to_string(),
+        server_url: server_url.to_string(),
+        cookies: cookie_str,
+        token: Some(DEFAULT_C69_TOKEN.to_string()),
+        email: email_opt,
+        is_staff,
+        last_login: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+    };
+
+    let _ = save_c69_session(&session);
+    Ok(session)
+}
+
+/// Lấy danh sách tài khoản từ C69 theo bộ lọc chuẩn Portal (phân loại, trạng thái, người tạo, sub, sở hữu sub, phân trang, lọc theo user đã login)
+pub async fn fetch_c69_accounts_full(
+    type_filter: Option<String>,
+    status_filter: Option<String>,
+    search_filter: Option<String>,
+    created_by_filter: Option<String>,
+    has_subscription_filter: Option<String>,
+    subscription_owner_filter: Option<String>,
+    account_tab_filter: Option<String>,
+    username_filter: Option<String>,
+    sort_filter: Option<String>,
+    _user_only_filter: Option<bool>,
+    page_filter: Option<u32>,
+    page_size_filter: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let active_username = sess.as_ref().map(|s| s.username.clone()).unwrap_or_default();
+
+    let client = reqwest::Client::new();
+    let mut query_params = Vec::new();
+
+    let _is_main_tab = account_tab_filter.as_deref().map(|t| t.eq_ignore_ascii_case("main")).unwrap_or(false);
+
+    if let Some(ref tab) = account_tab_filter {
+        if !tab.is_empty() && !tab.eq_ignore_ascii_case("all") {
+            query_params.push(format!("account_tab={}", urlencoding::encode(tab)));
+        }
+    }
+    if let Some(ref uf) = username_filter {
+        if !uf.is_empty() {
+            query_params.push(format!("username_filter={}", urlencoding::encode(uf)));
+        }
+    }
+    if let Some(ref sf) = sort_filter {
+        if !sf.is_empty() {
+            query_params.push(format!("sort={}", urlencoding::encode(sf)));
+        }
+    }
+
+    if let Some(t) = type_filter {
+        if !t.is_empty() && !t.eq_ignore_ascii_case("all") {
+            query_params.push(format!("type={}", urlencoding::encode(&t)));
+        }
+    }
+    if let Some(s) = status_filter {
+        if !s.is_empty() && !s.eq_ignore_ascii_case("all") {
+            query_params.push(format!("status={}", urlencoding::encode(&s)));
+        }
+    }
+    if let Some(q) = search_filter {
+        if !q.is_empty() {
+            query_params.push(format!("search={}", urlencoding::encode(&q)));
+        }
+    }
+    if let Some(has_sub) = has_subscription_filter {
+        if !has_sub.is_empty() && !has_sub.eq_ignore_ascii_case("all") {
+            query_params.push(format!("has_subscription={}", urlencoding::encode(&has_sub)));
+        }
+    }
+    if let Some(so) = subscription_owner_filter {
+        if !so.is_empty() && !so.eq_ignore_ascii_case("all") {
+            query_params.push(format!("subscription_owner={}", urlencoding::encode(&so)));
+        }
+    }
+
+    // NGUYÊN TẮC: Hiển thị chuẩn theo tài khoản đã login chứ không kéo hết tài khoản về
+    // Ngoại lệ: Khi ở Tab "main" hoặc "nurtured" (Đã Nuôi), xem toàn bộ kênh trong hệ thống không bị giới hạn created_by
+    let is_exempt_tab = account_tab_filter.as_deref().map(|t| {
+        let l = t.to_ascii_lowercase();
+        l == "main" || l == "nurtured" || l == "da_nuoi"
+    }).unwrap_or(false);
+
+    if !is_exempt_tab {
+        if let Some(cb) = created_by_filter {
+            if !cb.is_empty() && !cb.eq_ignore_ascii_case("all") {
+                query_params.push(format!("created_by={}", urlencoding::encode(&cb)));
+            }
+        } else {
+            // Mặc định: lọc theo tài khoản đang login nếu chưa chọn filter cụ thể
+            if !active_username.is_empty() && query_params.iter().all(|p| !p.starts_with("subscription_owner=")) {
+                query_params.push(format!("created_by={}", urlencoding::encode(&active_username)));
+            }
+        }
+    } else if let Some(cb) = created_by_filter {
+        if !cb.is_empty() && !cb.eq_ignore_ascii_case("all") {
+            query_params.push(format!("created_by={}", urlencoding::encode(&cb)));
+        }
+    }
+
+    let ps = page_size_filter.unwrap_or(10);
+    query_params.push(format!("page_size={}", ps));
+    if let Some(p) = page_filter {
+        query_params.push(format!("page={}", p));
+    }
+
+    let query_str = query_params.join("&");
+    let url = format!("{}/dashboard/api/accounts/?{}", server_url, query_str);
+
+    let mut req = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(12));
+
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        } else if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("C69 trả về mã lỗi: {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi đọc JSON C69: {}", e))?;
+    Ok(data)
+}
+
+/// Đặt hoặc bỏ trạng thái Main cho danh sách tài khoản C69
+pub async fn bulk_main_c69_accounts(ids: Vec<u64>, action: &str) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/bulk-main/", server_url);
+
+    let mut req = client.post(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
+        .header("Content-Type", "application/json")
+        .timeout(Duration::from_secs(15));
+
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        } else if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let payload = serde_json::json!({
+        "ids": ids,
+        "action": action
+    });
+
+    let resp = req.json(&payload).send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("C69 trả về mã lỗi: {}", err_text));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi đọc JSON C69: {}", e))?;
+    Ok(data)
 }
 
 /// Trích xuất mã OTP 6 chữ số từ chuỗi văn bản
@@ -2206,6 +2685,348 @@ pub async fn fetch_c69_email_otp(email_id: u64) -> Result<Option<String>, String
     Ok(None)
 }
 
+/// Đọc trực tiếp hòm thư email trên C69 qua API, trả về full JSON phản hồi từ server
+pub async fn read_c69_email_mailbox(email_id: u64) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/emails/{}/read-mailbox/", server_url, email_id);
+
+    let mut req = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(15));
+
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối đọc hòm thư: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69 đọc hòm thư: HTTP {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON hòm thư: {}", e))?;
+    Ok(data)
+}
+
+/// Lấy danh sách users từ C69 để hiển thị bộ lọc người tạo / sở hữu sub
+pub async fn fetch_c69_users_list() -> Result<Vec<serde_json::Value>, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/users-list/?status=active&page_size=100", server_url);
+
+    let mut req = client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69: HTTP {}", resp.status()));
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    if let Some(arr) = data.as_array() {
+        Ok(arr.clone())
+    } else if let Some(arr) = data.get("results").and_then(|v| v.as_array()) {
+        Ok(arr.clone())
+    } else {
+        Ok(vec![])
+    }
+}
+
+/// Lấy chi tiết tài khoản C69 theo ID
+pub async fn fetch_c69_account_detail(account_id: u64) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
+
+    let mut req = client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69: HTTP {}", resp.status()));
+    }
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Cập nhật chi tiết tài khoản C69
+pub async fn update_c69_account_detail(account_id: u64, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
+
+    let mut req = client.patch(&url).json(&payload).timeout(Duration::from_secs(12));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Xóa 1 tài khoản C69
+pub async fn delete_c69_account_single(account_id: u64) -> Result<(), String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
+
+    let mut req = client.delete(&url).timeout(Duration::from_secs(10));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69: HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Lấy mã 2FA từ tài khoản C69
+pub async fn fetch_c69_account_2fa(account_id: u64) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/{}/get-2fa/", server_url, account_id);
+
+    let mut req = client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Thêm mới tài khoản C69 thủ công
+pub async fn add_c69_account_manual(payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/add-manual/", server_url);
+
+    let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(12));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Thêm hàng loạt tài khoản C69
+pub async fn bulk_add_c69_accounts(accounts_data: &str, r#type: &str) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/bulk-add/", server_url);
+
+    let payload = json!({
+        "accounts_data": accounts_data,
+        "type": r#type
+    });
+
+    let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(20));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Xóa nhiều tài khoản C69 (bulk delete)
+pub async fn bulk_delete_c69_accounts(ids: Vec<u64>) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/bulk-delete/", server_url);
+
+    let payload = json!({ "ids": ids });
+    let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(15));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Đổi trạng thái nhiều tài khoản C69
+pub async fn bulk_status_c69_accounts(ids: Vec<u64>, status: i32) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/bulk-status/", server_url);
+
+    let payload = json!({ "ids": ids, "status": status });
+    let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(15));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Gán sở hữu Sub cho nhiều tài khoản C69
+pub async fn bulk_sub_owner_c69_accounts(ids: Vec<u64>, sub_owner: &str) -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/accounts/bulk-sub-owner/", server_url);
+
+    let payload = json!({ "ids": ids, "subscription_owner": sub_owner });
+    let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(15));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
+/// Lấy thẻ thanh toán đang hoạt động từ C69
+pub async fn fetch_c69_active_card() -> Result<serde_json::Value, String> {
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+    let url = format!("{}/dashboard/api/cards/get-active-card/", server_url);
+
+    let mut req = client.get(&url).timeout(Duration::from_secs(10));
+    if let Some(ref s) = sess {
+        if let Some(ref c) = s.cookies {
+            req = req.header("Cookie", c);
+        }
+        if let Some(ref t) = s.token {
+            req = req.header("Authorization", t);
+        } else {
+            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        }
+    } else {
+        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON: {}", e))?;
+    Ok(data)
+}
+
 /// Cập nhật ghi chú trên tài khoản C69 (ví dụ: ghi lại lỗi đọc email)
 pub async fn update_c69_account_note(account_id: u64, note: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
@@ -2303,6 +3124,131 @@ pub async fn sync_c69_profiles_to_local(profiles_path: PathBuf) -> Result<usize,
     Ok(count_added)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProxyStatusRecord {
+    pub alive: bool,
+    pub latency_ms: u64,
+    pub message: String,
+    pub tested_at: u64,
+}
+
+pub fn load_proxy_status_cache() -> std::collections::HashMap<String, ProxyStatusRecord> {
+    let candidate_paths = [
+        "data/proxy_status_cache.json",
+        "d:\\Workspace\\Python\\c69-router\\data\\proxy_status_cache.json",
+        "proxy_status_cache.json",
+    ];
+
+    for path_str in &candidate_paths {
+        let p = std::path::Path::new(path_str);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(p) {
+                if let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, ProxyStatusRecord>>(&content) {
+                    return map;
+                }
+            }
+        }
+    }
+    std::collections::HashMap::new()
+}
+
+pub fn save_proxy_status(proxy_str: &str, alive: bool, latency_ms: u64, message: &str) {
+    let p_clean = proxy_str.trim();
+    if p_clean.is_empty() {
+        return;
+    }
+    let mut cache = load_proxy_status_cache();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let record = ProxyStatusRecord {
+        alive,
+        latency_ms,
+        message: message.to_string(),
+        tested_at: now,
+    };
+
+    cache.insert(p_clean.to_string(), record.clone());
+    if let Some(parsed) = crate::cdp_browser::parse_proxy_string(p_clean) {
+        let hp = format!("{}:{}", parsed.host, parsed.port);
+        cache.insert(hp, record.clone());
+        let clean = format!("{}://{}:{}", parsed.scheme, parsed.host, parsed.port);
+        cache.insert(clean, record);
+    }
+
+    if let Ok(json_str) = serde_json::to_string_pretty(&cache) {
+        let candidate_paths = [
+            "data/proxy_status_cache.json",
+            "d:\\Workspace\\Python\\c69-router\\data\\proxy_status_cache.json",
+            "proxy_status_cache.json",
+        ];
+        for path_str in &candidate_paths {
+            let p = std::path::Path::new(path_str);
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            let _ = std::fs::write(p, &json_str);
+        }
+    }
+}
+
+pub fn save_proxy_status_batch(results: &[serde_json::Value]) {
+    if results.is_empty() {
+        return;
+    }
+    let mut cache = load_proxy_status_cache();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for item in results {
+        let p_str = item.get("proxy").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if p_str.is_empty() {
+            continue;
+        }
+        let alive = item.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let latency_ms = item.get("latency_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let message = item.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        let record = ProxyStatusRecord {
+            alive,
+            latency_ms,
+            message,
+            tested_at: now,
+        };
+
+        cache.insert(p_str.to_string(), record.clone());
+        if let Some(parsed) = crate::cdp_browser::parse_proxy_string(p_str) {
+            let hp = format!("{}:{}", parsed.host, parsed.port);
+            cache.insert(hp, record.clone());
+            let clean = format!("{}://{}:{}", parsed.scheme, parsed.host, parsed.port);
+            cache.insert(clean, record);
+        }
+    }
+
+    if let Ok(json_str) = serde_json::to_string_pretty(&cache) {
+        let candidate_paths = [
+            "data/proxy_status_cache.json",
+            "d:\\Workspace\\Python\\c69-router\\data\\proxy_status_cache.json",
+            "proxy_status_cache.json",
+        ];
+        for path_str in &candidate_paths {
+            let p = std::path::Path::new(path_str);
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            let _ = std::fs::write(p, &json_str);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct C69Proxy {
     pub id: String,
@@ -2329,8 +3275,64 @@ impl C69Proxy {
     }
 }
 
-/// Nạp danh sách proxy SOCKS5 từ C69 Router config.json (250 proxies pool)
+/// Nạp danh sách proxy từ C69 Router proxies_250.txt hoặc config.json (250 proxies pool)
 pub fn load_c69_proxies() -> Vec<C69Proxy> {
+    let status_cache = load_proxy_status_cache();
+
+    // 1. Nạp từ file proxies_250.txt (250 SOCKS5 Proxy pool của C69)
+    let txt_paths = [
+        "proxies_250.txt",
+        "data/proxies_250.txt",
+        "d:\\Workspace\\Python\\c69-router\\proxies_250.txt",
+        "../c69-router/proxies_250.txt",
+        "c69-router/proxies_250.txt",
+    ];
+
+    for path_str in &txt_paths {
+        let p = std::path::Path::new(path_str);
+        if p.exists() {
+            if let Ok(content) = std::fs::read_to_string(p) {
+                let mut proxies = Vec::new();
+                for (idx, line) in content.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                        continue;
+                    }
+                    if let Some(parsed) = crate::cdp_browser::parse_proxy_string(trimmed) {
+                        let p_str = match (&parsed.username, &parsed.password) {
+                            (Some(u), Some(p)) if !u.is_empty() => {
+                                format!("{}://{}:{}@{}:{}", parsed.scheme, u, p, parsed.host, parsed.port)
+                            }
+                            _ => format!("{}://{}:{}", parsed.scheme, parsed.host, parsed.port),
+                        };
+                        let hp = format!("{}:{}", parsed.host, parsed.port);
+                        let (stat, lat) = if let Some(rec) = status_cache.get(&p_str).or_else(|| status_cache.get(&hp)) {
+                            (if rec.alive { "live" } else { "die" }.to_string(), Some(rec.latency_ms as i32))
+                        } else {
+                            ("idle".to_string(), None)
+                        };
+
+                        proxies.push(C69Proxy {
+                            id: format!("p_{}", idx + 1),
+                            proxy_type: parsed.scheme,
+                            host: parsed.host,
+                            port: parsed.port,
+                            username: parsed.username,
+                            password: parsed.password,
+                            status: Some(stat),
+                            latency: lat,
+                            proxy_string: Some(p_str),
+                        });
+                    }
+                }
+                if !proxies.is_empty() {
+                    return proxies;
+                }
+            }
+        }
+    }
+
+    // 2. Fallback sang config.json
     let candidate_paths = [
         "d:\\Workspace\\Python\\c69-router\\data\\config.json",
         "../c69-router/data/config.json",
@@ -2350,6 +3352,12 @@ pub fn load_c69_proxies() -> Vec<C69Proxy> {
                                 if proxy.proxy_string.is_none() {
                                     proxy.proxy_string = Some(proxy.to_proxy_string());
                                 }
+                                let p_str = proxy.proxy_string.clone().unwrap_or_default();
+                                let hp = format!("{}:{}", proxy.host, proxy.port);
+                                if let Some(rec) = status_cache.get(&p_str).or_else(|| status_cache.get(&hp)) {
+                                    proxy.status = Some(if rec.alive { "live" } else { "die" }.to_string());
+                                    proxy.latency = Some(rec.latency_ms as i32);
+                                }
                                 proxies.push(proxy);
                             }
                         }
@@ -2365,7 +3373,196 @@ pub fn load_c69_proxies() -> Vec<C69Proxy> {
     Vec::new()
 }
 
-/// Kiểm tra kết nối TCP và xác thực SOCKS5 tới Proxy và đo độ trễ (latency ms)
+/// Ghi danh sách proxy ra đĩa (proxies_250.txt)
+pub fn save_c69_proxies(proxies: &[C69Proxy]) -> Result<(), String> {
+    let mut lines = Vec::new();
+    for p in proxies {
+        if let (Some(ref u), Some(ref pass)) = (&p.username, &p.password) {
+            lines.push(format!("{}:{}:{}:{}", p.host, p.port, u, pass));
+        } else {
+            lines.push(format!("{}:{}", p.host, p.port));
+        }
+    }
+    let content = lines.join("\n");
+
+    let txt_paths = [
+        "d:\\Workspace\\Python\\c69-router\\proxies_250.txt",
+        "../c69-router/proxies_250.txt",
+        "c69-router/proxies_250.txt",
+        "proxies_250.txt",
+        "data/proxies_250.txt",
+    ];
+
+    let mut written = false;
+    for path_str in &txt_paths {
+        let p = std::path::Path::new(path_str);
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                continue;
+            }
+        }
+        if std::fs::write(p, &content).is_ok() {
+            written = true;
+        }
+    }
+
+    if written {
+        Ok(())
+    } else {
+        Err("Không thể ghi file proxy vào đĩa".to_string())
+    }
+}
+
+/// Import danh sách proxy mới vào pool file
+pub fn import_new_proxies(proxies_text: &str, mode: &str) -> Result<(usize, usize), String> {
+    let mut current = if mode == "replace" {
+        Vec::new()
+    } else {
+        load_c69_proxies()
+    };
+
+    let mut added = 0;
+    for line in proxies_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+
+        if let Some(parsed) = crate::cdp_browser::parse_proxy_string(trimmed) {
+            let p_str = match (&parsed.username, &parsed.password) {
+                (Some(u), Some(p)) if !u.is_empty() => {
+                    format!("{}://{}:{}@{}:{}", parsed.scheme, u, p, parsed.host, parsed.port)
+                }
+                _ => format!("{}://{}:{}", parsed.scheme, parsed.host, parsed.port),
+            };
+
+            // Kiểm tra trùng lặp theo host:port
+            let exists = current.iter().any(|existing| existing.host == parsed.host && existing.port == parsed.port);
+            if !exists {
+                let id = format!("p_{}", current.len() + 1);
+                current.push(C69Proxy {
+                    id,
+                    proxy_type: parsed.scheme,
+                    host: parsed.host,
+                    port: parsed.port,
+                    username: parsed.username,
+                    password: parsed.password,
+                    status: Some("idle".to_string()),
+                    latency: None,
+                    proxy_string: Some(p_str),
+                });
+                added += 1;
+            }
+        }
+    }
+
+    if added > 0 || mode == "replace" {
+        save_c69_proxies(&current)?;
+    }
+
+    Ok((current.len(), added))
+}
+
+/// Xóa các proxy die khỏi pool với cơ chế so khớp đa năng (host:port, chuỗi proxy)
+pub fn remove_dead_proxies(dead_proxy_strings: &[String]) -> Result<(usize, usize), String> {
+    let current = load_c69_proxies();
+    let initial_count = current.len();
+
+    let mut dead_raw_set = std::collections::HashSet::new();
+    let mut dead_host_ports = std::collections::HashSet::new();
+
+    for s in dead_proxy_strings {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        dead_raw_set.insert(trimmed.to_string());
+
+        if let Some(parsed) = crate::cdp_browser::parse_proxy_string(trimmed) {
+            dead_host_ports.insert((parsed.host.to_lowercase(), parsed.port));
+        } else {
+            let clean = trimmed
+                .trim_start_matches("socks5://")
+                .trim_start_matches("http://")
+                .trim_start_matches("https://");
+            let target_part = if let Some(at) = clean.rfind('@') {
+                &clean[at + 1..]
+            } else {
+                clean
+            };
+            let parts: Vec<&str> = target_part.split(':').collect();
+            if parts.len() >= 2 {
+                if let Ok(port) = parts[1].parse::<u16>() {
+                    dead_host_ports.insert((parts[0].to_lowercase(), port));
+                }
+            }
+        }
+    }
+
+    let filtered: Vec<C69Proxy> = current.into_iter()
+        .filter(|p| {
+            // 1. So khớp theo cặp (host, port)
+            if dead_host_ports.contains(&(p.host.to_lowercase(), p.port)) {
+                return false;
+            }
+            // 2. So khớp theo proxy_string
+            if let Some(ref ps) = p.proxy_string {
+                if dead_raw_set.contains(ps.trim()) {
+                    return false;
+                }
+            }
+            // 3. So khớp theo to_proxy_string()
+            let gen = p.to_proxy_string();
+            if dead_raw_set.contains(gen.trim()) {
+                return false;
+            }
+            // 4. So khớp theo chuỗi host:port đơn giản
+            let hp = format!("{}:{}", p.host, p.port);
+            if dead_raw_set.contains(&hp) {
+                return false;
+            }
+            true
+        })
+        .enumerate()
+        .map(|(idx, mut p)| {
+            p.id = format!("p_{}", idx + 1);
+            p
+        })
+        .collect();
+
+    let removed = initial_count.saturating_sub(filtered.len());
+    let remaining = filtered.len();
+    save_c69_proxies(&filtered)?;
+
+    // Dọn dẹp các proxy die khỏi cache file
+    let mut cache = load_proxy_status_cache();
+    let initial_cache_len = cache.len();
+    for s in dead_proxy_strings {
+        let t = s.trim();
+        cache.remove(t);
+        if let Some(parsed) = crate::cdp_browser::parse_proxy_string(t) {
+            cache.remove(&format!("{}:{}", parsed.host, parsed.port));
+            cache.remove(&format!("{}://{}:{}", parsed.scheme, parsed.host, parsed.port));
+        }
+    }
+    if cache.len() != initial_cache_len {
+        if let Ok(json_str) = serde_json::to_string_pretty(&cache) {
+            let candidate_paths = [
+                "data/proxy_status_cache.json",
+                "d:\\Workspace\\Python\\c69-router\\data\\proxy_status_cache.json",
+                "proxy_status_cache.json",
+            ];
+            for path_str in &candidate_paths {
+                let p = std::path::Path::new(path_str);
+                let _ = std::fs::write(p, &json_str);
+            }
+        }
+    }
+
+    Ok((removed, remaining))
+}
+
+/// Kiểm tra kết nối TCP và xác thực SOCKS5 hoặc HTTP tới Proxy và đo độ trễ (latency ms)
 pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -2377,52 +3574,224 @@ pub async fn test_proxy_connection(proxy_str: &str) -> (bool, u64, String) {
     let target = format!("{}:{}", parsed.host, parsed.port);
     let start = std::time::Instant::now();
 
+    // 1. Kết nối TCP tới host:port của Proxy (Timeout 3500ms)
     let mut stream = match tokio::time::timeout(
-        Duration::from_millis(5000),
+        Duration::from_millis(3500),
         tokio::net::TcpStream::connect(&target)
     ).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => return (false, 0, format!("Không thể kết nối đến {}: {}", target, e)),
-        Err(_) => return (false, 0, format!("Kết nối đến {} bị timeout (> 5000ms)", target)),
+        Err(_) => return (false, 0, format!("Kết nối đến {} bị timeout (> 3.5s)", target)),
     };
 
-    if parsed.scheme.starts_with("socks") {
-        if let (Some(u), Some(p)) = (&parsed.username, &parsed.password) {
-            // Test SOCKS5 Greeting with method 0x02
-            if let Err(e) = stream.write_all(&[0x05, 0x01, 0x02]).await {
-                return (false, 0, format!("Lỗi gửi SOCKS5 greeting: {}", e));
-            }
+    // 2. Thử bắt tay SOCKS5 trước
+    // Gửi SOCKS5 Greeting hỗ trợ 2 phương thức: 0x00 (No Auth) và 0x02 (User/Password)
+    let greeting = [0x05, 0x02, 0x00, 0x02];
+    let is_socks = match tokio::time::timeout(Duration::from_millis(2500), stream.write_all(&greeting)).await {
+        Ok(Ok(())) => {
             let mut choice = [0u8; 2];
-            if let Err(e) = stream.read_exact(&mut choice).await {
-                return (false, 0, format!("Lỗi đọc phản hồi SOCKS5: {}", e));
+            match tokio::time::timeout(Duration::from_millis(2500), stream.read_exact(&mut choice)).await {
+                Ok(Ok(_)) if choice[0] == 0x05 => Some(choice[1]),
+                _ => None,
             }
-            if choice[0] != 0x05 || choice[1] != 0x02 {
-                return (false, 0, "Proxy từ chối phương thức xác thực Username/Password".to_string());
-            }
+        }
+        _ => None,
+    };
 
-            // Send RFC 1929 auth
-            let mut auth_buf = Vec::new();
-            auth_buf.push(0x01);
-            auth_buf.push(u.len() as u8);
-            auth_buf.extend_from_slice(u.as_bytes());
-            auth_buf.push(p.len() as u8);
-            auth_buf.extend_from_slice(p.as_bytes());
+    if let Some(auth_method) = is_socks {
+        // SOCKS5 SERVER PHẢN HỒI
+        if auth_method == 0x00 {
+            // Không cần xác thực (No Auth Required)
+            let latency = start.elapsed().as_millis() as u64;
+            return (true, latency, format!("SOCKS5 Live (No Auth, {}ms)", latency));
+        } else if auth_method == 0x02 {
+            // Yêu cầu xác thực Username / Password (RFC 1929)
+            if let (Some(u), Some(p)) = (&parsed.username, &parsed.password) {
+                let mut auth_buf = Vec::with_capacity(3 + u.len() + p.len());
+                auth_buf.push(0x01); // Subnegotiation version 1
+                auth_buf.push(u.len() as u8);
+                auth_buf.extend_from_slice(u.as_bytes());
+                auth_buf.push(p.len() as u8);
+                auth_buf.extend_from_slice(p.as_bytes());
 
-            if let Err(e) = stream.write_all(&auth_buf).await {
-                return (false, 0, format!("Lỗi gửi SOCKS5 auth: {}", e));
+                if let Err(e) = stream.write_all(&auth_buf).await {
+                    return (false, 0, format!("Lỗi gửi SOCKS5 auth: {}", e));
+                }
+                let mut auth_resp = [0u8; 2];
+                if let Err(e) = stream.read_exact(&mut auth_resp).await {
+                    return (false, 0, format!("Lỗi nhận phản hồi SOCKS5 auth: {}", e));
+                }
+                if auth_resp[1] == 0x00 {
+                    let latency = start.elapsed().as_millis() as u64;
+                    return (true, latency, format!("SOCKS5 Live (Độ trễ: {}ms)", latency));
+                } else {
+                    return (false, 0, "❌ SOCKS5 Auth thất bại: Sai User/Pass hoặc Proxy hết hạn/băng thông".to_string());
+                }
+            } else {
+                return (false, 0, "Proxy SOCKS5 yêu cầu User/Password nhưng chưa cung cấp".to_string());
             }
-            let mut auth_resp = [0u8; 2];
-            if let Err(e) = stream.read_exact(&mut auth_resp).await {
-                return (false, 0, format!("Lỗi đọc SOCKS5 auth response: {}", e));
+        } else {
+            return (false, 0, format!("Phương thức xác thực SOCKS5 không được hỗ trợ: 0x{:02X}", auth_method));
+        }
+    }
+
+    // 3. Nếu không phải SOCKS5: Thử kiểm tra giao thức HTTP / HTTPS Proxy (CONNECT handshake)
+    let mut http_stream = match tokio::time::timeout(
+        Duration::from_millis(3000),
+        tokio::net::TcpStream::connect(&target)
+    ).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return (false, 0, format!("Không thể kết nối HTTP proxy: {}", e)),
+        Err(_) => return (false, 0, "Timeout kết nối HTTP proxy".to_string()),
+    };
+
+    let mut connect_req = format!("CONNECT 1.1.1.1:80 HTTP/1.1\r\nHost: 1.1.1.1:80\r\n");
+    if let (Some(u), Some(p)) = (&parsed.username, &parsed.password) {
+        use base64::Engine;
+        let creds = format!("{}:{}", u, p);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+        connect_req.push_str(&format!("Proxy-Authorization: Basic {}\r\n", b64));
+    }
+    connect_req.push_str("Proxy-Connection: keep-alive\r\n\r\n");
+
+    if let Err(e) = http_stream.write_all(connect_req.as_bytes()).await {
+        return (false, 0, format!("Lỗi gửi HTTP CONNECT: {}", e));
+    }
+
+    let mut buf = [0u8; 256];
+    let n = match tokio::time::timeout(Duration::from_millis(3000), http_stream.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => return (false, 0, "Proxy không phản hồi bắt tay HTTP hoặc SOCKS5".to_string()),
+    };
+
+    let resp_str = String::from_utf8_lossy(&buf[..n]);
+    if resp_str.starts_with("HTTP/1.1 200") || resp_str.starts_with("HTTP/1.0 200") {
+        let latency = start.elapsed().as_millis() as u64;
+        (true, latency, format!("HTTP Proxy Live (Độ trễ: {}ms)", latency))
+    } else if resp_str.contains("407") {
+        (false, 0, "❌ HTTP Proxy: Sai User/Pass hoặc chưa whitelist IP (407 Proxy Authentication Required)".to_string())
+    } else {
+        (false, 0, format!("Proxy từ chối: {}", resp_str.lines().next().unwrap_or("Unknown response")))
+    }
+}
+
+/// Kiểm tra hàng loạt Proxy đồng thời với giới hạn concurrency 40
+pub async fn batch_test_c69_proxies(proxy_strings: Vec<String>) -> Vec<serde_json::Value> {
+    use tokio::sync::Semaphore;
+    use std::sync::Arc;
+
+    let sem = Arc::new(Semaphore::new(40));
+    let mut handles = Vec::new();
+
+    for p in proxy_strings {
+        let sem_clone = sem.clone();
+        handles.push(tokio::spawn(async move {
+            let _permit = sem_clone.acquire_owned().await;
+            let (alive, latency, msg) = test_proxy_connection(&p).await;
+            serde_json::json!({
+                "proxy": p,
+                "alive": alive,
+                "latency_ms": latency,
+                "message": msg
+            })
+        }));
+    }
+
+    let mut results = Vec::new();
+    for h in handles {
+        if let Ok(res) = h.await {
+            results.push(res);
+        }
+    }
+    save_proxy_status_batch(&results);
+    results
+}
+
+/// Gán Socks5 Proxy cho danh sách tài khoản C69 và Profile Anti-Browser tương ứng
+pub async fn assign_socks_to_c69_accounts(account_ids: Vec<u64>, proxy_str: &str) -> Result<usize, String> {
+    let profiles_path = crate::api::get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&profiles_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let mut updated_count = 0;
+    let sess = load_c69_session();
+    let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
+    let client = reqwest::Client::new();
+
+    for acc_id in &account_ids {
+        // Cập nhật profile tương ứng nếu có
+        if let Some(prof) = profiles.iter_mut().find(|p| p.tiktok_account_id == Some(*acc_id)) {
+            prof.proxy_string = proxy_str.trim().to_string();
+            prof.proxy_type = "socks5".to_string();
+            updated_count += 1;
+        }
+
+        // Cập nhật lên C69 Server nếu có session
+        let url = format!("{}/dashboard/api/accounts/{}/", server_url, acc_id);
+        let mut req = client.patch(&url)
+            .header("Content-Type", "application/json")
+            .timeout(Duration::from_secs(6));
+
+        if let Some(ref s) = sess {
+            if let Some(ref c) = s.cookies {
+                req = req.header("Cookie", c);
+            } else if let Some(ref t) = s.token {
+                req = req.header("Authorization", t);
+            } else {
+                req = req.header("Authorization", DEFAULT_C69_TOKEN);
             }
-            if auth_resp[1] != 0x00 {
-                return (false, 0, "❌ SOCKS5 Auth thất bại: Sai User/Pass hoặc Proxy hết hạn/băng thông".to_string());
+        }
+        let _ = req.json(&serde_json::json!({ "socks5": proxy_str.trim() })).send().await;
+    }
+
+    if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+        let _ = std::fs::write(&profiles_path, json_str);
+    }
+
+    Ok(updated_count)
+}
+
+/// Tự động quét và thay thế Proxy die cho toàn bộ các profile đang dùng proxy chết
+pub async fn auto_replace_dead_proxies_for_profiles() -> Result<Vec<serde_json::Value>, String> {
+    let profiles_path = crate::api::get_profiles_file_path();
+    let mut profiles: Vec<BrowserProfile> = std::fs::read_to_string(&profiles_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let mut replaced_logs = Vec::new();
+
+    for prof in profiles.iter_mut() {
+        let p_str = prof.proxy_string.trim();
+        if !p_str.is_empty() {
+            let (alive, _lat, _) = test_proxy_connection(p_str).await;
+            if !alive {
+                if let Some(healthy) = find_healthy_backup_proxy(p_str).await {
+                    let old_p = prof.proxy_string.clone();
+                    prof.proxy_string = healthy.clone();
+                    prof.proxy_type = "socks5".to_string();
+
+                    replaced_logs.push(serde_json::json!({
+                        "profile_id": prof.id,
+                        "profile_name": prof.name,
+                        "account_id": prof.tiktok_account_id,
+                        "old_proxy": old_p,
+                        "new_proxy": healthy
+                    }));
+                }
             }
         }
     }
 
-    let latency = start.elapsed().as_millis() as u64;
-    (true, latency, format!("Proxy Live (Độ trễ: {}ms)", latency))
+    if !replaced_logs.is_empty() {
+        if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+            let _ = std::fs::write(&profiles_path, json_str);
+        }
+    }
+
+    Ok(replaced_logs)
 }
 
 /// Tìm kiếm và trả về một proxy SOCKS5 sống khỏe mạnh nhất để tự động thay thế proxy chết
@@ -2431,8 +3800,6 @@ pub async fn find_healthy_backup_proxy(failed_proxy: &str) -> Option<String> {
     for c in load_c69_proxies() {
         candidate_strings.push(c.to_proxy_string());
     }
-
-
 
     for p in candidate_strings {
         if p != failed_proxy {

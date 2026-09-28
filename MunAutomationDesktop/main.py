@@ -95,7 +95,7 @@ def get_app_dir():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-CLIENT_VERSION = "2.0.5"
+CLIENT_VERSION = "2.2.0"
 C69_BASE_URL = "https://cu.c69.us"
 
 # ============================================================================

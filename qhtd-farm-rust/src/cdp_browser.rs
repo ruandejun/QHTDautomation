@@ -380,7 +380,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(default_renderer);
-    let vendor = profile
+    let _vendor = profile
         .gpu_vendor
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -1462,6 +1462,22 @@ pub async fn launch_cdp_profile_with_bounds(
                                     c2["sessionId"] = json!(session_id);
                                     let _ = tx.send(Message::Text(c2.to_string()));
                                 }
+
+                                // 2a. Đồng bộ Client Hints HTTP Headers qua Network.setExtraHTTPHeaders
+                                cmd_id += 1;
+                                let platform_header = if is_mobile { "\"Android\"" } else { "\"Windows\"" };
+                                let mobile_header = if is_mobile { "?1" } else { "?0" };
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Network.setExtraHTTPHeaders",
+                                    "params": {
+                                        "headers": {
+                                            "sec-ch-ua-mobile": mobile_header,
+                                            "sec-ch-ua-platform": platform_header
+                                        }
+                                    }
+                                }).to_string()));
 
                                 // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone (Vừa khít khung cửa sổ App Mode)
                                 if is_mobile {
