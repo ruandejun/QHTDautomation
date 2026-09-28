@@ -1,5 +1,5 @@
 {
-    "version": "2.1.2",
+    "version": "2.2.0",
     "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Sửa nốt lỗi treo/quay vòng tròn khi bấm \"Tạo video AI\": nút này trước đó tự khoá luồng giao diện chính tới 5 phút chờ video xong. Giờ chạy hoàn toàn nền, giao diện báo kết quả khi thực sự xong."
+    "changelog": "Cập nhật Mun Anti Browser & Quản lý Proxy: Lưu trạng thái Live/Die bền vững vào ổ đĩa, tự động nạp lại danh sách khi Import proxies mới, thêm nút Làm Mới (Reload) trong modal 250 SOCKS5 Proxy Pool, và tối ưu kết nối kiểm tra proxy song song."
 }

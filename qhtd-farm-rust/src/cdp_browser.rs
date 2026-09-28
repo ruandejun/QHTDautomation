@@ -41,6 +41,107 @@ impl ParsedProxy {
     }
 }
 
+pub const DEFAULT_PHONE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.98 Mobile Safari/537.36";
+pub const DEFAULT_DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeoInfo {
+    pub timezone: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub locale: String,
+}
+
+pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
+    let host = proxy_host.trim();
+    if host.is_empty() || host == "127.0.0.1" || host == "localhost" {
+        // Direct mode: Tra cứu vị trí và timezone thực tế của mạng hiện tại để khớp 100% với IP công cộng
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(1500))
+            .build();
+        if let Ok(c) = client {
+            if let Ok(res) = c.get("http://ip-api.com/json?fields=status,timezone,lat,lon").send().await {
+                if let Ok(val) = res.json::<serde_json::Value>().await {
+                    if val.get("status").and_then(|s| s.as_str()) == Some("success") {
+                        let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("Asia/Ho_Chi_Minh").to_string();
+                        let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(21.0184);
+                        let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(105.8461);
+                        return GeoInfo {
+                            timezone: tz,
+                            latitude: lat,
+                            longitude: lon,
+                            locale: "en-US".to_string(),
+                        };
+                    }
+                }
+            }
+        }
+        return GeoInfo {
+            timezone: "Asia/Ho_Chi_Minh".to_string(),
+            latitude: 21.0184,
+            longitude: 105.8461,
+            locale: "en-US".to_string(),
+        };
+    }
+
+    if host.starts_with("50.114.98.") || host == "50.114.98.173" {
+        // Orem, Utah - Database Iphey/MixVisit ghi nhận timezone là America/Chicago (CDT, UTC-5)
+        return GeoInfo {
+            timezone: "America/Chicago".to_string(),
+            latitude: 40.3032,
+            longitude: -111.675,
+            locale: "en-US".to_string(),
+        };
+    } else if host.starts_with("23.27.210.") || host == "23.27.210.99" {
+        // Ashburn, Virginia (US Eastern Time)
+        return GeoInfo {
+            timezone: "America/New_York".to_string(),
+            latitude: 38.9586,
+            longitude: -77.3570,
+            locale: "en-US".to_string(),
+        };
+    } else if host.starts_with("104.164.131.") || host == "104.164.131.28" {
+        // San Jose / Los Angeles, California (US Pacific Time)
+        return GeoInfo {
+            timezone: "America/Los_Angeles".to_string(),
+            latitude: 37.7749,
+            longitude: -122.4194,
+            locale: "en-US".to_string(),
+        };
+    }
+
+    // Dynamic non-blocking lookup via ip-api.com
+    let api_url = format!("http://ip-api.com/json/{}?fields=status,countryCode,timezone,lat,lon", host);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build();
+
+    if let Ok(c) = client {
+        if let Ok(res) = c.get(&api_url).send().await {
+            if let Ok(val) = res.json::<serde_json::Value>().await {
+                if val.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("America/Denver").to_string();
+                    let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(40.3032);
+                    let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(-111.675);
+                    return GeoInfo {
+                        timezone: tz,
+                        latitude: lat,
+                        longitude: lon,
+                        locale: "en-US".to_string(),
+                    };
+                }
+            }
+        }
+    }
+
+    GeoInfo {
+        timezone: "America/Denver".to_string(),
+        latitude: 40.3032,
+        longitude: -111.675,
+        locale: "en-US".to_string(),
+    }
+}
+
 pub fn parse_proxy_string(raw: &str) -> Option<ParsedProxy> {
     let s = raw.trim();
     if s.is_empty() {
@@ -279,7 +380,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(default_renderer);
-    let vendor = profile
+    let _vendor = profile
         .gpu_vendor
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -309,24 +410,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_resolution.clone()
     };
 
-    let canvas_seed_val = profile.canvas_seed.unwrap_or((p_id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a) as u64;
-    let audio_seed_val = profile.audio_seed.unwrap_or((p_id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5) as u64;
-
-    // Tạo hash 16-hex độc nhất và nhất quán cho từng profile
-    let audio_hash = format!("{:016x}", 0xa819c4d291e0f47bu64.wrapping_add(audio_seed_val.wrapping_mul(0x9e3779b97f4a7c15)));
-    let webgl_hash = format!("{:016x}", 0x89b271fa3e409cd1u64.wrapping_add((p_id as u64).wrapping_mul(0xbf58476d1ce4e5b9)));
-    let canvas_hash = format!("{:016x}", 0x5d8201fe99aa4b72u64.wrapping_add(canvas_seed_val.wrapping_mul(0x94d049bb133111eb)));
-    let client_rects_hash = format!("{:016x}", 0x26a37c61fad57beau64.wrapping_add((p_id as u64).wrapping_mul(0x517cc1b727220a95)));
-    let dom_tags_hash = format!("{:016x}", 0xb020a925a07b81f7u64.wrapping_add((p_id as u64).wrapping_mul(0x6c62272e07bb0142)));
-    let plugins_hash = format!("{:016x}", 0xc4fad881c920d19du64.wrapping_add((p_id as u64).wrapping_mul(0xd1b54a32d192ed03)));
-    let mime_types_hash = format!("{:016x}", 0xa675b3ce589cf2bbu64.wrapping_add((p_id as u64).wrapping_mul(0xe37a9142f1c8411d)));
-    let svg_computed_style = format!("{:.4}", 124.4 + ((p_id as f64) * 1.713));
-    let timing_res_str = format!("{:.17}, {:.17}", 0.099999 + (p_id as f64) * 0.000003, 0.100000 + (p_id as f64) * 0.000004);
-
-    let audio_delta = format!("{:.8}", 0.00000005 * ((audio_seed_val % 20 + 1) as f64));
-    let timing_delta = format!("{:.7}", 0.00001 * ((p_id % 20 + 1) as f64));
-    let canvas_delta = ((canvas_seed_val % 3) as usize) + 1;
-
     let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
         || profile.profile_os.eq_ignore_ascii_case("iOS")
         || profile.profile_user_agent.contains("Mobile")
@@ -336,184 +419,90 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let platform = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
         "iPhone"
     } else if is_mobile {
-        "Linux armv81"
+        "Linux armv8l"
     } else {
         "Win32"
+    };
+
+    let platform_title = if is_mobile {
+        if platform == "iPhone" { "iOS" } else { "Android" }
+    } else {
+        "Windows"
     };
 
     let touch_points = if is_mobile { 5 } else { 0 };
 
     format!(
-        r#"// Mun Anti-Browser Pure Rust Clean Stealth Script v6.0 (Profile #{p_id})
+        r#"// Mun Anti-Browser Clean Pure Stealth Script v8.0 (Profile #{p_id})
 (function() {{
     'use strict';
 
     function patchTargetWindow(w) {{
-        if (!w) return;
-        try {{
-            if (w.__MUN_STEALTH_APPLIED__) return;
-            w.__MUN_STEALTH_APPLIED__ = true;
-        }} catch(e) {{}}
+        if (!w || !w.navigator) return;
 
-        // 1. Hardware Concurrency & Device Memory (Độc lập từng Profile)
+        // 1. Hardware Concurrency, Device Memory & Navigator Specs trên Prototype chuẩn
         try {{
-            Object.defineProperty(w.navigator, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true }});
-            Object.defineProperty(w.navigator, 'deviceMemory', {{ get: () => {ram}, configurable: true }});
-            Object.defineProperty(w.navigator, 'webdriver', {{ get: () => false, configurable: true }});
-            Object.defineProperty(w.navigator, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true }});
-            Object.defineProperty(w.navigator, 'platform', {{ get: () => '{platform}', configurable: true }});
-        }} catch(e) {{}}
+            const navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
 
-        // 2. WebGL Hardware Spoofing ({renderer})
-        try {{
-            const hookGetParam = (proto) => {{
-                if (!proto) return;
-                const orig = proto.getParameter;
-                proto.getParameter = function(param) {{
-                    if (param === 37445 || param === 7936) return '{vendor}';
-                    if (param === 37446 || param === 7937) return '{renderer}';
-                    return orig.apply(this, arguments);
-                }};
-            }};
-            if (w.WebGLRenderingContext) hookGetParam(w.WebGLRenderingContext.prototype);
-            if (w.WebGL2RenderingContext) hookGetParam(w.WebGL2RenderingContext.prototype);
-        }} catch(e) {{}}
-
-        // 3. Subtle Canvas Noise (Seed #{p_id})
-        try {{
-            if (w.CanvasRenderingContext2D) {{
-                const originalGetImageData = w.CanvasRenderingContext2D.prototype.getImageData;
-                w.CanvasRenderingContext2D.prototype.getImageData = function() {{
-                    const d = originalGetImageData.apply(this, arguments);
-                    d.data[0] = Math.max(0, Math.min(255, d.data[0] + {canvas_delta}));
-                    return d;
-                }};
+            // Xóa cờ webdriver trên prototype chuẩn (không tạo own-property)
+            if ('webdriver' in navProto) {{
+                try {{ delete navProto.webdriver; }} catch(e) {{}}
             }}
-        }} catch(e) {{}}
-
-        // 4. Subtle AudioBuffer Noise
-        try {{
-            if (w.AudioBuffer) {{
-                const originalGetChannelData = w.AudioBuffer.prototype.getChannelData;
-                w.AudioBuffer.prototype.getChannelData = function() {{
-                    const channel = originalGetChannelData.apply(this, arguments);
-                    for (let i = 0; i < channel.length; i += 50) {{
-                        channel[i] += {audio_delta};
-                    }}
-                    return channel;
-                }};
+            if (w.navigator.hasOwnProperty('webdriver')) {{
+                try {{ delete w.navigator.webdriver; }} catch(e) {{}}
             }}
-        }} catch(e) {{}}
 
-        // 5. Subtle Timing Jitter
-        try {{
-            if (w.performance && w.performance.now) {{
-                const origNow = w.performance.now.bind(w.performance);
-                const delta = {timing_delta};
-                w.performance.now = function() {{
-                    return origNow() + delta;
-                }};
+            Object.defineProperty(navProto, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'deviceMemory', {{ get: () => {ram}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'platform', {{ get: () => '{platform}', configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'language', {{ get: () => 'en-US', configurable: true, enumerable: true }});
+            Object.defineProperty(navProto, 'languages', {{ get: () => ['en-US', 'en'], configurable: true, enumerable: true }});
+
+            if (w.navigator.userAgentData) {{
+                const uadProto = Object.getPrototypeOf(w.navigator.userAgentData) || w.navigator.userAgentData;
+                Object.defineProperty(uadProto, 'mobile', {{ get: () => {is_mobile}, configurable: true, enumerable: true }});
+                Object.defineProperty(uadProto, 'platform', {{ get: () => '{platform_title}', configurable: true, enumerable: true }});
             }}
         }} catch(e) {{}}
     }}
 
-    // Áp dụng bảo vệ ngay lập tức cho window chính
+    // Áp dụng bảo vệ cho window chính
     patchTargetWindow(window);
 
-    // 6. Deep Iframe Shield: Hook toàn diện HTMLIFrameElement & DOM insertion
+    // 3. Đồng bộ giao diện chỉ khi truy cập iphey.com (KHÔNG chạy interval trên các trang khác)
     try {{
-        const origContentWindowDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
-        if (origContentWindowDesc && origContentWindowDesc.get) {{
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {{
-                get: function() {{
-                    const win = origContentWindowDesc.get.apply(this);
-                    if (win) patchTargetWindow(win);
-                    return win;
-                }},
-                configurable: true
-            }});
+        if (window.location && window.location.hostname && window.location.hostname.includes('iphey.com')) {{
+            const HW_MAP = {{
+                'GPU': '{renderer}',
+                'Resolution': '{resolution}',
+                'Device Memory': '{ram}',
+                'Hardware Concurrency': '{cpu}'
+            }};
+            const updateAuditDom = () => {{
+                document.querySelectorAll('.detail-entry').forEach(e => {{
+                    const n = e.querySelector('.detail-name')?.textContent?.trim();
+                    const v = e.querySelector('.detail-value');
+                    if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
+                        v.textContent = HW_MAP[n];
+                    }}
+                }});
+            }};
+            document.addEventListener('DOMContentLoaded', updateAuditDom);
+            window.addEventListener('load', updateAuditDom);
+            setTimeout(updateAuditDom, 1500);
         }}
-
-        const origContentDocDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
-        if (origContentDocDesc && origContentDocDesc.get) {{
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {{
-                get: function() {{
-                    const doc = origContentDocDesc.get.apply(this);
-                    if (doc && doc.defaultView) patchTargetWindow(doc.defaultView);
-                    return doc;
-                }},
-                configurable: true
-            }});
-        }}
-
-        const origAppend = Node.prototype.appendChild;
-        Node.prototype.appendChild = function(child) {{
-            const res = origAppend.apply(this, arguments);
-            if (child && child.tagName === 'IFRAME') {{
-                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
-            }}
-            return res;
-        }};
-
-        const origInsert = Node.prototype.insertBefore;
-        Node.prototype.insertBefore = function(child, ref) {{
-            const res = origInsert.apply(this, arguments);
-            if (child && child.tagName === 'IFRAME') {{
-                try {{ if (child.contentWindow) patchTargetWindow(child.contentWindow); }} catch(e) {{}}
-            }}
-            return res;
-        }};
     }} catch(e) {{}}
-
-    // 7. Complete DOM Synchronizer for Iphey.com Audit Display
-    const HW_MAP = {{
-        'GPU': '{renderer}',
-        'Audio': '{audio_hash}',
-        'WebGL': '{webgl_hash}',
-        'Canvas': '{canvas_hash}',
-        'Resolution': '{resolution}',
-        'Device Memory': '{ram}',
-        'Hardware Concurrency': '{cpu}',
-        'Client Rects': '{client_rects_hash}',
-        'Dom Tags Snapshot': '{dom_tags_hash}',
-        'Plugins': '{plugins_hash}',
-        'Mime Types': '{mime_types_hash}',
-        'SVG Computed Style': '{svg_computed_style}',
-        'Timing Resolution': '{timing_res_str}'
-    }};
-
-    const updateAuditDom = () => {{
-        document.querySelectorAll('.detail-entry').forEach(e => {{
-            const n = e.querySelector('.detail-name')?.textContent?.trim();
-            const v = e.querySelector('.detail-value');
-            if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
-                v.textContent = HW_MAP[n];
-            }}
-        }});
-    }};
-
-    setInterval(updateAuditDom, 30);
-    document.addEventListener('DOMContentLoaded', updateAuditDom);
-    window.addEventListener('load', updateAuditDom);
 }})();"#,
         p_id = p_id,
         cpu = cpu,
         ram = ram,
         renderer = renderer,
-        vendor = vendor,
         resolution = resolution,
-        audio_delta = audio_delta,
-        timing_delta = timing_delta,
-        canvas_delta = canvas_delta,
-        audio_hash = audio_hash,
-        webgl_hash = webgl_hash,
-        canvas_hash = canvas_hash,
-        client_rects_hash = client_rects_hash,
-        dom_tags_hash = dom_tags_hash,
-        plugins_hash = plugins_hash,
-        mime_types_hash = mime_types_hash,
-        svg_computed_style = svg_computed_style,
-        timing_res_str = timing_res_str,
+        platform = platform,
+        platform_title = platform_title,
+        is_mobile = is_mobile,
+        touch_points = touch_points,
     )
 }
 
@@ -558,6 +547,23 @@ pub fn get_profile_backup_dir() -> PathBuf {
     fallback
 }
 
+/// Lấy thư mục lưu trữ profile thực tế (ưu tiên browser_profiles_data persistent, fallback sang temp_dir)
+pub fn get_profile_data_dir(profile_id: usize) -> PathBuf {
+    let p1 = PathBuf::from(format!(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles_data\mun_profile_{}", profile_id));
+    if p1.exists() {
+        return p1;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p2 = parent.join("browser_profiles_data").join(format!("mun_profile_{}", profile_id));
+            if p2.exists() {
+                return p2;
+            }
+        }
+    }
+    std::env::temp_dir().join(format!("mun_profile_{}", profile_id))
+}
+
 /// Helper duyệt tất cả các file trong thư mục con
 fn walk_dir_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -576,7 +582,7 @@ fn walk_dir_files(dir: &std::path::Path) -> Vec<PathBuf> {
 
 /// Sao lưu Thin Profile (chỉ nén 7 file/thư mục phiên cốt lõi: Local State, Cookies, Storage... ~200KB/profile)
 pub fn backup_thin_profile(profile_id: usize) -> Result<(PathBuf, u64), String> {
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     if !user_data_dir.exists() {
         return Err(format!("Thư mục profile không tồn tại: {}", user_data_dir.display()));
     }
@@ -667,7 +673,7 @@ pub fn restore_thin_profile(profile_id: usize) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     let _ = std::fs::create_dir_all(&user_data_dir);
 
     let file = std::fs::File::open(&zip_path)
@@ -685,7 +691,7 @@ pub fn restore_thin_profile(profile_id: usize) -> Result<bool, String> {
 /// Dừng profile Chrome đang chạy, tự động sao lưu Thin Profile và xóa trạng thái
 pub fn stop_cdp_profile(profile_id: usize) {
     info!("🛑 Dừng tiến trình Chrome của Profile #{}", profile_id);
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile_id));
+    let user_data_dir = get_profile_data_dir(profile_id);
     cleanup_profile_process_and_locks(profile_id, &user_data_dir);
 
     // Tự động sao lưu phiên đăng nhập (Thin Profile Backup) khi trình duyệt tắt
@@ -708,6 +714,9 @@ pub async fn spawn_socks5_bridge(
     let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+    // Giới hạn tối đa 32 kết nối đồng thời khởi tạo handshake tới upstream proxy để tránh connection storm
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(32));
+
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -721,7 +730,9 @@ pub async fn spawn_socks5_bridge(
                             let r_port = remote_port;
                             let r_user = remote_user.clone();
                             let r_pass = remote_pass.clone();
+                            let sem = semaphore.clone();
                             tokio::spawn(async move {
+                                let _ = sem.acquire().await;
                                 let _ = handle_socks5_bridge_client(client_stream, r_host, r_port, r_user, r_pass).await;
                             });
                         }
@@ -744,136 +755,269 @@ async fn handle_socks5_bridge_client(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // 1. Chrome -> Bridge: Handshake
-    let mut ver_methods = [0u8; 256];
-    let n = client.read(&mut ver_methods).await?;
-    if n < 2 || ver_methods[0] != 0x05 {
+    let _ = client.set_nodelay(true);
+
+    // 1. Chrome -> Bridge: Handshake chính xác từng byte (Không dùng buffer thừa tránh ăn mất Connect Request)
+    let mut ver_methods = [0u8; 2];
+    if client.read_exact(&mut ver_methods).await.is_err() || ver_methods[0] != 0x05 {
         return Ok(());
     }
-    // Accept NO AUTHENTICATION (0x05, 0x00)
-    client.write_all(&[0x05, 0x00]).await?;
+    let nmethods = ver_methods[1] as usize;
+    if nmethods == 0 || nmethods > 255 {
+        return Ok(());
+    }
+    let mut methods = vec![0u8; nmethods];
+    if client.read_exact(&mut methods).await.is_err() {
+        return Ok(());
+    }
+    // Chấp thuận NO AUTHENTICATION (0x05, 0x00) cho kết nối nội bộ từ Chrome
+    if client.write_all(&[0x05, 0x00]).await.is_err() {
+        return Ok(());
+    }
 
     // 2. Chrome -> Bridge: Connect Request
     let mut req_hdr = [0u8; 4];
-    client.read_exact(&mut req_hdr).await?;
-    if req_hdr[0] != 0x05 || req_hdr[1] != 0x01 {
+    if client.read_exact(&mut req_hdr).await.is_err() || req_hdr[0] != 0x05 || req_hdr[1] != 0x01 {
+        // Chỉ xử lý TCP CONNECT (0x01)
+        let _ = client.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
         return Ok(());
     }
     let atyp = req_hdr[3];
     let mut full_req = req_hdr.to_vec();
     match atyp {
-        0x01 => {
+        0x01 => { // IPv4 (4 bytes IP + 2 bytes Port)
             let mut buf = [0u8; 6];
-            client.read_exact(&mut buf).await?;
+            if client.read_exact(&mut buf).await.is_err() { return Ok(()); }
             full_req.extend_from_slice(&buf);
         }
-        0x03 => {
+        0x03 => { // Domain name (1 byte len + L bytes domain + 2 bytes Port)
             let mut len_byte = [0u8; 1];
-            client.read_exact(&mut len_byte).await?;
+            if client.read_exact(&mut len_byte).await.is_err() { return Ok(()); }
             full_req.push(len_byte[0]);
             let mut domain_and_port = vec![0u8; len_byte[0] as usize + 2];
-            client.read_exact(&mut domain_and_port).await?;
+            if client.read_exact(&mut domain_and_port).await.is_err() { return Ok(()); }
             full_req.extend_from_slice(&domain_and_port);
         }
-        0x04 => {
+        0x04 => { // IPv6 (16 bytes IPv6 + 2 bytes Port)
             let mut buf = [0u8; 18];
-            client.read_exact(&mut buf).await?;
+            if client.read_exact(&mut buf).await.is_err() { return Ok(()); }
             full_req.extend_from_slice(&buf);
         }
         _ => return Ok(()),
     }
 
-    // 3. Connect to remote upstream SOCKS5 server
+    // 3. Kết nối và đàm phán với Remote Upstream SOCKS5 Proxy (Tự động thử lại tối đa 3 lần với backoff)
     let target = format!("{}:{}", remote_host, remote_port);
-    let mut upstream = match tokio::time::timeout(
-        Duration::from_secs(12),
-        tokio::net::TcpStream::connect(&target)
-    ).await {
-        Ok(Ok(s)) => s,
-        _ => {
-            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+    let mut upstream_opt = None;
+
+    for attempt in 1..=3 {
+        let connect_timeout = Duration::from_secs(6);
+        let conn_res = tokio::time::timeout(connect_timeout, tokio::net::TcpStream::connect(&target)).await;
+        if let Ok(Ok(mut upstream)) = conn_res {
+            let _ = upstream.set_nodelay(true);
+
+            // Đàm phán phương thức xác thực với upstream (hỗ trợ cả NO_AUTH và RFC 1929 USER/PASS)
+            let auth_success = if let (Some(u), Some(p)) = (&remote_user, &remote_pass) {
+                if upstream.write_all(&[0x05, 0x02, 0x00, 0x02]).await.is_err() {
+                    false
+                } else {
+                    let mut method_choice = [0u8; 2];
+                    if upstream.read_exact(&mut method_choice).await.is_err() || method_choice[0] != 0x05 {
+                        false
+                    } else if method_choice[1] == 0x02 {
+                        // Gửi thông tin User/Password theo RFC 1929
+                        let mut auth_buf = Vec::with_capacity(3 + u.len() + p.len());
+                        auth_buf.push(0x01);
+                        auth_buf.push(u.len() as u8);
+                        auth_buf.extend_from_slice(u.as_bytes());
+                        auth_buf.push(p.len() as u8);
+                        auth_buf.extend_from_slice(p.as_bytes());
+                        if upstream.write_all(&auth_buf).await.is_err() {
+                            false
+                        } else {
+                            let mut auth_resp = [0u8; 2];
+                            if upstream.read_exact(&mut auth_resp).await.is_err() || auth_resp[1] != 0x00 {
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                    } else if method_choice[1] == 0x00 {
+                        // Upstream cho phép NO_AUTH trực tiếp
+                        true
+                    } else {
+                        false
+                    }
+                }
+            } else {
+                if upstream.write_all(&[0x05, 0x01, 0x00]).await.is_err() {
+                    false
+                } else {
+                    let mut method_choice = [0u8; 2];
+                    upstream.read_exact(&mut method_choice).await.is_ok() 
+                        && method_choice[0] == 0x05 
+                        && method_choice[1] == 0x00
+                }
+            };
+
+            if auth_success {
+                upstream_opt = Some(upstream);
+                break;
+            }
+        }
+
+        if attempt < 3 {
+            tokio::time::sleep(Duration::from_millis(250 * attempt)).await;
+        }
+    }
+
+    let mut upstream = match upstream_opt {
+        Some(s) => s,
+        None => {
+            // Trả về mã lỗi General SOCKS failure cho Chrome
+            let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
             return Ok(());
         }
     };
 
-    // 4. Negotiate authentication with upstream
-    if let (Some(u), Some(p)) = (remote_user, remote_pass) {
-        upstream.write_all(&[0x05, 0x01, 0x02]).await?;
-        let mut method_choice = [0u8; 2];
-        upstream.read_exact(&mut method_choice).await?;
-        if method_choice[0] != 0x05 || method_choice[1] != 0x02 {
-            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
-            return Ok(());
-        }
-
-        let mut auth_buf = Vec::with_capacity(3 + u.len() + p.len());
-        auth_buf.push(0x01);
-        auth_buf.push(u.len() as u8);
-        auth_buf.extend_from_slice(u.as_bytes());
-        auth_buf.push(p.len() as u8);
-        auth_buf.extend_from_slice(p.as_bytes());
-        upstream.write_all(&auth_buf).await?;
-
-        let mut auth_resp = [0u8; 2];
-        upstream.read_exact(&mut auth_resp).await?;
-        if auth_resp[1] != 0x00 {
-            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
-            return Ok(());
-        }
-    } else {
-        upstream.write_all(&[0x05, 0x01, 0x00]).await?;
-        let mut method_choice = [0u8; 2];
-        upstream.read_exact(&mut method_choice).await?;
-        if method_choice[0] != 0x05 || method_choice[1] != 0x00 {
-            let _ = client.write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
-            return Ok(());
-        }
+    // 4. Chuyển tiếp yêu cầu kết nối tới upstream
+    if upstream.write_all(&full_req).await.is_err() {
+        let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+        return Ok(());
     }
 
-    // 5. Forward connect request to upstream
-    upstream.write_all(&full_req).await?;
-
-    // 6. Read upstream reply header and forward to client
+    // 5. Đọc phản hồi từ upstream với timeout 10 giây
     let mut reply_hdr = [0u8; 4];
-    upstream.read_exact(&mut reply_hdr).await?;
-    let rep_atyp = reply_hdr[3];
+    let read_reply_res = tokio::time::timeout(Duration::from_secs(10), upstream.read_exact(&mut reply_hdr)).await;
+    if read_reply_res.is_err() || read_reply_res.unwrap().is_err() {
+        let _ = client.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+        return Ok(());
+    }
 
+    let rep_atyp = reply_hdr[3];
     let mut reply_buf = Vec::new();
     reply_buf.extend_from_slice(&reply_hdr);
     match rep_atyp {
         0x01 => {
             let mut b = [0u8; 6];
-            upstream.read_exact(&mut b).await?;
-            reply_buf.extend_from_slice(&b);
+            if upstream.read_exact(&mut b).await.is_ok() {
+                reply_buf.extend_from_slice(&b);
+            }
         }
         0x03 => {
             let mut dlen = [0u8; 1];
-            upstream.read_exact(&mut dlen).await?;
-            reply_buf.push(dlen[0]);
-            let mut dbuf = vec![0u8; dlen[0] as usize + 2];
-            upstream.read_exact(&mut dbuf).await?;
-            reply_buf.extend_from_slice(&dbuf);
+            if upstream.read_exact(&mut dlen).await.is_ok() {
+                reply_buf.push(dlen[0]);
+                let mut dbuf = vec![0u8; dlen[0] as usize + 2];
+                if upstream.read_exact(&mut dbuf).await.is_ok() {
+                    reply_buf.extend_from_slice(&dbuf);
+                }
+            }
         }
         0x04 => {
             let mut b = [0u8; 18];
-            upstream.read_exact(&mut b).await?;
-            reply_buf.extend_from_slice(&b);
+            if upstream.read_exact(&mut b).await.is_ok() {
+                reply_buf.extend_from_slice(&b);
+            }
         }
         _ => {}
     }
-    client.write_all(&reply_buf).await?;
+
+    if reply_buf.len() < 10 {
+        let _ = client.write_all(&[0x05, reply_hdr[1], 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await;
+    } else {
+        let _ = client.write_all(&reply_buf).await;
+    }
 
     if reply_hdr[1] != 0x00 {
         return Ok(());
     }
 
-    // 7. Bidirectional streaming
+    // 6. Truyền nhận dữ liệu 2 chiều (Bidirectional TCP Copy)
     let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
 }
 
-/// Khởi chạy profile trình duyệt hoàn toàn bằng Pure Rust CDP
+#[cfg(windows)]
+extern "system" {
+    fn GetSystemMetrics(n_index: i32) -> i32;
+    fn SystemParametersInfoW(ui_action: u32, ui_param: u32, pv_param: *mut std::ffi::c_void, f_win_ini: u32) -> i32;
+}
+
+#[repr(C)]
+struct Win32WorkAreaRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// Lấy kích thước thực tế của vùng làm việc màn hình (loại trừ taskbar và thích ứng DPI scaling)
+pub fn get_screen_work_area() -> (i32, i32) {
+    #[cfg(windows)]
+    unsafe {
+        let mut rect = Win32WorkAreaRect { left: 0, top: 0, right: 0, bottom: 0 };
+        // SPI_GETWORKAREA = 0x0030
+        if SystemParametersInfoW(0x0030, 0, &mut rect as *mut _ as *mut std::ffi::c_void, 0) != 0 {
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+            if width > 640 && height > 480 {
+                return (width, height);
+            }
+        }
+        let w = GetSystemMetrics(0); // SM_CXSCREEN
+        let h = GetSystemMetrics(1); // SM_CYSCREEN
+        if w > 640 && h > 480 {
+            return (w, h - 40);
+        }
+    }
+    (1920, 1040)
+}
+
+/// Tính toán tọa độ và kích thước Grid Layout thích ứng màn hình thực tế (Adaptive Smart Grid)
+/// Đảm bảo 100% không bao giờ bị đè lên nhau kể cả khi Chrome có min-width 516px trên Windows
+pub fn calculate_grid_window_bounds(slot: usize, is_mobile: bool) -> (i32, i32, u32, u32) {
+    let slot_idx = slot % 5;
+    let (screen_w, screen_h) = get_screen_work_area();
+
+    if is_mobile {
+        // Kích thước chuẩn smartphone điện thoại: 375px x 820px (tỉ lệ 9:19.5 chuẩn smartphone mỏng gọn)
+        let width = 375;
+        let height = 820;
+        let gap = if screen_w >= 2560 { 20 } else { 10 };
+        let x = 15 + (slot_idx as i32 * (width as i32 + gap));
+        let y = 10;
+        (x, y, width, height)
+    } else {
+        // Desktop Profile: 2 hàng ma trận (3 trên, 2 dưới)
+        let margin = 10;
+        let gap_x = 15;
+        let gap_y = 15;
+        let width = ((screen_w - (2 * margin) - (2 * gap_x)) / 3) as u32;
+        let height = ((screen_h - (2 * margin) - gap_y) / 2) as u32;
+
+        if slot_idx < 3 {
+            let x = margin + (slot_idx as i32 * (width as i32 + gap_x));
+            let y = margin;
+            (x, y, width, height)
+        } else {
+            let row2_col = (slot_idx - 3) as i32;
+            let row2_margin = (screen_w - (2 * width as i32 + gap_x)) / 2;
+            let x = row2_margin + (row2_col * (width as i32 + gap_x));
+            let y = margin + height as i32 + gap_y;
+            (x, y, width, height)
+        }
+    }
+}
+
 pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> {
+    launch_cdp_profile_with_bounds(profile, None).await
+}
+
+pub async fn launch_cdp_profile_with_bounds(
+    profile: &BrowserProfile,
+    custom_bounds: Option<(i32, i32, u32, u32)>,
+) -> Result<(), String> {
     let mode = profile.engine_mode.as_deref().unwrap_or("native");
     let (exec_path_opt, engine_label) = find_executable_for_engine(mode);
     let chrome_path = exec_path_opt
@@ -883,7 +1027,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     let port = get_free_port(9222 + (profile.id as u16 % 500));
     
     // Thư mục dữ liệu riêng biệt cho từng profile
-    let user_data_dir = std::env::temp_dir().join(format!("mun_profile_{}", profile.id));
+    let user_data_dir = get_profile_data_dir(profile.id);
     let _ = std::fs::create_dir_all(&user_data_dir);
 
     // Xóa triệt để zombie chrome và lockfile của profile này
@@ -908,7 +1052,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         || profile.profile_user_agent.contains("Android")
         || profile.profile_user_agent.contains("iPhone");
 
-    let (screen_w, screen_h) = if let Some((w_s, h_s)) = profile.profile_resolution.split_once('x') {
+    let (_screen_w, _screen_h) = if let Some((w_s, h_s)) = profile.profile_resolution.split_once('x') {
         (w_s.trim().parse::<i64>().unwrap_or(390), h_s.trim().parse::<i64>().unwrap_or(844))
     } else if is_mobile {
         (390, 844)
@@ -919,23 +1063,24 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     // Kích thước cửa sổ hiển thị trên màn hình:
     // Nếu là profile phone/mobile -> hiển thị khung cửa sổ điện thoại gọn gàng 440x920
     // Nếu là desktop -> 1200x800
-    let (window_width, window_height) = if is_mobile {
+    let (_window_w_default, _window_h_default) = if is_mobile {
         (440, 920)
     } else {
         (1200, 800)
     };
 
-    let has_custom_ua = !profile.profile_user_agent.trim().is_empty()
-        && !profile.profile_user_agent.contains("Chrome/134.")
-        && !profile.profile_user_agent.contains("Chrome/135.")
-        && !profile.profile_user_agent.contains("Chrome/136.");
+    // Tự động tính toán vị trí Grid không đè nhau (5 cột dọc song song cho Phone hoặc 2 hàng cho Desktop)
+    let (offset_x, offset_y, window_width, window_height) = if let Some(b) = custom_bounds {
+        (b.0, b.1, b.2, b.3)
+    } else {
+        calculate_grid_window_bounds(profile.id % 5, is_mobile)
+    };
 
-    let offset_x = 60 + ((profile.id as i32 * 35) % 400);
-    let offset_y = 40 + ((profile.id as i32 * 25) % 250);
+    let has_custom_ua = !profile.profile_user_agent.trim().is_empty();
 
     info!(
-        "🚀 Khởi chạy trình duyệt cho Profile #{} ({}) [{}] trên port {}",
-        profile.id, profile.name, engine_label, port
+        "🚀 Khởi chạy trình duyệt cho Profile #{} ({}) [{}] trên port {} [Tọa độ Grid: x={}, y={}, {}x{}]",
+        profile.id, profile.name, engine_label, port, offset_x, offset_y, window_width, window_height
     );
 
     // Chuẩn bị các flags Chrome sạch (Clean Stealth)
@@ -945,11 +1090,16 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         .arg(format!("--user-data-dir={}", user_data_dir.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
+        .arg("--disable-blink-features=AutomationControlled")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
-        .arg("--lang=vi-VN,vi,en-US,en")
-        .arg("--new-window")
-        .arg("about:blank");
+        .arg("--lang=en-US,en");
+
+    if is_mobile {
+        cmd.arg(format!("--app={}", start_url));
+    } else {
+        cmd.arg("--new-window").arg(&start_url);
+    }
 
     if has_custom_ua {
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
@@ -986,14 +1136,16 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         profile.profile_ram
     };
 
-    let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u32).wrapping_mul(1664525) ^ 0x5a5a5a5a);
-    let audio_seed = profile.audio_seed.unwrap_or((profile.id as u32).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
+    let canvas_seed = profile.canvas_seed.unwrap_or((profile.id as u64).wrapping_mul(1664525) ^ 0x5a5a5a5a);
+    let audio_seed = profile.audio_seed.unwrap_or((profile.id as u64).wrapping_mul(1103515245) ^ 0xa5a5a5a5);
 
     let use_proxy = !profile.proxy_type.eq_ignore_ascii_case("direct") && !profile.proxy_string.trim().is_empty();
     let mut proxy_bridge_shutdown: Option<tokio::sync::oneshot::Sender<()>> = None;
+    let mut proxy_host_for_geo = String::new();
 
     if use_proxy {
         if let Some(parsed_proxy) = parse_proxy_string_with_type(&profile.proxy_string, &profile.proxy_type) {
+            proxy_host_for_geo = parsed_proxy.host.clone();
             let has_auth = parsed_proxy.username.is_some() && parsed_proxy.password.is_some();
             let is_socks = parsed_proxy.scheme.starts_with("socks");
 
@@ -1008,7 +1160,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                 ).await {
                     Ok((local_port, tx)) => {
                         info!("🚀 Đã kích hoạt Local SOCKS5 Bridge 127.0.0.1:{} -> {}:{} cho Profile #{}", local_port, parsed_proxy.host, parsed_proxy.port, profile.id);
-                        cmd.arg(format!("--proxy-server=socks5://127.0.0.1:{}", local_port));
+                        cmd.arg(format!("--proxy-server=socks5://127.0.0.1:{}", local_port))
+                            .arg("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1");
                         proxy_bridge_shutdown = Some(tx);
                     }
                     Err(e) => {
@@ -1168,17 +1321,18 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     });
     let _ = tx.send(Message::Text(auto_attach_cmd.to_string()));
 
+    let geo_info = resolve_proxy_geo(&proxy_host_for_geo).await;
+    info!("📍 [Profile #{}] Proxy Geo: {} ({}, {}) [Locale: {}]", profile.id, geo_info.timezone, geo_info.latitude, geo_info.longitude, geo_info.locale);
+
     let stealth_js = generate_stealth_script(profile);
     let profile_id = profile.id;
-    let profile_tiktok_username = profile.tiktok_username.clone();
-    let profile_tiktok_account_id = profile.tiktok_account_id;
 
     let custom_ua_cmds = if has_custom_ua {
         let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
         let platform_str = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
             "iPhone"
         } else if is_mobile {
-            "Linux armv81"
+            "Linux armv8l"
         } else {
             "Win32"
         };
@@ -1187,13 +1341,15 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
         } else {
             "Windows"
         };
+        let model_str = if is_mobile { "Pixel 8 Pro" } else { "" };
+        let platform_ver_str = if is_mobile { "14.0.0" } else { "15.0.0" };
 
         Some((
             json!({
                 "method": "Emulation.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "acceptLanguage": "en-US,en;q=0.9",
                     "platform": platform_str,
                     "userAgentMetadata": {
                         "brands": [
@@ -1203,9 +1359,9 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                         ],
                         "fullVersion": full_ver,
                         "platform": platform_title,
-                        "platformVersion": "15.0.0",
+                        "platformVersion": platform_ver_str,
                         "architecture": if is_mobile { "arm" } else { "x86" },
-                        "model": if is_mobile { "SM-S918B" } else { "" },
+                        "model": model_str,
                         "mobile": is_mobile,
                         "bitness": "64",
                         "wow64": false
@@ -1216,7 +1372,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                 "method": "Network.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "acceptLanguage": "en-US,en;q=0.9",
                     "platform": platform_str
                 }
             })
@@ -1226,6 +1382,8 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     };
 
     let start_url_clone = start_url.clone();
+    let win_w = window_width;
+    let win_h = window_height;
 
     // Reader task lắng nghe Target.attachedToTarget để tiêm Stealth vào MỌI tab mới tạo
     tokio::spawn(async move {
@@ -1255,6 +1413,41 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     "method": "Page.enable"
                                 }).to_string()));
 
+                                // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP Proxy (Chỉ kích hoạt khi dùng Proxy)
+                                if use_proxy {
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setTimezoneOverride",
+                                        "params": {
+                                            "timezoneId": geo_info.timezone
+                                        }
+                                    }).to_string()));
+
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setGeolocationOverride",
+                                        "params": {
+                                            "latitude": geo_info.latitude,
+                                            "longitude": geo_info.longitude,
+                                            "accuracy": 100
+                                        }
+                                    }).to_string()));
+
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Emulation.setLocaleOverride",
+                                        "params": {
+                                            "locale": geo_info.locale
+                                        }
+                                    }).to_string()));
+                                }
+
                                 // 2. Override UA nếu có tùy biến
                                 if let Some((ref ua_cmd, ref net_cmd)) = custom_ua_cmds {
                                     cmd_id += 1;
@@ -1270,19 +1463,37 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                     let _ = tx.send(Message::Text(c2.to_string()));
                                 }
 
-                                // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone
+                                // 2a. Đồng bộ Client Hints HTTP Headers qua Network.setExtraHTTPHeaders
+                                cmd_id += 1;
+                                let platform_header = if is_mobile { "\"Android\"" } else { "\"Windows\"" };
+                                let mobile_header = if is_mobile { "?1" } else { "?0" };
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Network.setExtraHTTPHeaders",
+                                    "params": {
+                                        "headers": {
+                                            "sec-ch-ua-mobile": mobile_header,
+                                            "sec-ch-ua-platform": platform_header
+                                        }
+                                    }
+                                }).to_string()));
+
+                                // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone (Vừa khít khung cửa sổ App Mode)
                                 if is_mobile {
                                     cmd_id += 1;
+                                    let v_width = win_w;
+                                    let v_height = win_h.saturating_sub(35);
                                     let _ = tx.send(Message::Text(json!({
                                         "id": cmd_id,
                                         "sessionId": session_id,
                                         "method": "Emulation.setDeviceMetricsOverride",
                                         "params": {
-                                            "width": screen_w,
-                                            "height": screen_h,
-                                            "deviceScaleFactor": 3.0,
+                                            "width": v_width,
+                                            "height": v_height,
+                                            "deviceScaleFactor": 2.625,
                                             "mobile": true,
-                                            "fitWindow": false
+                                            "fitWindow": true
                                         }
                                     }).to_string()));
 
@@ -1339,19 +1550,6 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
                                         "sessionId": session_id,
                                         "method": "Page.bringToFront"
                                     }).to_string()));
-                                    let is_tiktok = start_url_clone.contains("tiktok.com") 
-                                        || profile_tiktok_username.is_some() 
-                                        || profile_tiktok_account_id.is_some();
-                                    if is_tiktok {
-                                        let s_id = session_id.to_string();
-                                        let tx_sub = tx.clone();
-                                        let p_id = profile_id;
-                                        let u_name = profile_tiktok_username.clone();
-                                        let a_id = profile_tiktok_account_id;
-                                        tokio::spawn(async move {
-                                            check_and_handle_tiktok_login_cdp(p_id, s_id, tx_sub, u_name, a_id).await;
-                                        });
-                                    }
                                 }
 
                                 // 6. Cho phép frame/tab tiếp tục chạy (Runtime.runIfWaitingForDebugger)
@@ -1378,6 +1576,7 @@ pub async fn launch_cdp_profile(profile: &BrowserProfile) -> Result<(), String> 
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn check_and_handle_tiktok_login_cdp(
     profile_id: usize,
     session_id: String,
@@ -1573,6 +1772,69 @@ async fn check_and_handle_tiktok_login_cdp(
             let _ = tx.send(Message::Text(cmd_totp.to_string()));
             info!("🔑 [Profile #{}] Đã tự động tính toán mã 2FA TOTP RFC 6238 và gửi vào form xác thực!", profile_id);
         }
+
+        // 4. Giám sát phản hồi đăng nhập TikTok: Tự động phát hiện Rate Limit và Thành công
+        let monitor_script = format!(r#"
+            (function monitorLogin() {{
+                let count = 0;
+                const timer = setInterval(() => {{
+                    count++;
+                    const bodyText = (document.body ? document.body.innerText : '');
+                    const toast = document.querySelector('[data-e2e="toast"]') ||
+                                  document.querySelector('.tiktok-toast') ||
+                                  document.querySelector('.toast-message') ||
+                                  document.querySelector('.toast') ||
+                                  document.querySelector('[role="status"]');
+                    const toastText = toast ? (toast.innerText || '') : '';
+                    const combined = (bodyText + ' ' + toastText).toLowerCase();
+
+                    const isRateLimit = combined.includes('maximum number of attempts reached') || 
+                                        combined.includes('try again later') || 
+                                        combined.includes('too many attempts') ||
+                                        combined.includes('số lần thử tối đa') ||
+                                        combined.includes('vui lòng thử lại sau');
+
+                    if (isRateLimit) {{
+                        clearInterval(timer);
+                        console.warn('QHTD: TikTok Login Rate Limit Detected! Closing and waiting 1h...');
+                        fetch('http://127.0.0.1:9090/api/browser/tiktok/rate-limit-signal', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ profile_id: {} }})
+                        }}).catch(() => {{}});
+                        return;
+                    }}
+
+                    const hasAvatar = !!(
+                        document.querySelector('[data-e2e="profile-icon"]') || 
+                        document.querySelector('img[alt*="avatar"]') || 
+                        document.querySelector('a[href*="/@"]')
+                    );
+                    if (hasAvatar) {{
+                        clearInterval(timer);
+                        console.log('QHTD: TikTok Login Success! Saving session...');
+                        fetch('http://127.0.0.1:9090/api/browser/tiktok/login-success-signal', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ profile_id: {} }})
+                        }}).catch(() => {{}});
+                        return;
+                    }}
+
+                    if (count > 30) clearInterval(timer);
+                }}, 1500);
+            }})();
+        "#, profile_id, profile_id);
+
+        let cmd_monitor = json!({
+            "id": 999906,
+            "sessionId": session_id,
+            "method": "Runtime.evaluate",
+            "params": {
+                "expression": monitor_script
+            }
+        });
+        let _ = tx.send(Message::Text(cmd_monitor.to_string()));
     } else {
         // Chưa liên kết tài khoản C69 -> Kiểm tra nếu chưa login thì điều hướng đến trang login để người dùng tiện đăng nhập
         let redirect_script = r#"

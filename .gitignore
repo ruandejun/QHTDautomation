@@ -59,4 +59,16 @@ QHTDautomationDesktop/browser_profiles.json
 MunAutomationDesktop/chrome_data/
 *.log
 registered_accounts.json
+
+# Four-Agent Pipeline & Artifacts
 .bangiao/
+rendered_videos/
+MunAutomationDesktop/rendered_videos/
+MunAutomationDesktop/browser_data/
+MunAutomationDesktop/browser_profiles_data/
+MunAutomationDesktop/c69-router/
+MunAutomationDesktop/c69_session.json
+qhtd-farm-rust/c69_session.json
+MunAutomationDesktop/proxy_status_cache.json
+MunAutomationDesktop/data/proxy_status_cache.json
+.ai/

@@ -1,5 +1,6 @@
 mod adb_manager;
 mod api;
+pub mod ai_video_engine;
 pub mod browser_nurture;
 pub mod cdp_browser;
 mod stream_manager;
@@ -97,6 +98,7 @@ fn main() {
             let stream = Arc::new(StreamManager::new(adb.clone()));
             let nurture = Arc::new(TikTokNurtureEngine::new(adb.clone()));
             let browser_nurture = Arc::new(BrowserNurtureEngine::new());
+            browser_nurture.clone().start_auto_retry_scheduler();
 
             let app_state = AppState {
                 adb: adb.clone(),

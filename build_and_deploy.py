@@ -173,6 +173,13 @@ def zip_executable():
                 print(f"  + c69update.exe ({size_upd:.1f} MB)")
                 zipf.write(updater_exe, "c69update.exe")
 
+            # MunAutomation.exe (Native Rust Core Engine)
+            rust_exe = os.path.join("MunAutomationDesktop", "MunAutomation.exe")
+            if os.path.exists(rust_exe):
+                size_rust = os.path.getsize(rust_exe) / 1024 / 1024
+                print(f"  + MunAutomation.exe ({size_rust:.1f} MB)")
+                zipf.write(rust_exe, "MunAutomation.exe")
+
         zip_size = os.path.getsize(zip_path) / 1024 / 1024
         elapsed  = time.time() - t0
         print(f"=== Nén thành công! {zip_size:.1f} MB | {elapsed:.0f}s ===")

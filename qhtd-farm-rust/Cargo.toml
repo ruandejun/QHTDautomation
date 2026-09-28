@@ -22,6 +22,7 @@ rand = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2.1"
+base64 = "0.22"
 wry = "0.40"
 tao = "0.28"
 tokio-tungstenite = "0.24"
