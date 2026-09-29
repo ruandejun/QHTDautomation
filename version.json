@@ -1,5 +1,5 @@
 {
     "version": "2.3.0",
-    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip?v=2.3.0",
+    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
     "changelog": "Nâng cấp Mun Anti Browser thuần Rust: Tích hợp bộ JS Healthy Stealth tự nhiên (Native toString WeakMap, Window Chrome runtime, WebGL masking, WebRTC protection, đồng bộ múi giờ GeoIP) — đạt chuẩn 100/100 Trustworthy trên Iphey và vượt qua các bộ kiểm tra bot/Cloudflare."
 }

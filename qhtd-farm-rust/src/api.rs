@@ -824,8 +824,19 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         new_prof.profile_user_agent = String::new();
     }
 
-    let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
-    let (def_rend, def_vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
+    let is_mobile = new_prof.profile_os.eq_ignore_ascii_case("Android")
+        || new_prof.profile_os.eq_ignore_ascii_case("iOS")
+        || new_prof.profile_user_agent.contains("Mobile")
+        || new_prof.profile_user_agent.contains("Android")
+        || new_prof.profile_user_agent.contains("iPhone");
+
+    let (def_rend, def_vend) = if is_mobile {
+        let m_idx = next_id % crate::cdp_browser::MOBILE_GPU_POOL.len();
+        crate::cdp_browser::MOBILE_GPU_POOL[m_idx]
+    } else {
+        let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
+        crate::cdp_browser::GPU_POOL[gpu_idx]
+    };
     if new_prof.gpu_renderer.is_none() || new_prof.gpu_renderer.as_ref().unwrap().trim().is_empty() {
         new_prof.gpu_renderer = Some(def_rend.to_string());
         new_prof.gpu_vendor = Some(def_vend.to_string());
@@ -926,21 +937,26 @@ async fn randomize_fingerprints_handler(
             p.canvas_seed = Some(rng.gen_range(10_000_000..99_999_999));
             p.audio_seed = Some(rng.gen_range(10_000_000..99_999_999));
 
-            // 2. Chọn ngẫu nhiên GPU từ GPU_POOL
-            let gpu_idx = rng.gen_range(0..crate::cdp_browser::GPU_POOL.len());
-            let (rend, vend) = crate::cdp_browser::GPU_POOL[gpu_idx];
+            // 4. Resolution tương thích theo OS / UA hiện tại của profile
+            let is_mobile = p.profile_os.eq_ignore_ascii_case("Android")
+                || p.profile_os.eq_ignore_ascii_case("iOS")
+                || p.profile_user_agent.contains("Mobile")
+                || p.profile_user_agent.contains("Android");
+
+            // 2. Chọn ngẫu nhiên GPU từ GPU_POOL hoặc MOBILE_GPU_POOL
+            let (rend, vend) = if is_mobile {
+                let gpu_idx = rng.gen_range(0..crate::cdp_browser::MOBILE_GPU_POOL.len());
+                crate::cdp_browser::MOBILE_GPU_POOL[gpu_idx]
+            } else {
+                let gpu_idx = rng.gen_range(0..crate::cdp_browser::GPU_POOL.len());
+                crate::cdp_browser::GPU_POOL[gpu_idx]
+            };
             p.gpu_renderer = Some(rend.to_string());
             p.gpu_vendor = Some(vend.to_string());
 
             // 3. CPU & RAM
             p.profile_cpu = *cpus.choose(&mut rng).unwrap_or(&8);
             p.profile_ram = *rams.choose(&mut rng).unwrap_or(&16);
-
-            // 4. Resolution tương thích theo OS / UA hiện tại của profile
-            let is_mobile = p.profile_os.eq_ignore_ascii_case("Android")
-                || p.profile_os.eq_ignore_ascii_case("iOS")
-                || p.profile_user_agent.contains("Mobile")
-                || p.profile_user_agent.contains("Android");
 
             if is_mobile {
                 p.profile_resolution = mobile_resolutions.choose(&mut rng).unwrap_or(&"412x915").to_string();

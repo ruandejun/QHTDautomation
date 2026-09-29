@@ -275,6 +275,14 @@ pub static GPU_POOL: &[(&str, &str)] = &[
     ("ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Google Inc. (NVIDIA)"),
 ];
 
+pub static MOBILE_GPU_POOL: &[(&str, &str)] = &[
+    ("Mali-G715-Immortalis MC11", "Google Inc. (ARM)"),
+    ("Adreno (TM) 740", "Google Inc. (Qualcomm)"),
+    ("Adreno (TM) 750", "Google Inc. (Qualcomm)"),
+    ("Mali-G78 MP14", "Google Inc. (ARM)"),
+    ("Adreno (TM) 660", "Google Inc. (Qualcomm)"),
+];
+
 /// Tìm đường dẫn Custom Anti-Detect Chromium (qhtd-browser.exe)
 pub fn find_custom_chromium() -> Option<PathBuf> {
     let current_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -380,8 +388,19 @@ pub fn extract_chrome_version(ua: &str) -> (String, String) {
 fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let p_id = profile.id;
 
-    let gpu_idx = p_id % GPU_POOL.len();
-    let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
+    let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
+        || profile.profile_os.eq_ignore_ascii_case("iOS")
+        || profile.profile_user_agent.contains("Mobile")
+        || profile.profile_user_agent.contains("Android")
+        || profile.profile_user_agent.contains("iPhone");
+
+    let (default_renderer, default_vendor) = if is_mobile {
+        let m_idx = p_id % MOBILE_GPU_POOL.len();
+        MOBILE_GPU_POOL[m_idx]
+    } else {
+        let gpu_idx = p_id % GPU_POOL.len();
+        GPU_POOL[gpu_idx]
+    };
 
     let renderer = profile
         .gpu_renderer
@@ -418,12 +437,6 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_resolution.clone()
     };
 
-    let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
-        || profile.profile_os.eq_ignore_ascii_case("iOS")
-        || profile.profile_user_agent.contains("Mobile")
-        || profile.profile_user_agent.contains("Android")
-        || profile.profile_user_agent.contains("iPhone");
-
     let platform = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
         "iPhone"
     } else if is_mobile {
@@ -441,7 +454,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let touch_points = if is_mobile { 5 } else { 0 };
 
     format!(
-        r#"// Mun Clean Pure Stealth Script v9.0 (Healthy Engine - Profile #{p_id})
+        r#"// Mun Clean Pure Stealth Script v10.0 (Anti-Jungle Shield - Profile #{p_id})
 (function() {{
     'use strict';
 
@@ -449,19 +462,22 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     var _origToString = Function.prototype.toString;
     var _nativeCache = new WeakMap();
 
-    Function.prototype.toString = function() {{
+    var toStringProxy = function toString() {{
         if (_nativeCache.has(this)) {{
             return _nativeCache.get(this);
         }}
         return _origToString.call(this);
     }};
-    _nativeCache.set(Function.prototype.toString, 'function toString() {{ [native code] }}');
+    try {{ delete toStringProxy.prototype; }} catch(e) {{}}
+    _nativeCache.set(toStringProxy, 'function toString() {{ [native code] }}');
+    _nativeCache.set(_origToString, 'function toString() {{ [native code] }}');
+    Function.prototype.toString = toStringProxy;
 
     function makeNative(fn, name) {{
+        try {{ delete fn.prototype; }} catch(e) {{}}
         _nativeCache.set(fn, 'function ' + (name || fn.name || '') + '() {{ [native code] }}');
         return fn;
     }}
-    makeNative(Function.prototype.toString, 'toString');
 
     function overrideGetter(obj, prop, getterFn) {{
         try {{
@@ -497,29 +513,77 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     function patchWindowContext(w) {{
         if (!w || !w.navigator) return;
 
-        // 2. Xóa các biến rò rỉ tự động hoá CDP
+        // 1b. Neutralize console.debug to prevent devtools-detector getter traps (P1, F1 - jungle signal)
+        try {{
+            if (w.console) {{
+                var safeDebug = function debug() {{}};
+                Object.defineProperty(safeDebug, 'name', {{ value: 'debug', configurable: true }});
+                makeNative(safeDebug, 'debug');
+                w.console.debug = safeDebug;
+            }}
+        }} catch(e) {{}}
+
+        // 2. Xóa triệt để các biến và cờ tự động hoá CDP / Selenium / Playwright
         try {{
             var keysToRemove = [
+                'callPhantom', '_phantom', 'phantom',
+                'cdc_adoQpoasnfa76pfcZLmcfl_Array',
+                'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
+                'cdc_adoQpoasnfa76pfcZLmcfl_Symbol',
                 'cdc_adoQpoasnfa76pfcZLmcfl',
-                'domAutomation',
+                '$cdc_asdjflasutopfhvcZLmcfl_',
+                'CDCJStestRunStatus',
+                '_Selenium_IDE_Recorder',
+                'callSelenium',
+                '_selenium',
+                'selenium',
+                '__phantomas',
+                '__pwInitScripts',
+                '__playwright__binding__',
                 'domAutomationController',
+                'domAutomation',
+                'awesomium',
+                '$wdc_',
+                '_WEBDRIVER_ELEM_CACHE',
+                'spawn',
+                '__nightmare',
+                'hcaptchaCallbackZenno',
+                '__webdriver_script_fn',
+                '__webdriver_script_func',
+                '$chrome_asyncScriptInfo',
+                '__driver_evaluate',
                 '__webdriver_evaluate',
                 '__selenium_evaluate',
-                '__webdriver_script_fn',
-                '$chrome_asyncScriptInfo'
+                '__fxdriver_evaluate',
+                '__driver_unwrapped',
+                '__webdriver_unwrapped',
+                '__selenium_unwrapped',
+                '__fxdriver_unwrapped'
             ];
             for (var i = 0; i < keysToRemove.length; i++) {{
                 try {{ delete w[keysToRemove[i]]; }} catch(e) {{}}
             }}
+            try {{ delete w.webdriver; }} catch(e) {{}}
+            if (w.document && w.document.documentElement) {{
+                var attrsToRemove = ['webdriver', 'selenium', 'driver', 'data-automation', 'data-headless', 'data-test'];
+                for (var j = 0; j < attrsToRemove.length; j++) {{
+                    try {{ w.document.documentElement.removeAttribute(attrsToRemove[j]); }} catch(e) {{}}
+                }}
+            }}
         }} catch(e) {{}}
 
-        // 3. Patch navigator.webdriver = undefined (trên prototype chuẩn)
+        // 3. Chuẩn hoá navigator.webdriver = false (chuẩn W3C spec, không bao giờ undefined)
         try {{
             var nav = w.navigator;
-            var navProto = Object.getPrototypeOf(nav) || nav;
             try {{ delete nav.webdriver; }} catch(e) {{}}
+            var navProto = Object.getPrototypeOf(nav) || nav;
             try {{ delete navProto.webdriver; }} catch(e) {{}}
-            overrideGetter(navProto, 'webdriver', function() {{ return undefined; }});
+            Object.defineProperty(navProto, 'webdriver', {{
+                get: makeNative(function webdriver() {{ return false; }}, 'webdriver'),
+                set: undefined,
+                enumerable: true,
+                configurable: true
+            }});
         }} catch(e) {{}}
 
         // 4. Hardware specs & Platform trên Navigator.prototype
@@ -1374,6 +1438,8 @@ pub async fn launch_cdp_profile_with_bounds(
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg("--disable-blink-features=AutomationControlled")
+        .arg("--exclude-switches=enable-automation")
+        .arg("--disable-infobars")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=en-US,en");
@@ -1388,8 +1454,13 @@ pub async fn launch_cdp_profile_with_bounds(
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
     }
 
-    let gpu_idx = profile.id % GPU_POOL.len();
-    let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
+    let (default_renderer, default_vendor) = if is_mobile {
+        let m_idx = profile.id % MOBILE_GPU_POOL.len();
+        MOBILE_GPU_POOL[m_idx]
+    } else {
+        let gpu_idx = profile.id % GPU_POOL.len();
+        GPU_POOL[gpu_idx]
+    };
     let renderer = profile
         .gpu_renderer
         .as_deref()
@@ -1598,7 +1669,7 @@ pub async fn launch_cdp_profile_with_bounds(
         "method": "Target.setAutoAttach",
         "params": {
             "autoAttach": true,
-            "waitForDebuggerOnStart": true,
+            "waitForDebuggerOnStart": false,
             "flatten": true
         }
     });
