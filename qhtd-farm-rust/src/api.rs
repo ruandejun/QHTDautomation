@@ -2166,7 +2166,7 @@ async fn router_rotate_handler() -> Json<serde_json::Value> {
 
 // ── Auto-Update Handlers ─────────────────────────────────────────────────────
 
-pub const APP_VERSION: &str = "2.2.0";
+pub const APP_VERSION: &str = "2.3.0";
 
 fn is_newer_semver(server: &str, current: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> {
@@ -3322,7 +3322,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <span id="c69-auth-user" style="font-weight: 700; color: #38bdf8;">Đang kiểm tra C69...</span>
                     <button class="btn btn-dark" id="btn-c69-auth-action" onclick="handleC69AuthBadgeClick()" style="padding: 2px 7px; font-size: 10px; border-color: #38bdf8; color: #38bdf8; margin-left: 4px;">Đăng Nhập</button>
                 </div>
-                <button class="btn btn-dark" id="btn-check-update" onclick="checkAppUpdate(true)" style="border-color: #38bdf8; color: #38bdf8; font-weight: 700; display: flex; align-items: center; gap: 4px;" title="Bấm để kiểm tra bản cập nhật mới từ hệ thống">⚡ v2.2.0</button>
+                <button class="btn btn-dark" id="btn-check-update" onclick="checkAppUpdate(true)" style="border-color: #38bdf8; color: #38bdf8; font-weight: 700; display: flex; align-items: center; gap: 4px;" title="Bấm để kiểm tra bản cập nhật mới từ hệ thống">⚡ v2.3.0</button>
                 <button class="btn btn-dark" onclick="refreshAll()">🔄 Quét Lại</button>
             </div>
         </div>
@@ -3676,7 +3676,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); padding: 12px 16px; border-radius: 10px;">
                         <div>
                             <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Phiên bản hiện tại</div>
-                            <div id="update-current-ver" style="font-weight: 700; color: #f8fafc; font-size: 14px;">v2.2.0</div>
+                            <div id="update-current-ver" style="font-weight: 700; color: #f8fafc; font-size: 14px;">v2.3.0</div>
                         </div>
                         <div style="font-size: 18px; color: #38bdf8;">➔</div>
                         <div style="text-align: right;">

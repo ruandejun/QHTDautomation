@@ -1,6 +1,6 @@
 [package]
 name = "qhtd-farm-core"
-version = "1.0.0"
+version = "2.3.0"
 edition = "2021"
 authors = ["QHTD Automation Team"]
 description = "High Performance Android Phone Farm & TikTok Nurture Engine in Rust"
