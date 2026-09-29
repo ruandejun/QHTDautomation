@@ -1442,13 +1442,9 @@ pub async fn launch_cdp_profile_with_bounds(
         .arg("--disable-infobars")
         .arg(format!("--window-size={},{}", window_width, window_height))
         .arg(format!("--window-position={},{}", offset_x, offset_y))
-        .arg("--lang=en-US,en");
-
-    if is_mobile {
-        cmd.arg(format!("--app={}", start_url));
-    } else {
-        cmd.arg("--new-window").arg(&start_url);
-    }
+        .arg("--lang=en-US,en")
+        .arg("--new-window")
+        .arg(&start_url);
 
     if has_custom_ua {
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
@@ -1754,6 +1750,26 @@ pub async fn launch_cdp_profile_with_bounds(
                                 .and_then(|ti| ti.get("type"))
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
+
+                            let target_url = params.get("targetInfo")
+                                .and_then(|ti| ti.get("url"))
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("");
+                            let target_id = params.get("targetInfo")
+                                .and_then(|ti| ti.get("targetId"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+
+                            if target_url.contains("onelink.me") || target_url.contains("snssdk1233") {
+                                info!("🛡️ [Profile #{}] Chặn và tự động đóng tab onelink/snssdk quảng cáo: {}", profile_id, target_url);
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "method": "Target.closeTarget",
+                                    "params": { "targetId": target_id }
+                                }).to_string()));
+                                continue;
+                            }
 
                             let is_page = target_type == "page";
                             let is_iframe = target_type == "iframe";

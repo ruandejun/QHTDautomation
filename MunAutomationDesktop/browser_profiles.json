@@ -21,12 +21,10 @@
     "gpu_vendor": "Google Inc. (NVIDIA)",
     "tiktok_account_id": 16819,
     "tiktok_username": "user475761481557",
-    "last_nurture_status": "Chua nuoi",
-    "last_nurture_time": null,
-    "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@104.245.241.118:1080",
-    "nurture_status": "San sang nuoi"
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-29 22:02:03",
+    "last_nurture_error": "Đã xem 5 video, thả tim 2 lượt, bình luận 1 lượt",
+    "retry_after_epoch": null
   },
   {
     "id": 1,
@@ -53,9 +51,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@104.245.241.169:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 2,
@@ -79,12 +75,10 @@
     "gpu_vendor": "Google Inc. (AMD)",
     "tiktok_account_id": 16808,
     "tiktok_username": "user1520468208572",
-    "last_nurture_status": "Chua nuoi",
-    "last_nurture_time": null,
-    "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@104.245.241.43:1080",
-    "nurture_status": "San sang nuoi"
+    "last_nurture_status": "Đã nuôi thành công",
+    "last_nurture_time": "2026-09-29 21:53:33",
+    "last_nurture_error": "Đã xem 4 video, thả tim 3 lượt, bình luận 1 lượt, chia sẻ 2 lượt",
+    "retry_after_epoch": null
   },
   {
     "id": 3,
@@ -111,9 +105,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@104.245.241.49:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 4,
@@ -140,9 +132,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@104.245.243.247:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 5,
@@ -169,9 +159,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@140.235.0.238:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 6,
@@ -198,9 +186,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@140.235.1.167:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 7,
@@ -227,9 +213,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@140.235.1.229:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 8,
@@ -256,9 +240,7 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@140.235.1.68:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   },
   {
     "id": 9,
@@ -285,8 +267,6 @@
     "last_nurture_status": "Chua nuoi",
     "last_nurture_time": null,
     "last_nurture_error": null,
-    "retry_after_epoch": null,
-    "proxy": "socks5://fine_3ba57f9065b1:Z55-xO99RycueVC4@140.235.1.95:1080",
-    "nurture_status": "San sang nuoi"
+    "retry_after_epoch": null
   }
 ]

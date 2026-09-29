@@ -1436,7 +1436,7 @@ impl BrowserNurtureEngine {
         let mut watched_count = 0u32;
         let mut likes_count = 0u32;
         let mut comments_count = 0u32;
-        let mut shares_count = 0u32;
+        let shares_count = 0u32;
 
         while run_flag.load(Ordering::Relaxed) {
             let elapsed = nurture_start.elapsed().as_secs();
@@ -1502,44 +1502,8 @@ impl BrowserNurtureEngine {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
-            // 2. Chia sẻ video (Share / Copy Link): Bắt buộc thực hiện khi chưa share lần nào
-            let will_share = (shares_count == 0 && watched_count >= 2) || (watched_count % 3 == 0) || rand::thread_rng().gen_bool(0.40);
-            if will_share {
-                let share_js = r#"(() => {
-                    const shareBtn = document.querySelector('[data-e2e="share-icon"]') || 
-                                     document.querySelector('[data-e2e="feed-share-icon"]') ||
-                                     document.querySelector('button[aria-label*="Share"]') ||
-                                     document.querySelector('button[aria-label*="Chia sẻ"]');
-                    if (shareBtn) { shareBtn.click(); return true; }
-                    return false;
-                })()"#;
-                if let Ok(opened) = cdp.evaluate(share_js).await {
-                    if opened.as_bool().unwrap_or(false) {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        let copy_link_js = r#"(() => {
-                            const copyBtn = Array.from(document.querySelectorAll('div, button, span, li, p')).find(el => {
-                                const t = (el.innerText || '').trim().toLowerCase();
-                                return t.includes('copy link') || t.includes('sao chép liên kết');
-                            });
-                            if (copyBtn) { copyBtn.click(); return true; }
-                            return false;
-                        })()"#;
-                        let _ = cdp.evaluate(copy_link_js).await;
-                        shares_count += 1;
-                        self.update_stats(
-                            pid,
-                            watched_count,
-                            likes_count,
-                            comments_count,
-                            shares_count,
-                            format!("🔗 Đã chia sẻ / copy link video #{}!", watched_count),
-                            "Đang lướt FYP"
-                        );
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        let _ = cdp.press_key("Escape", "Escape", 27).await;
-                    }
-                }
-            }
+            // 2. Chia sẻ video (Share / Copy Link): Đã bỏ hoàn toàn theo yêu cầu của anh Tony
+            // Tránh bị mở tab ngoài sang snssdk1233.onelink.me làm văng khỏi TikTok
 
             // 3. Bình luận (Comment): Bắt buộc thực hiện ở video #2 hoặc khi chưa có bình luận
             let will_comment = (comments_count == 0 && watched_count >= 2) || rand::thread_rng().gen_bool(0.30);
@@ -1599,7 +1563,7 @@ impl BrowserNurtureEngine {
 
             // Kiểm tra điều kiện hoàn tất nuôi tối ưu (Element-Driven & Time-Bounded):
             // 1. Đạt thời lượng mục tiêu (30s - 45s) VÀ đã xem tối thiểu 2 video VÀ có tương tác -> Hoàn tất ngay!
-            let has_engaged = likes_count >= 1 || comments_count >= 1 || shares_count >= 1;
+            let has_engaged = likes_count >= 1 || comments_count >= 1;
             if elapsed >= target_duration_secs && watched_count >= 2 && has_engaged {
                 self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s) với {} video, {} tim. Đang hoàn tất...", elapsed, target_duration_secs, watched_count, likes_count), "Hoàn tất nuôi");
                 break;
@@ -1619,7 +1583,7 @@ impl BrowserNurtureEngine {
 
         // Hoàn tất chu trình nuôi
         let final_elapsed = nurture_start.elapsed().as_secs();
-        let summary = format!("Đã xem {} video, thả tim {} lượt, bình luận {} lượt, chia sẻ {} lượt", watched_count, likes_count, comments_count, shares_count);
+        let summary = format!("Đã xem {} video, thả tim {} lượt, bình luận {} lượt", watched_count, likes_count, comments_count);
         self.update_log(
             pid, 
             format!("✅ Chu trình nuôi hoàn tất trong {}s. Tổng: {}. Đang tự động tắt trình duyệt...", final_elapsed, summary), 
