@@ -43,3 +43,8 @@ Mọi thay đổi tính năng hoặc bugfix đều bắt buộc tuân thủ 4 va
 3. **Tester (.bangiao/ket-qua-test.md)**: Viết unit/behavioral test độc lập. Chạy test. Test rớt thì dừng lại, cấm sửa code sản phẩm để ép test xanh.
 4. **Reviewer (.bangiao/danh-gia.md)**: Read-only, soi git diff và ra phán quyết CHOT / CAN SUA / CHAN.
 5. **Chốt chặn con người**: Tony là người duyệt cuối cùng trước khi gộp nhánh (merge). Cấm tự ý merge vào nhánh chính.
+
+## 6. BẮT BUỘC 100% THUẦN RUST — KHÔNG DÙNG BẢN PYTHON NỮA (CHỈ ĐẠO TONY)
+- **Quy tắc tuyệt đối**: Mọi phát triển, sửa lỗi, tối ưu stealth/anti-detect, tính năng nuôi tài khoản (nurture), quản lý Profile, SOCKS5 proxy, và auto-update của `QHTDautomation` **BẮT BUỘC** viết và build trực tiếp trên Rust Core (`qhtd-farm-rust/` sinh ra `MunAutomation.exe`).
+- **Cấm hoàn toàn**: Tuyệt đối KHÔNG code hay khởi chạy bản Python cũ (`main.py`, PyQt6, `C69Automation.exe`). Hệ thống đã chuyển đổi hoàn toàn sang Pure Native Rust Engine để đảm bảo tốc độ cao, siêu nhẹ (~13MB) và tối ưu hóa tài nguyên phần cứng.
+
