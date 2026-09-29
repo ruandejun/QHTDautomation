@@ -192,6 +192,9 @@ pub fn create_router(state: AppState) -> Router {
         // ── C69 Router & Proxy APIs ──
         .route("/api/router/status", get(router_status_handler))
         .route("/api/router/rotate", post(router_rotate_handler))
+        // ── Auto-Update & System APIs ──
+        .route("/api/system/check-update", get(system_check_update_handler))
+        .route("/api/system/perform-update", post(system_perform_update_handler))
         .layer(cors)
         .with_state(state)
 }
@@ -646,12 +649,41 @@ pub fn get_all_profiles() -> Vec<BrowserProfile> {
     vec![]
 }
 
+static PROFILES_SAVE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn sanitize_profiles_on_startup() {
+    let _lock = PROFILES_SAVE_MUTEX.lock();
+    let path = get_profiles_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
+            let mut changed = false;
+            for p in &mut profiles {
+                if let Some(ref st) = p.last_nurture_status {
+                    if st.contains("Đang") || st.contains("Chờ slot") || st.contains("Kiểm tra") || st.contains("Khởi động") {
+                        p.last_nurture_status = Some("Đã dừng".to_string());
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                let tmp_path = path.with_extension("tmp");
+                if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
+                    if std::fs::write(&tmp_path, json_str).is_ok() {
+                        let _ = std::fs::rename(&tmp_path, &path);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn update_profile_nurture_status(
     profile_id: usize,
     status: &str,
     error: Option<&str>,
     retry_after_secs: Option<u64>,
 ) {
+    let _lock = PROFILES_SAVE_MUTEX.lock();
     let path = get_profiles_file_path();
     if let Ok(data) = std::fs::read_to_string(&path) {
         if let Ok(mut profiles) = serde_json::from_str::<Vec<BrowserProfile>>(&data) {
@@ -677,8 +709,11 @@ pub fn update_profile_nurture_status(
                 }
             }
             if updated {
+                let tmp_path = path.with_extension("tmp");
                 if let Ok(json_str) = serde_json::to_string_pretty(&profiles) {
-                    let _ = std::fs::write(&path, json_str);
+                    if std::fs::write(&tmp_path, json_str).is_ok() {
+                        let _ = std::fs::rename(&tmp_path, &path);
+                    }
                 }
             }
         }
@@ -2129,6 +2164,180 @@ async fn router_rotate_handler() -> Json<serde_json::Value> {
     }))
 }
 
+// ── Auto-Update Handlers ─────────────────────────────────────────────────────
+
+pub const APP_VERSION: &str = "2.2.0";
+
+fn is_newer_semver(server: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.trim_start_matches('v')
+            .trim()
+            .split('.')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+    let s = parse(server);
+    let c = parse(current);
+    for (a, b) in s.iter().zip(c.iter()) {
+        if a > b { return true; }
+        if a < b { return false; }
+    }
+    s.len() > c.len()
+}
+
+#[derive(Serialize)]
+pub struct CheckUpdateResponse {
+    pub has_update: bool,
+    pub current_version: &'static str,
+    pub server_version: String,
+    pub download_url: String,
+    pub changelog: String,
+}
+
+pub async fn system_check_update_handler() -> Json<CheckUpdateResponse> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(resp) = client.get("https://cu.c69.us/api/tool-version/").send().await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            let server_ver = json.get("version").and_then(|v| v.as_str()).unwrap_or(APP_VERSION).to_string();
+            let download_url = json.get("download_url").and_then(|v| v.as_str()).unwrap_or("https://cdn.c69.us/QHTDautomation-v2.zip").to_string();
+            let changelog = json.get("changelog").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let has_update = is_newer_semver(&server_ver, APP_VERSION);
+            return Json(CheckUpdateResponse {
+                has_update,
+                current_version: APP_VERSION,
+                server_version: server_ver,
+                download_url,
+                changelog,
+            });
+        }
+    }
+
+    Json(CheckUpdateResponse {
+        has_update: false,
+        current_version: APP_VERSION,
+        server_version: APP_VERSION.to_string(),
+        download_url: "https://cdn.c69.us/QHTDautomation-v2.zip".to_string(),
+        changelog: "Ứng dụng đang ở phiên bản mới nhất.".to_string(),
+    })
+}
+
+#[derive(Deserialize)]
+pub struct PerformUpdateRequest {
+    pub download_url: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PerformUpdateResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+pub async fn system_perform_update_handler(
+    Json(payload): Json<PerformUpdateRequest>,
+) -> Json<PerformUpdateResponse> {
+    let url = payload.download_url.unwrap_or_else(|| "https://cdn.c69.us/QHTDautomation-v2.zip".to_string());
+    let temp_dir = std::env::temp_dir();
+    let zip_path = temp_dir.join("MunAutomation_Update.zip");
+
+    tracing::info!("AutoUpdate: downloading from {} to {:?}", url, zip_path);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .unwrap_or_default();
+
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return Json(PerformUpdateResponse {
+                success: false,
+                message: format!("Không thể kết nối tải bản cập nhật: {}", e),
+            });
+        }
+    };
+
+    if !resp.status().is_success() {
+        return Json(PerformUpdateResponse {
+            success: false,
+            message: format!("Máy chủ phản hồi mã lỗi: {}", resp.status()),
+        });
+    }
+
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return Json(PerformUpdateResponse {
+                success: false,
+                message: format!("Lỗi khi tải dữ liệu file: {}", e),
+            });
+        }
+    };
+
+    if let Err(e) = std::fs::write(&zip_path, &bytes) {
+        return Json(PerformUpdateResponse {
+            success: false,
+            message: format!("Không thể ghi file zip ra ổ đĩa tạm: {}", e),
+        });
+    }
+
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("MunAutomation.exe"));
+    let app_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+
+    let mut updater_path = app_dir.join("c69update.exe");
+    if !updater_path.exists() {
+        let dev_dist = PathBuf::from(r"d:\Workspace\Python\QHTDautomation\dist\c69update.exe");
+        if dev_dist.exists() {
+            updater_path = dev_dist;
+        } else {
+            let alt_path = app_dir.join("dist").join("c69update.exe");
+            if alt_path.exists() {
+                updater_path = alt_path;
+            }
+        }
+    }
+
+    if !updater_path.exists() {
+        return Json(PerformUpdateResponse {
+            success: false,
+            message: format!("Không tìm thấy c69update.exe tại {:?}", updater_path),
+        });
+    }
+
+    let pid = std::process::id();
+    let exe_name = current_exe.file_name().and_then(|n| n.to_str()).unwrap_or("MunAutomation.exe");
+
+    let spawn_res = std::process::Command::new(&updater_path)
+        .arg(format!("--pid={}", pid))
+        .arg(format!("--zip={}", zip_path.display()))
+        .arg(format!("--exe={}", exe_name))
+        .arg(format!("--dir={}", app_dir.display()))
+        .spawn();
+
+    match spawn_res {
+        Ok(_) => {
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                std::process::exit(0);
+            });
+
+            Json(PerformUpdateResponse {
+                success: true,
+                message: "Đang khởi động c69update.exe để giải nén và cập nhật. Ứng dụng sẽ tự động khởi động lại sau giây lát!".to_string(),
+            })
+        }
+        Err(e) => {
+            Json(PerformUpdateResponse {
+                success: false,
+                message: format!("Không thể spawn c69update.exe: {}", e),
+            })
+        }
+    }
+}
+
 // ── Unified Desktop Dashboard HTML ───────────────────────────────────────────
 
 async fn dashboard_handler() -> Html<&'static str> {
@@ -3113,6 +3322,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <span id="c69-auth-user" style="font-weight: 700; color: #38bdf8;">Đang kiểm tra C69...</span>
                     <button class="btn btn-dark" id="btn-c69-auth-action" onclick="handleC69AuthBadgeClick()" style="padding: 2px 7px; font-size: 10px; border-color: #38bdf8; color: #38bdf8; margin-left: 4px;">Đăng Nhập</button>
                 </div>
+                <button class="btn btn-dark" id="btn-check-update" onclick="checkAppUpdate(true)" style="border-color: #38bdf8; color: #38bdf8; font-weight: 700; display: flex; align-items: center; gap: 4px;" title="Bấm để kiểm tra bản cập nhật mới từ hệ thống">⚡ v2.2.0</button>
                 <button class="btn btn-dark" onclick="refreshAll()">🔄 Quét Lại</button>
             </div>
         </div>
@@ -3448,6 +3658,53 @@ async fn dashboard_handler() -> Html<&'static str> {
                 </div>
                 <div id="c69-pag-controls" style="display:flex; align-items:center; gap:5px;">
                     <!-- Rendered by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL 0: AUTO UPDATE MODAL (GLASSMORPHISM) -->
+        <div id="modal-auto-update" class="modal-backdrop" style="z-index: 2000;">
+            <div class="modal-dialog" style="max-width: 520px; background: rgba(8, 13, 30, 0.96); backdrop-filter: blur(24px); border: 1px solid rgba(56, 189, 248, 0.4); box-shadow: 0 20px 50px rgba(0, 242, 254, 0.2); border-radius: 14px;">
+                <div class="modal-header" style="border-bottom: 1px solid rgba(56, 189, 248, 0.2); padding: 14px 18px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="font-size: 20px;">🚀</span>
+                        <h3 id="update-modal-title" style="font-size: 14px; font-weight: 800; color: #fff; letter-spacing: 0.3px;">Có Bản Cập Nhật Mới!</h3>
+                    </div>
+                    <button class="btn-close" onclick="closeUpdateModal()">✕</button>
+                </div>
+                <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); padding: 12px 16px; border-radius: 10px;">
+                        <div>
+                            <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Phiên bản hiện tại</div>
+                            <div id="update-current-ver" style="font-weight: 700; color: #f8fafc; font-size: 14px;">v2.2.0</div>
+                        </div>
+                        <div style="font-size: 18px; color: #38bdf8;">➔</div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Phiên bản mới</div>
+                            <div id="update-new-ver" style="font-weight: 800; color: #10b981; font-size: 15px;">v2.2.1</div>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">📝 Nội dung cập nhật (Changelog):</div>
+                        <div id="update-changelog-box" style="background: rgba(2, 4, 9, 0.9); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 12px; font-size: 12px; line-height: 1.6; color: #cbd5e1; max-height: 140px; overflow-y: auto; white-space: pre-line;">
+                            Đang tải thông tin...
+                        </div>
+                    </div>
+                    <div id="update-progress-section" style="display: none; flex-direction: column; gap: 8px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.25); padding: 12px; border-radius: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px;">
+                            <span id="update-progress-status" style="color: #38bdf8; font-weight: 600;">⏳ Đang tải bản cập nhật từ CDN C69...</span>
+                            <span id="update-progress-pct" style="color: #fff; font-weight: 700;">0%</span>
+                        </div>
+                        <div style="width: 100%; height: 6px; background: rgba(255, 255, 255, 0.1); border-radius: 999px; overflow: hidden;">
+                            <div id="update-progress-fill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #00f2fe, #10b981); transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div style="padding: 12px 18px; border-top: 1px solid rgba(255, 255, 255, 0.08); display: flex; justify-content: flex-end; gap: 10px; background: rgba(0, 0, 0, 0.25); border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;">
+                    <button class="btn btn-dark" id="btn-update-cancel" onclick="closeUpdateModal()">Để Sau</button>
+                    <button class="btn btn-primary" id="btn-update-action" onclick="triggerAppUpdate()" style="background: linear-gradient(135deg, #00f2fe, #0284c7); border: none; font-weight: 700; padding: 8px 18px; box-shadow: 0 0 12px rgba(0, 242, 254, 0.3);">
+                        ⬇️ Cập Nhật Ngay
+                    </button>
                 </div>
             </div>
         </div>
@@ -5452,7 +5709,8 @@ mail3@domain.com|pass3|refresh_token"></textarea>
             tbody.innerHTML = profiles.map(p => {
                 const isRunning = activeProfileIds.has(p.id);
                 const nurture = nurtureStatuses[p.id];
-                const isNurturing = nurture && nurture.is_running;
+                // CHỈ coi là ĐANG NUÔI khi THỰC SỰ is_running = true VÀ TRÌNH DUYỆT ĐANG MỞ THẬT (hoặc đang xếp hàng chờ slot)
+                const isNurturing = nurture && nurture.is_running && (isRunning || (nurture.status && nurture.status.includes('Chờ slot')));
                 const isRateLimited = p.retry_after_epoch && p.retry_after_epoch > nowEpoch;
                 const remainMins = isRateLimited ? Math.ceil((p.retry_after_epoch - nowEpoch) / 60) : 0;
 
@@ -5570,7 +5828,7 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                             <div style="display:flex; flex-direction:column; gap:2px;">
                                 <span style="background:linear-gradient(135deg, rgba(217,70,239,0.2), rgba(14,165,233,0.2)); border:1px solid #d946ef; color:#f0abfc; font-weight:700; font-size:10px; padding:3px 7px; border-radius:5px; display:inline-flex; align-items:center; gap:5px;">
                                     <span class="pulse-dot" style="background:#d946ef; box-shadow:0 0 8px #d946ef;"></span>
-                                    🎬 Đang Nuôi FYP
+                                    🎬 ${nurture.status || 'Đang Nuôi FYP'}
                                 </span>
                                 <div style="font-size:10px; color:#cbd5e1; display:flex; gap:6px;">
                                     <span>👀 <b>${nurture.videos_watched || 0}</b></span>
@@ -5589,8 +5847,8 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                             <span style="font-size:9px; color:#fb923c;">${p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : ''} • Limit</span>
                         </div>
                     `;
-                } else if (p.last_nurture_status) {
-                    if (p.last_nurture_status.includes('thành công')) {
+                } else if (p.last_nurture_status && !p.last_nurture_status.includes('Đang') && !p.last_nurture_status.includes('Chờ slot')) {
+                    if (p.last_nurture_status.includes('thành công') || p.last_nurture_status.includes('Đã nuôi OK')) {
                         statusCell = `
                             <div style="display:flex; flex-direction:column; gap:2px;" title="${(p.last_nurture_error || 'Đã nuôi thành công').replace(/"/g, '&quot;')}">
                                 <span style="background:rgba(16,185,129,0.15); border:1px solid #10b981; color:#6ee7b7; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
@@ -5601,14 +5859,16 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                         `;
                     } else {
                         const isEmailErr = p.last_nurture_status.toLowerCase().includes('email');
-                        const badgeColor = isEmailErr ? '#f59e0b' : '#ef4444';
-                        const badgeBg = isEmailErr ? 'rgba(245,158,11,0.15)' : 'rgba(239,68,68,0.15)';
+                        const isStopped = p.last_nurture_status.includes('dừng') || p.last_nurture_status.includes('Chưa');
+                        const badgeColor = isStopped ? '#94a3b8' : (isEmailErr ? '#f59e0b' : '#ef4444');
+                        const badgeBg = isStopped ? 'rgba(255,255,255,0.06)' : (isEmailErr ? 'rgba(245,158,11,0.15)' : 'rgba(239,68,68,0.15)');
+                        const icon = isStopped ? '⚪' : '⚠️';
                         statusCell = `
                             <div style="display:flex; flex-direction:column; gap:2px;" title="${(p.last_nurture_error || p.last_nurture_status).replace(/"/g, '&quot;')}">
                                 <span style="background:${badgeBg}; border:1px solid ${badgeColor}; color:${badgeColor}; font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; display:inline-flex; align-items:center; gap:4px;">
-                                    ⚠️ ${p.last_nurture_status}
+                                    ${icon} ${p.last_nurture_status}
                                 </span>
-                                <span style="font-size:9px; color:#ef4444; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                <span style="font-size:9px; color:${badgeColor}; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                     ${p.last_nurture_error ? p.last_nurture_error.slice(0, 24) + '…' : (p.last_nurture_time ? 'Lúc ' + p.last_nurture_time.slice(11, 16) : '')}
                                 </span>
                             </div>
@@ -5617,7 +5877,7 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                 } else if (isRunning) {
                     statusCell = `<span class="badge-status-running"><span class="pulse-dot"></span> Đang mở Chrome</span>`;
                 } else {
-                    statusCell = `<span class="badge-status-stopped">⚪ Sẵn sàng</span>`;
+                    statusCell = `<span class="badge-status-stopped">⚪ Chưa nuôi</span>`;
                 }
 
                 return `
@@ -8725,11 +8985,122 @@ mail3@domain.com|pass3|refresh_token"></textarea>
             showToast(d.message || 'Đã phát lệnh xoay IP!', 'success');
         }
 
+        // ── AUTO-UPDATE LOGIC ──
+        let appUpdateInfo = null;
+
+        async function checkAppUpdate(isManual = false) {
+            try {
+                if (isManual) {
+                    showToast('Đang kiểm tra cập nhật từ máy chủ...', 'info');
+                }
+                const res = await fetch(`${API_BASE}/api/system/check-update`);
+                const data = await res.json();
+                appUpdateInfo = data;
+
+                const btn = document.getElementById('btn-check-update');
+                if (btn) {
+                    btn.innerHTML = `⚡ v${data.current_version} ${data.has_update ? '<span style="background:#ef4444; color:#fff; font-size:9px; padding:1px 5px; border-radius:10px; margin-left:4px; font-weight:800;">MỚI</span>' : ''}`;
+                }
+
+                if (data.has_update) {
+                    document.getElementById('update-modal-title').innerText = `🚀 Có Bản Cập Nhật Mới! (v${data.server_version})`;
+                    document.getElementById('update-current-ver').innerText = `v${data.current_version}`;
+                    document.getElementById('update-new-ver').innerText = `v${data.server_version}`;
+                    document.getElementById('update-changelog-box').innerText = data.changelog || 'Tối ưu hóa hiệu năng, sửa lỗi và cải tiến tính năng.';
+                    document.getElementById('update-progress-section').style.display = 'none';
+                    document.getElementById('btn-update-action').disabled = false;
+                    document.getElementById('btn-update-action').style.display = 'inline-block';
+                    document.getElementById('btn-update-cancel').innerText = 'Để Sau';
+                    document.getElementById('modal-auto-update').classList.add('active');
+                } else if (isManual) {
+                    showToast(`Bạn đang sử dụng phiên bản mới nhất (v${data.current_version})!`, 'success');
+                }
+            } catch (e) {
+                console.error('Check update error:', e);
+                if (isManual) {
+                    showToast('Không thể kết nối máy chủ kiểm tra cập nhật!', 'error');
+                }
+            }
+        }
+
+        function closeUpdateModal() {
+            document.getElementById('modal-auto-update').classList.remove('active');
+        }
+
+        async function triggerAppUpdate() {
+            if (!appUpdateInfo || !appUpdateInfo.download_url) {
+                showToast('Không có thông tin gói cập nhật!', 'error');
+                return;
+            }
+
+            const btnAction = document.getElementById('btn-update-action');
+            const btnCancel = document.getElementById('btn-update-cancel');
+            const progressSec = document.getElementById('update-progress-section');
+            const progressStatus = document.getElementById('update-progress-status');
+            const progressPct = document.getElementById('update-progress-pct');
+            const progressFill = document.getElementById('update-progress-fill');
+
+            btnAction.disabled = true;
+            btnCancel.disabled = true;
+            progressSec.style.display = 'flex';
+            progressStatus.innerText = '⏳ Đang tải bản cập nhật từ CDN C69...';
+            progressPct.innerText = '25%';
+            progressFill.style.width = '25%';
+
+            let fakePct = 25;
+            const progressTimer = setInterval(() => {
+                if (fakePct < 85) {
+                    fakePct += Math.floor(Math.random() * 15) + 5;
+                    if (fakePct > 85) fakePct = 85;
+                    progressPct.innerText = `${fakePct}%`;
+                    progressFill.style.width = `${fakePct}%`;
+                }
+            }, 600);
+
+            try {
+                const res = await fetch(`${API_BASE}/api/system/perform-update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ download_url: appUpdateInfo.download_url })
+                });
+                clearInterval(progressTimer);
+                const data = await res.json();
+
+                if (data.success) {
+                    progressPct.innerText = '100%';
+                    progressFill.style.width = '100%';
+                    progressStatus.innerText = '🚀 Đang khởi động c69update.exe...';
+                    showToast('Đã chuyển giao cho c69update.exe. Ứng dụng sẽ tự đóng và mở lại!', 'success');
+                    setTimeout(() => {
+                        document.body.innerHTML = `
+                            <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; background:#020409; color:#fff; font-family:sans-serif; text-align:center;">
+                                <div style="font-size:48px; margin-bottom:16px;">🔄</div>
+                                <h2 style="color:#00f2fe; margin-bottom:8px;">Đang Thực Hiện Cập Nhật Tự Động...</h2>
+                                <p style="color:#94a3b8; font-size:14px; max-width:400px;">Tiến trình c69update.exe đang giải nén và thay thế file. MunAutomation sẽ tự động khởi động lại sau giây lát!</p>
+                            </div>
+                        `;
+                    }, 1500);
+                } else {
+                    progressSec.style.display = 'none';
+                    btnAction.disabled = false;
+                    btnCancel.disabled = false;
+                    showToast(data.message || 'Lỗi khi thực hiện cập nhật!', 'error');
+                }
+            } catch (e) {
+                clearInterval(progressTimer);
+                progressSec.style.display = 'none';
+                btnAction.disabled = false;
+                btnCancel.disabled = false;
+                showToast('Lỗi kết nối khi cập nhật: ' + e, 'error');
+            }
+        }
+
         const savedTab = localStorage.getItem('mun_active_tab') || 'browser';
         switchNav(savedTab, true);
         checkC69Auth();
         refreshAll();
         setInterval(refreshDevices, 8000);
+        setTimeout(() => checkAppUpdate(false), 2000);
     </script>
 </body>
 </html>"#)

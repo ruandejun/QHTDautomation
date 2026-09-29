@@ -208,12 +208,12 @@ impl CdpClient {
             .await
             .map_err(|e| format!("Lỗi gửi lệnh CDP {}: {}", method, e))?;
 
-        match tokio::time::timeout(Duration::from_secs(20), rx).await {
+        match tokio::time::timeout(Duration::from_secs(4), rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => Err("CDP channel closed".to_string()),
             Err(_) => {
                 self.pending.lock().remove(&id);
-                Err(format!("CDP Command '{}' timeout 20s", method))
+                Err(format!("CDP Command '{}' timeout 4s", method))
             }
         }
     }
@@ -480,11 +480,45 @@ impl BrowserNurtureEngine {
     }
 
     pub fn get_all_statuses(&self) -> Vec<BrowserNurtureStatus> {
-        self.statuses.read().values().cloned().collect()
+        let mut list: Vec<BrowserNurtureStatus> = Vec::new();
+        let mut statuses = self.statuses.write();
+        let tasks = self.tasks.read();
+        for (pid, st) in statuses.iter_mut() {
+            let is_task_alive = tasks.get(pid).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
+            let is_browser_alive = crate::cdp_browser::is_profile_active(*pid);
+            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng");
+
+            // Nếu báo đang chạy nhưng task đã chết HOẶC browser đã tắt (và không phải đang chờ slot)
+            if st.is_running && (!is_task_alive || (!is_browser_alive && !is_waiting_slot)) {
+                st.is_running = false;
+                if !st.status.contains("thành công") && !st.status.contains("Chờ 1h") && !st.status.contains("Lỗi") {
+                    st.status = "Đã dừng".to_string();
+                    st.last_log = "Trình duyệt đã tắt. Đã cập nhật trạng thái dừng.".to_string();
+                }
+            }
+            list.push(st.clone());
+        }
+        list
     }
 
     pub fn get_status(&self, profile_id: usize) -> Option<BrowserNurtureStatus> {
-        self.statuses.read().get(&profile_id).cloned()
+        let mut statuses = self.statuses.write();
+        if let Some(st) = statuses.get_mut(&profile_id) {
+            let is_task_alive = self.tasks.read().get(&profile_id).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
+            let is_browser_alive = crate::cdp_browser::is_profile_active(profile_id);
+            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng");
+
+            if st.is_running && (!is_task_alive || (!is_browser_alive && !is_waiting_slot)) {
+                st.is_running = false;
+                if !st.status.contains("thành công") && !st.status.contains("Chờ 1h") && !st.status.contains("Lỗi") {
+                    st.status = "Đã dừng".to_string();
+                    st.last_log = "Trình duyệt đã tắt. Đã cập nhật trạng thái dừng.".to_string();
+                }
+            }
+            Some(st.clone())
+        } else {
+            None
+        }
     }
 
     pub fn is_profile_running(&self, profile_id: usize) -> bool {
@@ -637,6 +671,18 @@ impl BrowserNurtureEngine {
             fn drop(&mut self) {
                 self.engine.release_slot(self.slot);
                 crate::cdp_browser::stop_cdp_profile(self.pid);
+                crate::cdp_browser::mark_profile_inactive(self.pid);
+                if let Some(flag) = self.engine.tasks.read().get(&self.pid) {
+                    flag.store(false, Ordering::Relaxed);
+                }
+                if let Some(st) = self.engine.statuses.write().get_mut(&self.pid) {
+                    st.is_running = false;
+                    if !st.status.contains("thành công") && !st.status.contains("Chờ 1h") && !st.status.contains("Lỗi") {
+                        st.status = "Đã dừng".to_string();
+                        st.last_log = "Trình duyệt đã đóng. Đã dừng nuôi an toàn.".to_string();
+                        crate::api::update_profile_nurture_status(self.pid, "Đã dừng", None, None);
+                    }
+                }
                 info!("🏁 [Profile #{}] Đã tự động đóng trình duyệt an toàn và giải phóng Slot #{} trên màn hình!", self.pid, self.slot);
             }
         }
@@ -771,115 +817,110 @@ impl BrowserNurtureEngine {
             }
         }
 
-        // 4A. BƯỚC 1: KIỂM TRA PHẦN TỬ IP ĐÃ ĐỔI SANG SOCKS5 CHƯA TẠI IPHEY (ELEMENT-DRIVEN)
-        let proxy_target_ip = extract_ip_from_proxy_string(&profile.proxy_string);
-        if !proxy_target_ip.is_empty() {
-            self.update_log(pid, format!("Đang mở iphey.com để kiểm tra phần tử IP SOCKS5 (Mục tiêu: {})...", proxy_target_ip), "Kiểm tra IP SOCKS5");
-            let _ = cdp.navigate("https://iphey.com").await;
+        // 4. KIỂM TRA PHIÊN ĐĂNG NHẬP ELEMENT-DRIVEN (Ưu tiên Zero-Login Cookie Jar trong 0ms, không chờ mạng tải trang)
+        let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
+        let has_session_cookie = cookies_val.as_array().map(|arr| {
+            arr.iter().any(|c| {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                (name == "sessionid" || name == "sessionid_ss") &&
+                c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
+            })
+        }).unwrap_or(false);
 
-            let mut ip_verified = false;
-            for check_i in 1..=10 {
-                if !run_flag.load(Ordering::Relaxed) { return; }
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-
-                let check_ip_js = format!(r#"(() => {{
-                    const bodyText = document.body ? (document.body.innerText || '') : '';
-                    return bodyText.includes('{}');
-                }})()"#, proxy_target_ip);
-
-                if let Ok(eval_val) = cdp.evaluate(&check_ip_js).await {
-                    if eval_val.as_bool().unwrap_or(false) {
-                        ip_verified = true;
-                        self.update_log(pid, format!("✅ Phần tử IP '{}' đã xuất hiện trên iphey! Proxy SOCKS5 Live 100%. Đang chuyển sang TikTok...", proxy_target_ip), "IP đã đổi");
-                        break;
-                    }
-                }
-                self.update_log(pid, format!("Đang đợi phần tử IP SOCKS5 '{}' xuất hiện trên iphey ({}s)...", proxy_target_ip, check_i * 2), "Kiểm tra IP SOCKS5");
-            }
-            if !ip_verified {
-                self.update_log(pid, format!("Tiếp tục chuyển sang TikTok (Proxy: {})...", proxy_target_ip), "Vào TikTok");
-            }
-        }
-
-        // 4B. BƯỚC 2: VÀO TIKTOK VÀI GIÂY CHO ỔN ĐỊNH RỒI MỞ LINK KIỂM TRA PROFILE
-        self.update_log(pid, "Mở TikTok khoảng vài giây cho ổn định kết nối...".to_string(), "Vào TikTok");
-        let _ = cdp.navigate("https://www.tiktok.com").await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        self.update_log(pid, "Mở link kiểm tra hồ sơ cá nhân https://www.tiktok.com/profile...".to_string(), "Kiểm tra Profile");
-        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
-
-        let mut is_already_logged_in = false;
+        let mut is_already_logged_in = has_session_cookie;
         let mut detected_username = String::new();
 
-        // Lắng nghe phần tử trên trang Profile (mỗi 1.5s, tối đa 8 lần)
-        for wait_s in 1..=8 {
-            if !run_flag.load(Ordering::Relaxed) { return; }
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+        if is_already_logged_in {
+            self.update_log(pid, "⚡ Đã có phiên đăng nhập sẵn (Zero-Login Cookies)! Chuyển thẳng sang FYP...".to_string(), "Đã đăng nhập");
+            let _ = crate::cdp_browser::backup_thin_profile(pid);
+        } else {
+            self.update_log(pid, "Mở TikTok Profile kiểm tra phiên đăng nhập...".to_string(), "Kiểm tra Profile");
+            let _ = cdp.navigate("https://www.tiktok.com/profile").await;
 
-            let check_auth_js = r#"(() => {
-                const url = window.location.href;
-                const isLoginUrl = url.includes('/login');
-                const hasLoginBtn = !!(
-                    document.querySelector('[data-e2e="top-login-button"]') ||
-                    Array.from(document.querySelectorAll('button, a')).some(el => {
-                        const t = (el.innerText || '').trim().toLowerCase();
-                        return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
-                    })
-                );
-                
-                let un = '';
-                const m = url.match(/@([a-zA-Z0-9_.-]+)/);
-                if (m && m[1]) {
-                    un = m[1];
-                }
+            // Polling siêu tốc mỗi 250ms (Tối đa 5 giây = 20 lần), tìm thấy element là chuyển bước NGAY LẬP TỨC
+            for check_step in 1..=20 {
+                if !run_flag.load(Ordering::Relaxed) { return; }
+                tokio::time::sleep(Duration::from_millis(250)).await;
 
-                return JSON.stringify({
-                    url: url,
-                    is_login_url: isLoginUrl,
-                    has_login_btn: hasLoginBtn,
-                    username: un
-                });
-            })()"#;
+                let check_auth_js = r#"(() => {
+                    const url = window.location.href;
+                    const isLoginUrl = url.includes('/login');
+                    const hasLoginBtn = !!(
+                        document.querySelector('[data-e2e="top-login-button"]') ||
+                        Array.from(document.querySelectorAll('button, a')).some(el => {
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
+                        })
+                    );
+                    
+                    let un = '';
+                    const m = url.match(/@([a-zA-Z0-9_.-]+)/);
+                    if (m && m[1]) {
+                        un = m[1];
+                    }
 
-            let mut is_login_page = false;
-            let mut has_btn = false;
-            let mut un_str = String::new();
+                    const hasAvatar = !!(
+                        document.querySelector('[data-e2e="user-avatar"]') || 
+                        document.querySelector('[data-e2e="profile-icon"]') || 
+                        document.querySelector('a[href*="/@"]') ||
+                        document.querySelector('[data-e2e="user-subtitle"]')
+                    );
 
-            if let Ok(eval_val) = cdp.evaluate(check_auth_js).await {
-                if let Some(s) = eval_val.as_str() {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-                        is_login_page = parsed.get("is_login_url").and_then(|v| v.as_bool()).unwrap_or(false);
-                        has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
-                        un_str = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    return JSON.stringify({
+                        url: url,
+                        is_login_url: isLoginUrl,
+                        has_login_btn: hasLoginBtn,
+                        has_avatar: hasAvatar,
+                        username: un
+                    });
+                })()"#;
+
+                let mut is_login_page = false;
+                let mut has_btn = false;
+                let mut has_avatar = false;
+                let mut un_str = String::new();
+
+                if let Ok(eval_val) = cdp.evaluate(check_auth_js).await {
+                    if let Some(s) = eval_val.as_str() {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+                            is_login_page = parsed.get("is_login_url").and_then(|v| v.as_bool()).unwrap_or(false);
+                            has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
+                            has_avatar = parsed.get("has_avatar").and_then(|v| v.as_bool()).unwrap_or(false);
+                            un_str = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        }
                     }
                 }
+
+                let cookies_val2 = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
+                let has_cookie2 = cookies_val2.as_array().map(|arr| {
+                    arr.iter().any(|c| {
+                        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        (name == "sessionid" || name == "sessionid_ss") &&
+                        c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
+                    })
+                }).unwrap_or(false);
+
+                if (has_cookie2 || has_avatar) && !is_login_page && !has_btn {
+                    is_already_logged_in = true;
+                    detected_username = un_str;
+                    self.update_log(pid, format!("⚡ Phần tử hồ sơ xuất hiện (@{}) sau {}ms! Chuyển bước ngay...", detected_username, check_step * 250), "Đã đăng nhập");
+                    break;
+                }
+
+                if is_login_page || (has_btn && check_step >= 6) {
+                    break;
+                }
+
+                self.update_log(pid, format!("Đang lắng nghe phần tử TikTok ({}ms)...", check_step * 250), "Lắng nghe phần tử");
             }
 
-            // Kiểm tra session cookies
-            let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
-            let has_session_cookie = cookies_val.as_array().map(|arr| {
-                arr.iter().any(|c| {
-                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    (name == "sessionid" || name == "sessionid_ss") &&
-                    c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
-                })
-            }).unwrap_or(false);
-
-            if has_session_cookie && !is_login_page && !has_btn {
-                is_already_logged_in = true;
-                detected_username = un_str;
-                break;
+            if is_already_logged_in {
+                self.update_log(pid, format!("✅ Tài khoản đã đăng nhập sẵn (@{})! Chuẩn bị nuôi FYP...", detected_username), "Đã đăng nhập");
+                let _ = crate::cdp_browser::backup_thin_profile(pid);
             }
-
-            self.update_log(pid, format!("Đang lắng nghe phần tử trang Profile TikTok ({}s)...", wait_s * 2), "Xác thực đăng nhập");
         }
 
-        if is_already_logged_in {
-            self.update_log(pid, format!("✅ Tài khoản đã đăng nhập sẵn (@{})! Chuẩn bị kiểm tra Profile...", detected_username), "Đã đăng nhập");
-            let _ = crate::cdp_browser::backup_thin_profile(pid);
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        } else {
+        if !is_already_logged_in {
             self.update_log(pid, "⚠️ Phát hiện tài khoản CHƯA ĐĂNG NHẬP! Bắt đầu quy trình đăng nhập TikTok...".to_string(), "Tiến hành đăng nhập");
             
             // Chưa đăng nhập -> Kiểm tra mật khẩu C69 an toàn (Zero Panic)
@@ -1354,171 +1395,44 @@ impl BrowserNurtureEngine {
                 }
             }
 
-            self.update_log(pid, "🎉 Đăng nhập TikTok thành công 100%! Đã lưu phiên Cookies. Đang kiểm tra Profile...".to_string(), "Đăng nhập thành công");
+            self.update_log(pid, "🎉 Đăng nhập TikTok thành công! Đã lưu phiên Cookies Zero-Login. Chuyển thẳng sang FYP...".to_string(), "Đăng nhập thành công");
             let _ = crate::cdp_browser::backup_thin_profile(pid);
-            tokio::time::sleep(Duration::from_secs(2)).await;
         }
 
-        // 4B. KIỂM TRA XEM USERNAME VÀ AVATAR ĐÃ CÓ CHƯA (NẾU CHƯA THÌ UPLOAD AVATAR VÀ ĐỔI USERNAME)
-        self.update_log(pid, "Đang kiểm tra Avatar và Username của tài khoản...".to_string(), "Kiểm tra Profile");
-        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        let check_profile_js = r#"(() => {
-            const url = window.location.href;
-            let un = '';
-            const m = url.match(/@([a-zA-Z0-9_.-]+)/);
-            if (m && m[1]) {
-                un = m[1];
-            } else {
-                const sub = document.querySelector('[data-e2e="user-subtitle"], h2');
-                if (sub) un = (sub.innerText || '').replace('@', '').trim();
-            }
-
-            // Username mặc định: bắt đầu bằng "user" kèm theo chuỗi số dài
-            const isDefaultUsername = /^user\d{6,}/i.test(un) || /^user_/i.test(un) || un.length === 0;
-
-            // Kiểm tra Avatar: xem ảnh hiện tại có phải ảnh mặc định (bóng người) hoặc rỗng không
-            const avatarImg = document.querySelector('[data-e2e="user-avatar"] img, [class*="Avatar"] img, [class*="avatar"] img, img[alt*="avatar"], img[src*="tiktokcdn"]');
-            const avatarSrc = avatarImg ? (avatarImg.src || '') : '';
-            const isDefaultAvatar = !avatarSrc || 
-                                   avatarSrc.includes('default-avatar') || 
-                                   avatarSrc.includes('avatar-placeholder') ||
-                                   avatarSrc.includes('musically-maliva-obj/default') ||
-                                   avatarSrc.includes('100x100.png');
-
-            return JSON.stringify({
-                username: un,
-                is_default_username: isDefaultUsername,
-                avatar_src: avatarSrc,
-                is_default_avatar: isDefaultAvatar
-            });
-        })()"#;
-
-        let mut need_change_username = false;
-        let mut need_upload_avatar = false;
-        let mut current_un = String::new();
-
-        if let Ok(eval_val) = cdp.evaluate(check_profile_js).await {
-            if let Some(s) = eval_val.as_str() {
-                if let Ok(p) = serde_json::from_str::<serde_json::Value>(s) {
-                    current_un = p.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    need_change_username = p.get("is_default_username").and_then(|v| v.as_bool()).unwrap_or(false);
-                    need_upload_avatar = p.get("is_default_avatar").and_then(|v| v.as_bool()).unwrap_or(false);
-                }
-            }
-        }
-
-        info!("👤 [Profile #{}] Username hiện tại: '{}' (Cần đổi: {}), Avatar (Cần upload: {})",
-            pid, current_un, need_change_username, need_upload_avatar);
-
-        if need_change_username || need_upload_avatar {
-            self.update_log(
-                pid, 
-                format!("Phát hiện tài khoản chưa hoàn thiện Profile (Đổi username: {}, Up avatar: {}). Tiến hành cập nhật...", need_change_username, need_upload_avatar), 
-                "Cập nhật Profile"
-            );
-
-            // 1. Mở modal Edit profile
-            let open_edit_js = r#"(() => {
-                const btn = document.querySelector('[data-e2e="edit-profile-btn"]') ||
-                            Array.from(document.querySelectorAll('button, a, div[role="button"]')).find(el => {
-                                const t = (el.innerText || '').trim().toLowerCase();
-                                return t === 'edit profile' || t === 'sửa hồ sơ';
-                            });
-                if (btn) { btn.click(); return true; }
-                return false;
-            })()"#;
-            let _ = cdp.evaluate(open_edit_js).await;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-
-            // 2. Upload Avatar nếu avatar mặc định hoặc rỗng
-            if need_upload_avatar {
-                self.update_log(pid, "📸 Đang tải lên ảnh đại diện Avatar mới cho tài khoản...".to_string(), "Upload Avatar");
-                if let Ok(path_str) = get_or_create_clean_avatar(pid).await {
-                    let _ = cdp.upload_file_to_input("input[type='file']", &path_str).await;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    // Bấm Confirm / Apply Crop nếu có
-                    let apply_crop_js = r#"(() => {
-                        const confirmBtn = document.querySelector('[data-e2e="crop-confirm"]') ||
-                                           Array.from(document.querySelectorAll('button')).find(b => {
-                                               const t = (b.innerText || '').trim().toLowerCase();
-                                               return t === 'apply' || t === 'áp dụng' || t === 'confirm' || t === 'xác nhận';
-                                           });
-                        if (confirmBtn) { confirmBtn.click(); return true; }
-                        return false;
-                    })()"#;
-                    let _ = cdp.evaluate(apply_crop_js).await;
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            }
-
-            // 3. Đổi Username nếu là username mặc định (user123456...)
-            if need_change_username {
-                let target_clean_name = if let Some(ref acc) = c69_acc {
-                    clean_tiktok_username(&acc.username)
-                } else if let Some(ref saved) = profile.tiktok_username {
-                    clean_tiktok_username(saved)
-                } else {
-                    clean_tiktok_username(&current_un)
-                };
-
-                self.update_log(pid, format!("✏️ Đang đổi Username sang '@{}'...", target_clean_name), "Đổi Username");
-                let set_un_js = format!(r#"(() => {{
-                    const input = document.querySelector('input[name="username"]') ||
-                                  document.querySelector('input[placeholder*="Username"]') ||
-                                  document.querySelector('input[placeholder*="Tên người dùng"]');
-                    if (input) {{
-                        input.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-                        input.focus();
-                        const proto = window.HTMLInputElement.prototype;
-                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                        setter.call(input, '{}');
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        return true;
-                    }}
-                    return false;
-                }})()"#, target_clean_name);
-                let _ = cdp.evaluate(&set_un_js).await;
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-
-            // 4. Bấm nút Save / Lưu để xác nhận
-            let save_profile_js = r#"(() => {
-                const saveBtn = Array.from(document.querySelectorAll('button')).find(b => {
-                    const t = (b.innerText || '').trim().toLowerCase();
-                    return (t === 'save' || t === 'lưu') && !b.disabled && b.offsetParent !== null;
-                });
-                if (saveBtn) { saveBtn.click(); return true; }
-                return false;
-            })()"#;
-            let _ = cdp.evaluate(save_profile_js).await;
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            self.update_log(pid, "✅ Đã hoàn tất cập nhật Avatar và Username!".to_string(), "Cập nhật thành công");
+        let safe_un = if !detected_username.is_empty() {
+            detected_username.clone()
         } else {
-            self.update_log(pid, format!("✅ Tài khoản đã có Avatar và Username '@{}' chuẩn chỉnh!", current_un), "Profile chuẩn");
-        }
-
-        // Chụp ảnh bằng chứng Profile TikTok (hiển thị Username và Avatar trên trang cá nhân)
-        let safe_un = if current_un.is_empty() {
-            c69_acc.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| format!("user_{}", pid))
-        } else {
-            current_un.clone()
+            c69_acc.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| format!("acc_{}", pid))
         };
-        let proof_profile = format!("rust_proof_acc_{}_{}_profile.png", pid, safe_un);
-        let _ = self.save_screenshot_proof(&cdp, &proof_profile).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // 5. ĐIỀU HƯỚNG TỚI FEED FYP VÀ TIẾN HÀNH NUÔI 30s - 1 PHÚT (THEO CHỈ ĐẠO CỦA ANH TONY)
-        self.update_log(pid, "Mở trang video FYP để bắt đầu nuôi tương tác (thời lượng 30s - 1 phút)...".to_string(), "Vào FYP Feed");
+        // 5. ĐIỀU HƯỚNG TỚI FEED FYP ELEMENT-DRIVEN (Thấy video/like icon/container là xem & tương tác ngay, không chờ mạng!)
+        self.update_log(pid, "Mở feed FYP TikTok...".to_string(), "Vào FYP Feed");
         let _ = cdp.navigate("https://www.tiktok.com/foryou?lang=en").await;
-        tokio::time::sleep(Duration::from_secs(4)).await;
 
-        // 6. VÒNG LẶP NUÔI TƯƠNG TÁC FYP (Human-Behavior Simulation: 30s - 1 phút)
+        // Polling siêu tốc đợi feed element (tối đa 2s = 8 lần x 250ms)
+        for step in 1..=8 {
+            if !run_flag.load(Ordering::Relaxed) { return; }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+
+            let check_feed_js = r#"(() => {
+                const v = document.querySelector('video');
+                const like = document.querySelector('[data-e2e="like-icon"], [data-e2e="feed-like-icon"]');
+                const container = document.querySelector('[data-e2e="recommend-list-item-container"], div[class*="DivItemContainer"], div[class*="DivVideoWrapper"]');
+                return !!(v || like || container);
+            })()"#;
+
+            if let Ok(eval) = cdp.evaluate(check_feed_js).await {
+                if eval.as_bool().unwrap_or(false) {
+                    self.update_log(pid, format!("⚡ Video feed đã sẵn sàng ({}ms)! Bắt đầu tương tác...", step * 250), "Feed sẵn sàng");
+                    break;
+                }
+            }
+        }
+
+        // 6. VÒNG LẶP NUÔI TƯƠNG TÁC FYP (Human-Behavior Simulation: 30s - 45s)
         let nurture_start = tokio::time::Instant::now();
-        // Thời lượng nuôi: 35s đến 55s (khoảng 30s - 1 phút)
-        let target_duration_secs = rand::thread_rng().gen_range(35..=55);
+        // Thời lượng nuôi: 30s đến 45s
+        let target_duration_secs = rand::thread_rng().gen_range(30..=45);
         let mut watched_count = 0u32;
         let mut likes_count = 0u32;
         let mut comments_count = 0u32;
@@ -1528,6 +1442,19 @@ impl BrowserNurtureEngine {
             let elapsed = nurture_start.elapsed().as_secs();
 
             watched_count += 1;
+            // Xem mỗi video từ 6s - 10s
+            let watch_seconds = rand::thread_rng().gen_range(6..=10);
+
+            self.update_stats(
+                pid, 
+                watched_count, 
+                likes_count, 
+                comments_count,
+                shares_count,
+                format!("Đang xem video FYP #{} ({}s) [Tiến độ {}s/{}s]...", watched_count, watch_seconds, elapsed, target_duration_secs), 
+                "Đang lướt FYP"
+            );
+
             // Tự động đóng modal pop-up "Get the full app experience" hoặc "Not now"
             let dismiss_modal_js = r#"(() => {
                 const btns = Array.from(document.querySelectorAll('button, div[role="button"], a'));
@@ -1541,19 +1468,6 @@ impl BrowserNurtureEngine {
                 return false;
             })()"#;
             let _ = cdp.evaluate(dismiss_modal_js).await;
-
-            // Xem mỗi video từ 6s - 10s
-            let watch_seconds = rand::thread_rng().gen_range(6..=10);
-
-            self.update_stats(
-                pid, 
-                watched_count, 
-                likes_count, 
-                comments_count,
-                shares_count,
-                format!("Đang xem video FYP #{} ({}s) [Tiến độ {}s/{}s]...", watched_count, watch_seconds, elapsed, target_duration_secs), 
-                "Đang lướt FYP"
-            );
 
             for _ in 0..watch_seconds {
                 if !run_flag.load(Ordering::Relaxed) { break; }
@@ -1683,10 +1597,15 @@ impl BrowserNurtureEngine {
                 let _ = self.save_screenshot_proof(&cdp, &proof_interaction).await;
             }
 
-            // Kiểm tra điều kiện hoàn tất nuôi theo chuẩn của anh Tony:
-            // Đã xem tối thiểu 3 video VÀ đã có ít nhất: 1 Like, 1 Comment, 1 Share VÀ đạt thời lượng
-            if elapsed >= target_duration_secs && watched_count >= 3 && likes_count >= 1 && (comments_count >= 1 || shares_count >= 1) {
-                self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s) và hoàn tất Like, Comment, Share! Đang kết thúc...", elapsed, target_duration_secs), "Hoàn tất nuôi");
+            // Kiểm tra điều kiện hoàn tất nuôi tối ưu (Element-Driven & Time-Bounded):
+            // 1. Đạt thời lượng mục tiêu (30s - 45s) VÀ đã xem tối thiểu 2 video VÀ có tương tác -> Hoàn tất ngay!
+            let has_engaged = likes_count >= 1 || comments_count >= 1 || shares_count >= 1;
+            if elapsed >= target_duration_secs && watched_count >= 2 && has_engaged {
+                self.update_log(pid, format!("⏱️ Đã nuôi đủ thời gian ({}s/{}s) với {} video, {} tim. Đang hoàn tất...", elapsed, target_duration_secs, watched_count, likes_count), "Hoàn tất nuôi");
+                break;
+            } else if elapsed >= (target_duration_secs + 10) && watched_count >= 2 {
+                // 2. Hard Timeout: Đạt thời lượng + 10s -> Tự động kết thúc an toàn, nhường slot ngay lập tức!
+                self.update_log(pid, format!("⏱️ Hết thời gian phiên nuôi ({}s). Kết thúc an toàn nhường slot...", elapsed), "Hoàn tất nuôi");
                 break;
             }
 
@@ -1741,8 +1660,11 @@ impl BrowserNurtureEngine {
             st.last_log = log.clone();
             st.status = status.to_string();
         }
-        // Đồng bộ trạng thái mới nhất ra database profile (hiển thị ngay lập tức trên Dashboard UI)
-        crate::api::update_profile_nurture_status(pid, status, None, None);
+        // Chỉ lưu bền vững ra đĩa nếu là trạng thái kết thúc (Thành công, Lỗi, Chờ 1h, Đã dừng)
+        // Tránh tình trạng tắt tool mà đĩa vẫn kẹt chữ "Đang Nuôi"
+        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") {
+            crate::api::update_profile_nurture_status(pid, status, None, None);
+        }
     }
 
     fn update_stats(&self, pid: usize, watched: u32, likes: u32, comments: u32, shares: u32, log: String, status: &str) {
@@ -1754,7 +1676,9 @@ impl BrowserNurtureEngine {
             st.last_log = log.clone();
             st.status = status.to_string();
         }
-        crate::api::update_profile_nurture_status(pid, status, None, None);
+        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") {
+            crate::api::update_profile_nurture_status(pid, status, None, None);
+        }
     }
 
     fn set_error(&self, pid: usize, err: String) {

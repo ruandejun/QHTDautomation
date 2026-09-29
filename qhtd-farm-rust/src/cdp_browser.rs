@@ -57,7 +57,7 @@ pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
     if host.is_empty() || host == "127.0.0.1" || host == "localhost" {
         // Direct mode: Tra cứu vị trí và timezone thực tế của mạng hiện tại để khớp 100% với IP công cộng
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(1500))
+            .timeout(Duration::from_millis(4000))
             .build();
         if let Ok(c) = client {
             if let Ok(res) = c.get("http://ip-api.com/json?fields=status,timezone,lat,lon").send().await {
@@ -100,6 +100,14 @@ pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
             longitude: -77.3570,
             locale: "en-US".to_string(),
         };
+    } else if host.starts_with("104.245.241.") {
+        // VitalKey / Global Transit Systems - Database Iphey/MaxMind ghi nhận timezone là America/Chicago (CDT, UTC-5)
+        return GeoInfo {
+            timezone: "America/Chicago".to_string(),
+            latitude: 41.8781,
+            longitude: -87.6298,
+            locale: "en-US".to_string(),
+        };
     } else if host.starts_with("104.164.131.") || host == "104.164.131.28" {
         // San Jose / Los Angeles, California (US Pacific Time)
         return GeoInfo {
@@ -110,19 +118,19 @@ pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
         };
     }
 
-    // Dynamic non-blocking lookup via ip-api.com
+    // Dynamic lookup qua ip-api.com với timeout 4000ms
     let api_url = format!("http://ip-api.com/json/{}?fields=status,countryCode,timezone,lat,lon", host);
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(1500))
+        .timeout(Duration::from_millis(4000))
         .build();
 
     if let Ok(c) = client {
         if let Ok(res) = c.get(&api_url).send().await {
             if let Ok(val) = res.json::<serde_json::Value>().await {
                 if val.get("status").and_then(|s| s.as_str()) == Some("success") {
-                    let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("America/Denver").to_string();
-                    let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(40.3032);
-                    let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(-111.675);
+                    let tz = val.get("timezone").and_then(|s| s.as_str()).unwrap_or("America/New_York").to_string();
+                    let lat = val.get("lat").and_then(|v| v.as_f64()).unwrap_or(40.7128);
+                    let lon = val.get("lon").and_then(|v| v.as_f64()).unwrap_or(-74.0060);
                     return GeoInfo {
                         timezone: tz,
                         latitude: lat,
@@ -135,9 +143,9 @@ pub async fn resolve_proxy_geo(proxy_host: &str) -> GeoInfo {
     }
 
     GeoInfo {
-        timezone: "America/Denver".to_string(),
-        latitude: 40.3032,
-        longitude: -111.675,
+        timezone: "America/New_York".to_string(),
+        latitude: 40.7128,
+        longitude: -74.0060,
         locale: "en-US".to_string(),
     }
 }
@@ -380,7 +388,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(default_renderer);
-    let _vendor = profile
+    let vendor = profile
         .gpu_vendor
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -404,7 +412,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         profile.profile_ram
     };
 
-    let resolution = if profile.profile_resolution.trim().is_empty() {
+    let _resolution = if profile.profile_resolution.trim().is_empty() {
         "1920x1080".to_string()
     } else {
         profile.profile_resolution.clone()
@@ -433,64 +441,339 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let touch_points = if is_mobile { 5 } else { 0 };
 
     format!(
-        r#"// Mun Anti-Browser Clean Pure Stealth Script v8.0 (Profile #{p_id})
+        r#"// Mun Clean Pure Stealth Script v9.0 (Healthy Engine - Profile #{p_id})
 (function() {{
     'use strict';
 
-    function patchTargetWindow(w) {{
+    // 1. WeakMap-based Native toString spoofing
+    var _origToString = Function.prototype.toString;
+    var _nativeCache = new WeakMap();
+
+    Function.prototype.toString = function() {{
+        if (_nativeCache.has(this)) {{
+            return _nativeCache.get(this);
+        }}
+        return _origToString.call(this);
+    }};
+    _nativeCache.set(Function.prototype.toString, 'function toString() {{ [native code] }}');
+
+    function makeNative(fn, name) {{
+        _nativeCache.set(fn, 'function ' + (name || fn.name || '') + '() {{ [native code] }}');
+        return fn;
+    }}
+    makeNative(Function.prototype.toString, 'toString');
+
+    function overrideGetter(obj, prop, getterFn) {{
+        try {{
+            Object.defineProperty(getterFn, 'name', {{ value: 'get ' + prop, configurable: true }});
+        }} catch(e) {{}}
+        makeNative(getterFn, 'get ' + prop);
+        try {{
+            Object.defineProperty(obj, prop, {{
+                get: getterFn,
+                configurable: true,
+                enumerable: true
+            }});
+        }} catch(e) {{}}
+    }}
+
+    function overrideValue(obj, prop, val) {{
+        if (typeof val === 'function') {{
+            try {{
+                Object.defineProperty(val, 'name', {{ value: prop, configurable: true }});
+            }} catch(e) {{}}
+            makeNative(val, prop);
+        }}
+        try {{
+            Object.defineProperty(obj, prop, {{
+                value: val,
+                writable: true,
+                configurable: true,
+                enumerable: true
+            }});
+        }} catch(e) {{}}
+    }}
+
+    function patchWindowContext(w) {{
         if (!w || !w.navigator) return;
 
-        // 1. Hardware Concurrency, Device Memory & Navigator Specs trên Prototype chuẩn
+        // 2. Xóa các biến rò rỉ tự động hoá CDP
         try {{
-            const navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
-
-            // Xóa cờ webdriver trên prototype chuẩn (không tạo own-property)
-            if ('webdriver' in navProto) {{
-                try {{ delete navProto.webdriver; }} catch(e) {{}}
+            var keysToRemove = [
+                'cdc_adoQpoasnfa76pfcZLmcfl',
+                'domAutomation',
+                'domAutomationController',
+                '__webdriver_evaluate',
+                '__selenium_evaluate',
+                '__webdriver_script_fn',
+                '$chrome_asyncScriptInfo'
+            ];
+            for (var i = 0; i < keysToRemove.length; i++) {{
+                try {{ delete w[keysToRemove[i]]; }} catch(e) {{}}
             }}
-            if (w.navigator.hasOwnProperty('webdriver')) {{
-                try {{ delete w.navigator.webdriver; }} catch(e) {{}}
-            }}
+        }} catch(e) {{}}
 
-            Object.defineProperty(navProto, 'hardwareConcurrency', {{ get: () => {cpu}, configurable: true, enumerable: true }});
-            Object.defineProperty(navProto, 'deviceMemory', {{ get: () => {ram}, configurable: true, enumerable: true }});
-            Object.defineProperty(navProto, 'maxTouchPoints', {{ get: () => {touch_points}, configurable: true, enumerable: true }});
-            Object.defineProperty(navProto, 'platform', {{ get: () => '{platform}', configurable: true, enumerable: true }});
-            Object.defineProperty(navProto, 'language', {{ get: () => 'en-US', configurable: true, enumerable: true }});
-            Object.defineProperty(navProto, 'languages', {{ get: () => ['en-US', 'en'], configurable: true, enumerable: true }});
+        // 3. Patch navigator.webdriver = undefined (trên prototype chuẩn)
+        try {{
+            var nav = w.navigator;
+            var navProto = Object.getPrototypeOf(nav) || nav;
+            try {{ delete nav.webdriver; }} catch(e) {{}}
+            try {{ delete navProto.webdriver; }} catch(e) {{}}
+            overrideGetter(navProto, 'webdriver', function() {{ return undefined; }});
+        }} catch(e) {{}}
+
+        // 4. Hardware specs & Platform trên Navigator.prototype
+        try {{
+            var navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
+            overrideGetter(navProto, 'hardwareConcurrency', function() {{ return {cpu}; }});
+            overrideGetter(navProto, 'deviceMemory', function() {{ return {ram}; }});
+            overrideGetter(navProto, 'maxTouchPoints', function() {{ return {touch_points}; }});
+            overrideGetter(navProto, 'platform', function() {{ return '{platform}'; }});
+            overrideGetter(navProto, 'language', function() {{ return 'en-US'; }});
+            overrideGetter(navProto, 'languages', function() {{ return ['en-US', 'en']; }});
 
             if (w.navigator.userAgentData) {{
-                const uadProto = Object.getPrototypeOf(w.navigator.userAgentData) || w.navigator.userAgentData;
-                Object.defineProperty(uadProto, 'mobile', {{ get: () => {is_mobile}, configurable: true, enumerable: true }});
-                Object.defineProperty(uadProto, 'platform', {{ get: () => '{platform_title}', configurable: true, enumerable: true }});
+                var uadProto = Object.getPrototypeOf(w.navigator.userAgentData) || w.navigator.userAgentData;
+                overrideGetter(uadProto, 'mobile', function() {{ return {is_mobile}; }});
+                overrideGetter(uadProto, 'platform', function() {{ return '{platform_title}'; }});
+            }}
+        }} catch(e) {{}}
+
+        // 5. Chuẩn hoá plugins & mimeTypes (Khớp 100% Google Chrome)
+        try {{
+            var isMobile = {is_mobile};
+            var navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
+
+            if (isMobile) {{
+                var emptyPluginArray = Object.create(w.PluginArray ? w.PluginArray.prototype : Object.prototype);
+                overrideValue(emptyPluginArray, 'length', 0);
+                emptyPluginArray.item = makeNative(function(i) {{ return null; }}, 'item');
+                emptyPluginArray.namedItem = makeNative(function(n) {{ return null; }}, 'namedItem');
+                emptyPluginArray.refresh = makeNative(function() {{}}, 'refresh');
+
+                var emptyMimeTypeArray = Object.create(w.MimeTypeArray ? w.MimeTypeArray.prototype : Object.prototype);
+                overrideValue(emptyMimeTypeArray, 'length', 0);
+                emptyMimeTypeArray.item = makeNative(function(i) {{ return null; }}, 'item');
+                emptyMimeTypeArray.namedItem = makeNative(function(n) {{ return null; }}, 'namedItem');
+
+                overrideGetter(navProto, 'plugins', function() {{ return emptyPluginArray; }});
+                overrideGetter(navProto, 'mimeTypes', function() {{ return emptyMimeTypeArray; }});
+            }} else {{
+                // Desktop: 5 plugin PDF chuẩn của Google Chrome
+                var rawPluginsData = [
+                    {{ name: 'PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}, {{ type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
+                    {{ name: 'Chrome PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
+                    {{ name: 'Chromium PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
+                    {{ name: 'Microsoft Edge PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
+                    {{ name: 'WebKit built-in PDF', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }}
+                ];
+
+                var pluginsList = [];
+                var mimeTypesList = [];
+
+                for (var pi = 0; pi < rawPluginsData.length; pi++) {{
+                    var pData = rawPluginsData[pi];
+                    var plugin = Object.create(w.Plugin ? w.Plugin.prototype : Object.prototype);
+                    overrideValue(plugin, 'name', pData.name);
+                    overrideValue(plugin, 'description', pData.description);
+                    overrideValue(plugin, 'filename', pData.filename);
+                    overrideValue(plugin, 'length', pData.mimeTypes.length);
+
+                    var pMimes = [];
+                    for (var mi = 0; mi < pData.mimeTypes.length; mi++) {{
+                        var mData = pData.mimeTypes[mi];
+                        var mime = Object.create(w.MimeType ? w.MimeType.prototype : Object.prototype);
+                        overrideValue(mime, 'type', mData.type);
+                        overrideValue(mime, 'suffixes', mData.suffixes);
+                        overrideValue(mime, 'description', mData.description);
+                        overrideValue(mime, 'enabledPlugin', plugin);
+                        overrideValue(plugin, mData.type, mime);
+                        overrideValue(plugin, mi, mime);
+                        pMimes.push(mime);
+                        mimeTypesList.push(mime);
+                    }}
+
+                    plugin.item = makeNative(function(idx) {{ return pMimes[idx] || null; }}, 'item');
+                    plugin.namedItem = makeNative(function(name) {{
+                        for (var k = 0; k < pMimes.length; k++) {{ if (pMimes[k].type === name) return pMimes[k]; }}
+                        return null;
+                    }}, 'namedItem');
+
+                    pluginsList.push(plugin);
+                }}
+
+                var pluginArray = Object.create(w.PluginArray ? w.PluginArray.prototype : Object.prototype);
+                overrideValue(pluginArray, 'length', pluginsList.length);
+                for (var pj = 0; pj < pluginsList.length; pj++) {{
+                    overrideValue(pluginArray, pj, pluginsList[pj]);
+                    overrideValue(pluginArray, pluginsList[pj].name, pluginsList[pj]);
+                }}
+                pluginArray.item = makeNative(function(idx) {{ return pluginsList[idx] || null; }}, 'item');
+                pluginArray.namedItem = makeNative(function(name) {{
+                    for (var k = 0; k < pluginsList.length; k++) {{ if (pluginsList[k].name === name) return pluginsList[k]; }}
+                    return null;
+                }}, 'namedItem');
+                pluginArray.refresh = makeNative(function() {{}}, 'refresh');
+
+                var mimeTypeArray = Object.create(w.MimeTypeArray ? w.MimeTypeArray.prototype : Object.prototype);
+                overrideValue(mimeTypeArray, 'length', mimeTypesList.length);
+                for (var mj = 0; mj < mimeTypesList.length; mj++) {{
+                    overrideValue(mimeTypeArray, mj, mimeTypesList[mj]);
+                    overrideValue(mimeTypeArray, mimeTypesList[mj].type, mimeTypesList[mj]);
+                }}
+                mimeTypeArray.item = makeNative(function(idx) {{ return mimeTypesList[idx] || null; }}, 'item');
+                mimeTypeArray.namedItem = makeNative(function(name) {{
+                    for (var k = 0; k < mimeTypesList.length; k++) {{ if (mimeTypesList[k].type === name) return mimeTypesList[k]; }}
+                    return null;
+                }}, 'namedItem');
+
+                overrideGetter(navProto, 'plugins', function() {{ return pluginArray; }});
+                overrideGetter(navProto, 'mimeTypes', function() {{ return mimeTypeArray; }});
+            }}
+        }} catch(e) {{}}
+
+        // 6. Cấu trúc window.chrome hoàn chỉnh (app, csi, loadTimes, runtime)
+        try {{
+            if (!w.chrome) {{
+                w.chrome = {{}};
+            }}
+            var chromeObj = w.chrome;
+
+            if (!chromeObj.app) {{
+                chromeObj.app = {{
+                    isInstalled: false,
+                    InstallState: {{ DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }},
+                    RunningState: {{ CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }},
+                    getDetails: makeNative(function() {{ return null; }}, 'getDetails'),
+                    getIsInstalled: makeNative(function() {{ return false; }}, 'getIsInstalled')
+                }};
+            }}
+
+            if (!chromeObj.csi) {{
+                chromeObj.csi = makeNative(function() {{
+                    return {{
+                        onloadT: Date.now(),
+                        startE: Date.now(),
+                        pageT: Math.floor(Math.random() * 1500) + 400,
+                        tran: 15
+                    }};
+                }}, 'csi');
+            }}
+
+            if (!chromeObj.loadTimes) {{
+                chromeObj.loadTimes = makeNative(function() {{
+                    var now = Date.now() / 1000;
+                    return {{
+                        commitLoadTime: now,
+                        connectionInfo: 'h2',
+                        finishDocumentLoadTime: now + 0.3,
+                        finishLoadTime: now + 0.6,
+                        firstPaintAfterLoadTime: 0,
+                        firstPaintTime: now + 0.2,
+                        navigationType: 'Other',
+                        npnNegotiatedProtocol: 'h2',
+                        requestTime: now - 0.8,
+                        startLoadTime: now - 0.4,
+                        wasAlternateProtocolAvailable: false,
+                        wasFetchedViaSpdy: true,
+                        wasNpnNegotiated: true
+                    }};
+                }}, 'loadTimes');
+            }}
+
+            if (!chromeObj.runtime) {{
+                chromeObj.runtime = {{
+                    connect: makeNative(function() {{}}, 'connect'),
+                    sendMessage: makeNative(function() {{}}, 'sendMessage'),
+                    id: undefined,
+                    PlatformOs: {{ MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' }},
+                    PlatformArch: {{ ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' }},
+                    PlatformNaclArch: {{ ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' }},
+                    OnInstalledReason: {{ INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' }},
+                    RequestUpdateCheckStatus: {{ THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available' }}
+                }};
+            }}
+        }} catch(e) {{}}
+
+        // 7. Đồng bộ navigator.permissions.query với Notification.permission
+        try {{
+            if (w.navigator.permissions && w.navigator.permissions.query) {{
+                var origQuery = w.navigator.permissions.query.bind(w.navigator.permissions);
+                var patchedQuery = function query(params) {{
+                    if (params && params.name === 'notifications') {{
+                        var perm = (typeof Notification !== 'undefined' && Notification.permission) ? Notification.permission : 'default';
+                        return Promise.resolve({{ state: perm, onchange: null }});
+                    }}
+                    return origQuery(params);
+                }};
+                makeNative(patchedQuery, 'query');
+                w.navigator.permissions.query = patchedQuery;
+            }}
+        }} catch(e) {{}}
+
+        // 8. Masking WebGL GPU Vendor & Renderer
+        try {{
+            var patchGL = function(proto) {{
+                if (!proto || !proto.getParameter) return;
+                var origGetParam = proto.getParameter;
+                var patchedGetParam = function getParameter(param) {{
+                    if (param === 37445) return '{vendor}';
+                    if (param === 37446) return '{renderer}';
+                    if (param === 7936) return 'WebKit';
+                    if (param === 7937) return 'WebKit WebGL';
+                    return origGetParam.apply(this, arguments);
+                }};
+                makeNative(patchedGetParam, 'getParameter');
+                proto.getParameter = patchedGetParam;
+            }};
+            if (w.WebGLRenderingContext) patchGL(w.WebGLRenderingContext.prototype);
+            if (w.WebGL2RenderingContext) patchGL(w.WebGL2RenderingContext.prototype);
+        }} catch(e) {{}}
+
+        // 9. WebRTC IP Leak Protection (Khử rò rỉ IP thật qua STUN)
+        try {{
+            var OrigRTC = w.RTCPeerConnection || w.webkitRTCPeerConnection;
+            if (OrigRTC) {{
+                var PatchedRTC = function RTCPeerConnection(config, constraints) {{
+                    if (config && config.iceServers) {{
+                        config.iceServers = config.iceServers.filter(function(s) {{
+                            var urls = s.urls || s.url || [];
+                            if (typeof urls === 'string') urls = [urls];
+                            for (var ui = 0; ui < urls.length; ui++) {{
+                                if (typeof urls[ui] === 'string' && urls[ui].toLowerCase().indexOf('stun:') === 0) {{
+                                    return false;
+                                }}
+                            }}
+                            return true;
+                        }});
+                    }}
+                    return constraints ? new OrigRTC(config, constraints) : new OrigRTC(config);
+                }};
+                PatchedRTC.prototype = OrigRTC.prototype;
+                makeNative(PatchedRTC, 'RTCPeerConnection');
+                w.RTCPeerConnection = PatchedRTC;
+                if (w.webkitRTCPeerConnection) w.webkitRTCPeerConnection = PatchedRTC;
             }}
         }} catch(e) {{}}
     }}
 
     // Áp dụng bảo vệ cho window chính
-    patchTargetWindow(window);
+    patchWindowContext(window);
 
-    // 3. Đồng bộ giao diện chỉ khi truy cập iphey.com (KHÔNG chạy interval trên các trang khác)
+    // Kế thừa bảo vệ cho tất cả iframe
     try {{
-        if (window.location && window.location.hostname && window.location.hostname.includes('iphey.com')) {{
-            const HW_MAP = {{
-                'GPU': '{renderer}',
-                'Resolution': '{resolution}',
-                'Device Memory': '{ram}',
-                'Hardware Concurrency': '{cpu}'
+        var origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+        if (origContentWindow && origContentWindow.get) {{
+            var cwGetter = function() {{
+                var win = origContentWindow.get.call(this);
+                if (win) patchWindowContext(win);
+                return win;
             }};
-            const updateAuditDom = () => {{
-                document.querySelectorAll('.detail-entry').forEach(e => {{
-                    const n = e.querySelector('.detail-name')?.textContent?.trim();
-                    const v = e.querySelector('.detail-value');
-                    if (n && HW_MAP[n] && v && v.textContent !== HW_MAP[n]) {{
-                        v.textContent = HW_MAP[n];
-                    }}
-                }});
-            }};
-            document.addEventListener('DOMContentLoaded', updateAuditDom);
-            window.addEventListener('load', updateAuditDom);
-            setTimeout(updateAuditDom, 1500);
+            makeNative(cwGetter, 'get contentWindow');
+            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {{
+                get: cwGetter,
+                configurable: true
+            }});
         }}
     }} catch(e) {{}}
 }})();"#,
@@ -498,7 +781,7 @@ fn generate_stealth_script(profile: &BrowserProfile) -> String {
         cpu = cpu,
         ram = ram,
         renderer = renderer,
-        resolution = resolution,
+        vendor = vendor,
         platform = platform,
         platform_title = platform_title,
         is_mobile = is_mobile,
@@ -1041,7 +1324,7 @@ pub async fn launch_cdp_profile_with_bounds(
     }
 
     let start_url = if profile.profile_start_url.trim().is_empty() {
-        "https://iphey.com".to_string()
+        "https://www.tiktok.com".to_string()
     } else {
         profile.profile_start_url.clone()
     };
@@ -1414,39 +1697,38 @@ pub async fn launch_cdp_profile_with_bounds(
                                 }).to_string()));
 
                                 // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP Proxy (Chỉ kích hoạt khi dùng Proxy)
-                                if use_proxy {
-                                    cmd_id += 1;
-                                    let _ = tx.send(Message::Text(json!({
-                                        "id": cmd_id,
-                                        "sessionId": session_id,
-                                        "method": "Emulation.setTimezoneOverride",
-                                        "params": {
-                                            "timezoneId": geo_info.timezone
-                                        }
-                                    }).to_string()));
+                                // 1b. Cố định Timezone, Geolocation và Locale khớp 100% IP (Proxy hoặc Direct)
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setTimezoneOverride",
+                                    "params": {
+                                        "timezoneId": geo_info.timezone
+                                    }
+                                }).to_string()));
 
-                                    cmd_id += 1;
-                                    let _ = tx.send(Message::Text(json!({
-                                        "id": cmd_id,
-                                        "sessionId": session_id,
-                                        "method": "Emulation.setGeolocationOverride",
-                                        "params": {
-                                            "latitude": geo_info.latitude,
-                                            "longitude": geo_info.longitude,
-                                            "accuracy": 100
-                                        }
-                                    }).to_string()));
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setGeolocationOverride",
+                                    "params": {
+                                        "latitude": geo_info.latitude,
+                                        "longitude": geo_info.longitude,
+                                        "accuracy": 100
+                                    }
+                                }).to_string()));
 
-                                    cmd_id += 1;
-                                    let _ = tx.send(Message::Text(json!({
-                                        "id": cmd_id,
-                                        "sessionId": session_id,
-                                        "method": "Emulation.setLocaleOverride",
-                                        "params": {
-                                            "locale": geo_info.locale
-                                        }
-                                    }).to_string()));
-                                }
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Emulation.setLocaleOverride",
+                                    "params": {
+                                        "locale": geo_info.locale
+                                    }
+                                }).to_string()));
 
                                 // 2. Override UA nếu có tùy biến
                                 if let Some((ref ua_cmd, ref net_cmd)) = custom_ua_cmds {

@@ -1,5 +1,5 @@
 {
-    "version": "2.2.0",
-    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip",
-    "changelog": "Cập nhật Mun Anti Browser & Quản lý Proxy: Lưu trạng thái Live/Die bền vững vào ổ đĩa, tự động nạp lại danh sách khi Import proxies mới, thêm nút Làm Mới (Reload) trong modal 250 SOCKS5 Proxy Pool, và tối ưu kết nối kiểm tra proxy song song."
+    "version": "2.3.0",
+    "download_url": "https://cdn.c69.us/QHTDautomation-v2.zip?v=2.3.0",
+    "changelog": "Nâng cấp Mun Anti Browser thuần Rust: Tích hợp bộ JS Healthy Stealth tự nhiên (Native toString WeakMap, Window Chrome runtime, WebGL masking, WebRTC protection, đồng bộ múi giờ GeoIP) — đạt chuẩn 100/100 Trustworthy trên Iphey và vượt qua các bộ kiểm tra bot/Cloudflare."
 }

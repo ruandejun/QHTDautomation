@@ -94,6 +94,8 @@ fn main() {
                 }
             };
 
+            crate::api::sanitize_profiles_on_startup();
+
             let adb = Arc::new(AdbManager::new());
             let stream = Arc::new(StreamManager::new(adb.clone()));
             let nurture = Arc::new(TikTokNurtureEngine::new(adb.clone()));
