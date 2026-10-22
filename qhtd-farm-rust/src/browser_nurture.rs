@@ -1,5 +1,5 @@
 use crate::api::BrowserProfile;
-use crate::cdp_browser::{get_free_port, launch_cdp_profile_with_bounds, calculate_grid_window_bounds};
+use crate::cdp_browser::{launch_cdp_profile_with_bounds, calculate_grid_window_bounds};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
@@ -13,8 +13,33 @@ use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{error, info, warn};
 
-pub const DEFAULT_C69_API_URL: &str = "https://cu.c69.us";
-pub const DEFAULT_C69_TOKEN: &str = "Token 99b02d3d255a49193950777b1cc3e3db099ceefb";
+pub const DEFAULT_C69_API_URL: &str = "https://c69.us";
+const FALLBACK_C69_TOKEN: &str = match option_env!("QHTD_FALLBACK_C69_TOKEN") { Some(t) => t, None => "" };
+
+/// Token C69: ưu tiên biến môi trường C69_API_TOKEN (hoặc file c69_token.txt cạnh exe), fallback token nhúng sẵn.
+pub fn c69_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let from_env = std::env::var("C69_API_TOKEN").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let from_file = || std::fs::read_to_string("c69_token.txt").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let raw = from_env.or_else(from_file).unwrap_or_else(|| FALLBACK_C69_TOKEN.to_string());
+        if raw.starts_with("Token ") { raw } else { format!("Token {}", raw) }
+    })
+}
+
+/// Số trình duyệt chạy song song (mặc định 5, chỉnh bằng biến môi trường MUN_MAX_SLOTS, 1..=20).
+pub fn max_slots() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("MUN_MAX_SLOTS").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(5).clamp(1, 20)
+    })
+}
+
+/// HTTP client dùng chung (connection pool) thay vì tạo mới mỗi request.
+pub fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().pool_max_idle_per_host(8).build().unwrap_or_else(|_| reqwest::Client::new()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct C69Account {
@@ -394,6 +419,7 @@ impl CdpClient {
     }
 
     pub async fn set_cookies_from_string(&self, cookie_str: &str) -> Result<(), String> {
+        let _ = self.call("Network.enable", json!({})).await;
         let pairs: Vec<&str> = cookie_str.split(';').collect();
         for p in pairs {
             let trimmed = p.trim();
@@ -429,14 +455,14 @@ pub struct BrowserNurtureEngine {
 impl BrowserNurtureEngine {
     pub fn new() -> Self {
         let mut slots = VecDeque::new();
-        for i in 0..5 {
+        for i in 0..max_slots() {
             slots.push_back(i);
         }
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             statuses: Arc::new(RwLock::new(HashMap::new())),
             otp_queue: Arc::new(Mutex::new(HashMap::new())),
-            concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(5)),
+            concurrency_semaphore: Arc::new(tokio::sync::Semaphore::new(max_slots())),
             available_slots: Arc::new(Mutex::new(slots)),
         }
     }
@@ -449,7 +475,7 @@ impl BrowserNurtureEngine {
 
     pub fn release_slot(&self, slot: usize) {
         let mut slots = self.available_slots.lock();
-        if !slots.contains(&slot) && slot < 5 {
+        if !slots.contains(&slot) && slot < max_slots() {
             slots.push_back(slot);
         }
     }
@@ -486,9 +512,11 @@ impl BrowserNurtureEngine {
         for (pid, st) in statuses.iter_mut() {
             let is_task_alive = tasks.get(pid).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
             let is_browser_alive = crate::cdp_browser::is_profile_active(*pid);
-            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng");
-
-            // Nếu báo đang chạy nhưng task đã chết HOẶC browser đã tắt (và không phải đang chờ slot)
+            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng")
+                || st.status.contains("Khởi động browser") || st.status.contains("Đảo Proxy") || st.status.contains("Chờ kết nối") || st.status.contains("Đang nuôi");
+            if is_task_alive && is_browser_alive && !st.is_running {
+                st.is_running = true; // self-heal: task và browser còn sống
+            }
             if st.is_running && (!is_task_alive || (!is_browser_alive && !is_waiting_slot)) {
                 st.is_running = false;
                 if !st.status.contains("thành công") && !st.status.contains("Chờ 1h") && !st.status.contains("Lỗi") {
@@ -506,7 +534,11 @@ impl BrowserNurtureEngine {
         if let Some(st) = statuses.get_mut(&profile_id) {
             let is_task_alive = self.tasks.read().get(&profile_id).map(|f| f.load(Ordering::Relaxed)).unwrap_or(false);
             let is_browser_alive = crate::cdp_browser::is_profile_active(profile_id);
-            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng");
+            let is_waiting_slot = st.status.contains("Chờ slot") || st.status.contains("Đang xếp hàng")
+                || st.status.contains("Khởi động browser") || st.status.contains("Đảo Proxy") || st.status.contains("Chờ kết nối") || st.status.contains("Đang nuôi");
+            if is_task_alive && is_browser_alive && !st.is_running {
+                st.is_running = true; // self-heal: task và browser còn sống
+            }
 
             if st.is_running && (!is_task_alive || (!is_browser_alive && !is_waiting_slot)) {
                 st.is_running = false;
@@ -563,19 +595,14 @@ impl BrowserNurtureEngine {
     pub async fn save_screenshot_proof(&self, cdp: &CdpClient, filename: &str) -> Result<(), String> {
         match cdp.capture_screenshot().await {
             Ok(data) => {
-                let paths = [
-                    format!("scratch/{}", filename),
-                    format!("../scratch/{}", filename),
-                    format!("d:/Workspace/Python/QHTDautomation/scratch/{}", filename),
-                ];
-                for p_str in &paths {
-                    let p = std::path::Path::new(p_str);
-                    if let Some(parent) = p.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::write(p, &data);
+                // Chỉ ghi 1 bản duy nhất (tránh ghi 5 đường dẫn cứng gây rác & tốn I/O)
+                let p_str = format!("scratch/{}", filename);
+                let p = std::path::Path::new(&p_str);
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
-                info!("📸 [Rust Core] Đã lưu ảnh bằng chứng: scratch/{}", filename);
+                let _ = std::fs::write(p, &data);
+                info!("📸 [Rust Core] Đã lưu ảnh bằng chứng: {}", filename);
                 Ok(())
             }
             Err(e) => {
@@ -658,7 +685,31 @@ impl BrowserNurtureEngine {
         // 1. Chờ slot trống trong tối đa 5 trình duyệt đồng thời (Grid Concurrency Cap = 5)
         self.update_log(pid, "⏳ Đang chờ slot màn hình (Tối đa 5 trình duyệt song song)...".to_string(), "Chờ slot");
         let (slot_idx, permit) = self.acquire_slot().await;
-        info!("🎯 [Profile #{}] Đã chiếm Slot #{} trên màn hình (Đang chạy: {}/5)", pid, slot_idx, 5 - self.concurrency_semaphore.available_permits());
+        info!("🎯 [Profile #{}] Đã chiếm Slot #{} trên màn hình (Đang chạy: {}/{})", pid, slot_idx, max_slots().saturating_sub(self.concurrency_semaphore.available_permits()), max_slots());
+
+        // Cập nhật trạng thái "Đang nuôi" vào file profile và C69
+        self.update_log(pid, format!("🎯 Đang chiếm Slot #{} và khởi chạy trình duyệt...", slot_idx), "Đang nuôi");
+        crate::api::update_profile_nurture_status(pid, "Đang nuôi", None, None);
+
+        let start_acc_id = c69_acc.as_ref().map(|a| a.id).or(profile.tiktok_account_id);
+        if let Some(aid) = start_acc_id {
+            if aid > 0 {
+                tokio::spawn(async move {
+                    let client = http_client();
+                    let acc_url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, aid);
+                    let patch_payload = serde_json::json!({
+                        "note": "Đang nuôi (Desktop FYP song song)...",
+                        "modified_by": "ruandejun"
+                    });
+                    let _ = client.patch(&acc_url)
+                        .header("Authorization", c69_token())
+                        .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
+                        .json(&patch_payload)
+                        .send()
+                        .await;
+                });
+            }
+        }
 
         // RAII Guard: Đảm bảo khi worker kết thúc (bất kể return sớm, lỗi, hay hoàn thành), luôn đóng Chrome và trả slot
         struct SlotGuard<'a> {
@@ -687,8 +738,6 @@ impl BrowserNurtureEngine {
             }
         }
         let _guard = SlotGuard { engine: self, slot: slot_idx, pid, _permit: permit };
-
-        let port = get_free_port(9222 + (pid as u16 % 500));
 
         let mut active_profile = profile.clone();
 
@@ -741,9 +790,11 @@ impl BrowserNurtureEngine {
             "Khởi động browser"
         );
         if let Err(e) = launch_cdp_profile_with_bounds(&active_profile, bounds).await {
-            self.set_error(pid, format!("Lỗi khởi chạy browser: {}", e));
+            self.set_error(pid, format!("[BROWSER] Lỗi khởi chạy browser: {}", e));
             return;
         }
+        // Cổng DevTools thực tế đã được cấp phát cho profile này khi launch (tránh race giữa các worker song song)
+        let port = crate::cdp_browser::profile_port(pid).unwrap_or(9222);
 
         // 2. Chờ CDP Port sẵn sàng
         let mut target_ws_url = None;
@@ -771,7 +822,7 @@ impl BrowserNurtureEngine {
         let ws_url = match target_ws_url {
             Some(u) => u,
             None => {
-                self.set_error(pid, format!("Không tìm thấy tab Chrome trên cổng {}", port));
+                self.set_error(pid, format!("[BROWSER] Không tìm thấy tab Chrome trên cổng {}", port));
                 return;
             }
         };
@@ -813,111 +864,109 @@ impl BrowserNurtureEngine {
                         self.update_log(pid, "Nạp cookies String đăng nhập từ C69...".to_string(), "Nạp Cookies");
                         let _ = cdp.set_cookies_from_string(trimmed_c).await;
                     }
+                    // Sau khi nạp cookies, tải trang chủ TikTok để nạp session vào trình duyệt
+                    let _ = cdp.navigate("https://www.tiktok.com/").await;
+                    tokio::time::sleep(Duration::from_secs(4)).await;
                 }
             }
         }
 
-        // 4. KIỂM TRA PHIÊN ĐĂNG NHẬP ELEMENT-DRIVEN (Ưu tiên Zero-Login Cookie Jar trong 0ms, không chờ mạng tải trang)
-        let cookies_val = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
-        let has_session_cookie = cookies_val.as_array().map(|arr| {
-            arr.iter().any(|c| {
-                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                (name == "sessionid" || name == "sessionid_ss") &&
-                c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
-            })
-        }).unwrap_or(false);
-
-        let mut is_already_logged_in = has_session_cookie;
+        // 4. KIỂM TRA PHIÊN ĐĂNG NHẬP THỰC TẾ TRÊN DOM (Xác thực 100% bằng phần tử UI)
+        let mut is_already_logged_in = false;
         let mut detected_username = String::new();
 
-        if is_already_logged_in {
-            self.update_log(pid, "⚡ Đã có phiên đăng nhập sẵn (Zero-Login Cookies)! Chuyển thẳng sang FYP...".to_string(), "Đã đăng nhập");
-            let _ = crate::cdp_browser::backup_thin_profile(pid);
-        } else {
-            self.update_log(pid, "Mở TikTok Profile kiểm tra phiên đăng nhập...".to_string(), "Kiểm tra Profile");
-            let _ = cdp.navigate("https://www.tiktok.com/profile").await;
+        self.update_log(pid, "Mở TikTok Profile kiểm tra thực tế phiên đăng nhập...".to_string(), "Kiểm tra Profile");
+        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
 
-            // Polling siêu tốc mỗi 250ms (Tối đa 5 giây = 20 lần), tìm thấy element là chuyển bước NGAY LẬP TỨC
-            for check_step in 1..=20 {
-                if !run_flag.load(Ordering::Relaxed) { return; }
-                tokio::time::sleep(Duration::from_millis(250)).await;
+        // Polling tối đa 15 giây (30 lần x 500ms) để TikTok tải xong và redirect nếu phiên hết hạn
+        for check_step in 1..=30 {
+            if !run_flag.load(Ordering::Relaxed) { return; }
+            tokio::time::sleep(Duration::from_millis(500)).await;
 
-                let check_auth_js = r#"(() => {
-                    const url = window.location.href;
-                    const isLoginUrl = url.includes('/login');
-                    const hasLoginBtn = !!(
-                        document.querySelector('[data-e2e="top-login-button"]') ||
-                        Array.from(document.querySelectorAll('button, a')).some(el => {
-                            const t = (el.innerText || '').trim().toLowerCase();
-                            return (t === 'log in' || t === 'đăng nhập') && el.offsetParent !== null;
-                        })
-                    );
-                    
-                    let un = '';
-                    const m = url.match(/@([a-zA-Z0-9_.-]+)/);
-                    if (m && m[1]) {
-                        un = m[1];
-                    }
+            let check_auth_js = r#"(() => {
+                const url = window.location.href;
+                const isLoginUrl = url.includes('/login');
+                const hasModal = !!(
+                    document.querySelector('[id*="login-modal"]') ||
+                    document.querySelector('[class*="DivLoginContainer"]') ||
+                    document.querySelector('[data-e2e="login-modal"]') ||
+                    Array.from(document.querySelectorAll('div, h2')).some(el => (el.innerText || '').trim().toLowerCase() === 'log in to tiktok')
+                );
+                const hasLoginBtn = Array.from(document.querySelectorAll('button, a, div[role="button"], span')).some(el => {
+                    const t = (el.innerText || '').trim().toLowerCase();
+                    return (t === 'log in' || t === 'đăng nhập' || t === 'log in to comment' || t === 'sign up') && el.offsetParent !== null;
+                });
 
-                    const hasAvatar = !!(
-                        document.querySelector('[data-e2e="user-avatar"]') || 
-                        document.querySelector('[data-e2e="profile-icon"]') || 
-                        document.querySelector('a[href*="/@"]') ||
-                        document.querySelector('[data-e2e="user-subtitle"]')
-                    );
-
-                    return JSON.stringify({
-                        url: url,
-                        is_login_url: isLoginUrl,
-                        has_login_btn: hasLoginBtn,
-                        has_avatar: hasAvatar,
-                        username: un
-                    });
-                })()"#;
-
-                let mut is_login_page = false;
-                let mut has_btn = false;
-                let mut has_avatar = false;
-                let mut un_str = String::new();
-
-                if let Ok(eval_val) = cdp.evaluate(check_auth_js).await {
-                    if let Some(s) = eval_val.as_str() {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
-                            is_login_page = parsed.get("is_login_url").and_then(|v| v.as_bool()).unwrap_or(false);
-                            has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
-                            has_avatar = parsed.get("has_avatar").and_then(|v| v.as_bool()).unwrap_or(false);
-                            un_str = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        }
-                    }
-                }
-
-                let cookies_val2 = cdp.get_all_cookies().await.unwrap_or(serde_json::Value::Null);
-                let has_cookie2 = cookies_val2.as_array().map(|arr| {
-                    arr.iter().any(|c| {
-                        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        (name == "sessionid" || name == "sessionid_ss") &&
-                        c.get("value").and_then(|v| v.as_str()).unwrap_or("").trim().len() > 15
+                const headerAvatar = document.querySelector('header [data-e2e="profile-icon"]') || 
+                                     document.querySelector('header [data-e2e="user-avatar"]') || 
+                                     document.querySelector('header img[class*="Avatar"]') ||
+                                     document.querySelector('[class*="DivHeaderRightContainer"] img');
+                const hasEditBtn = !!(
+                    document.querySelector('[data-e2e="edit-profile-endpoint"]') ||
+                    Array.from(document.querySelectorAll('button')).some(b => {
+                        const t = (b.innerText || '').trim().toLowerCase();
+                        return (t === 'edit profile' || t === 'chỉnh sửa hồ sơ') && b.offsetParent !== null;
                     })
-                }).unwrap_or(false);
+                );
+                const hasAvatar = (!!headerAvatar || hasEditBtn) && !hasModal && !hasLoginBtn;
 
-                if (has_cookie2 || has_avatar) && !is_login_page && !has_btn {
-                    is_already_logged_in = true;
-                    detected_username = un_str;
-                    self.update_log(pid, format!("⚡ Phần tử hồ sơ xuất hiện (@{}) sau {}ms! Chuyển bước ngay...", detected_username, check_step * 250), "Đã đăng nhập");
-                    break;
+                let un = '';
+                const m = url.match(/@([a-zA-Z0-9_.-]+)/);
+                if (m && m[1]) {
+                    un = m[1];
+                } else {
+                    const uEl = document.querySelector('[data-e2e="user-title"]') || document.querySelector('[data-e2e="user-subtitle"]');
+                    if (uEl) un = (uEl.innerText || '').trim().replace('@', '');
                 }
 
-                if is_login_page || (has_btn && check_step >= 6) {
-                    break;
+                return JSON.stringify({
+                    url: url,
+                    is_login_url: isLoginUrl,
+                    has_login_btn: hasLoginBtn,
+                    has_modal: hasModal,
+                    has_avatar: hasAvatar,
+                    username: un
+                });
+            })()"#;
+
+            let mut is_login_page = false;
+            let mut has_btn = false;
+            let mut has_modal = false;
+            let mut has_avatar = false;
+            let mut un_str = String::new();
+
+            if let Ok(eval_val) = cdp.evaluate(check_auth_js).await {
+                if let Some(s) = eval_val.as_str() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
+                        is_login_page = parsed.get("is_login_url").and_then(|v| v.as_bool()).unwrap_or(false);
+                        has_btn = parsed.get("has_login_btn").and_then(|v| v.as_bool()).unwrap_or(false);
+                        has_modal = parsed.get("has_modal").and_then(|v| v.as_bool()).unwrap_or(false);
+                        has_avatar = parsed.get("has_avatar").and_then(|v| v.as_bool()).unwrap_or(false);
+                        un_str = parsed.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    }
                 }
-
-                self.update_log(pid, format!("Đang lắng nghe phần tử TikTok ({}ms)...", check_step * 250), "Lắng nghe phần tử");
             }
 
-            if is_already_logged_in {
-                self.update_log(pid, format!("✅ Tài khoản đã đăng nhập sẵn (@{})! Chuẩn bị nuôi FYP...", detected_username), "Đã đăng nhập");
-                let _ = crate::cdp_browser::backup_thin_profile(pid);
+            // Chỉ xác nhận ĐÃ ĐĂNG NHẬP khi có Avatar thật và TUYỆT ĐỐI không có modal login / nút login
+            if has_avatar && !is_login_page && !has_btn && !has_modal {
+                is_already_logged_in = true;
+                detected_username = un_str;
+                self.update_log(pid, format!("⚡ Xác nhận tài khoản ĐÃ ĐĂNG NHẬP THẬT (@{}) trên DOM! Chuyển bước...", detected_username), "Đã đăng nhập");
+                break;
             }
+
+            if is_login_page || has_modal || (has_btn && check_step >= 6) {
+                // Đã chuyển sang trang login hoặc hiện modal login -> chắc chắn chưa login
+                self.update_log(pid, "⚠️ Phát hiện giao diện yêu cầu đăng nhập (Login modal / URL / Button)!".to_string(), "Cần đăng nhập");
+                break;
+            }
+
+            self.update_log(pid, format!("Đang lắng nghe phần tử TikTok ({}ms)...", check_step * 500), "Lắng nghe phần tử");
+        }
+
+        if is_already_logged_in {
+            self.update_log(pid, format!("✅ Tài khoản đã đăng nhập sẵn (@{})! Chuẩn bị lưu bằng chứng...", detected_username), "Đã đăng nhập");
+            let _ = crate::cdp_browser::backup_thin_profile(pid);
         }
 
         if !is_already_logged_in {
@@ -926,7 +975,7 @@ impl BrowserNurtureEngine {
             // Chưa đăng nhập -> Kiểm tra mật khẩu C69 an toàn (Zero Panic)
             let acc_opt = c69_acc.as_ref();
             if acc_opt.is_none() || acc_opt.and_then(|a| a.password.as_deref()).unwrap_or("").trim().is_empty() {
-                self.set_error(pid, "❌ Profile chưa đăng nhập TikTok và không có mật khẩu tài khoản C69! Tự động dừng lại và đóng trình duyệt, tuyệt đối không nuôi dạo vô nghĩa.".to_string());
+                self.set_error(pid, "[NO_PASSWORD] ❌ Profile chưa đăng nhập TikTok và không có mật khẩu tài khoản C69! Tự động dừng lại và đóng trình duyệt, tuyệt đối không nuôi dạo vô nghĩa.".to_string());
                 return;
             }
             let acc = acc_opt.unwrap();
@@ -1018,24 +1067,40 @@ impl BrowserNurtureEngine {
                         let _ = cdp.type_text(&pwd).await;
                         tokio::time::sleep(Duration::from_millis(450)).await;
 
-                        // 3. Cho React state cap nhat tu dong qua native keyboard events va click nut Log in
-                        tokio::time::sleep(Duration::from_millis(800)).await;
-                        self.update_log(pid, "🖱️ Click nút Log in...".to_string(), "Click Log in");
-                        
-                        // Lay toa do nut Log in moi nhat de click chinh xac
-                        let btn_check_script = r#"(() => {
+                        // 3. Đồng bộ React State qua Native Property Descriptor để nút Log in sáng màu đỏ (Enabled)
+                        let sync_react_script = format!(r#"(() => {{
+                            function setReactVal(input, val) {{
+                                if (!input) return false;
+                                input.focus();
+                                const proto = window.HTMLInputElement.prototype;
+                                const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                                setter.call(input, val);
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                return true;
+                            }}
+                            const u = document.querySelector('input[name="username"]') || 
+                                      document.querySelector('input[placeholder*="Email"]') || 
+                                      document.querySelector('input[placeholder*="Username"]') || 
+                                      document.querySelector('input[type="text"]');
+                            const p = document.querySelector('input[type="password"]');
+                            setReactVal(u, {});
+                            setReactVal(p, {});
                             const b = document.querySelector('button[type="submit"]') || 
                                       Array.from(document.querySelectorAll('button')).find(btn => (btn.innerText || '').trim().toLowerCase().includes('log in'));
-                            if (b) {
-                                try { b.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch(e) {}
+                            if (b) {{
+                                b.disabled = false;
+                                b.removeAttribute('disabled');
+                                try {{ b.scrollIntoView({{ block: 'center', behavior: 'instant' }}); }} catch(e) {{}}
                                 const r = b.getBoundingClientRect();
-                                return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
-                            }
-                            return JSON.stringify({ x: 0.0, y: 0.0 });
-                        })()"#;
+                                return JSON.stringify({{ x: r.left + r.width / 2, y: r.top + r.height / 2 }});
+                            }}
+                            return JSON.stringify({{ x: 0.0, y: 0.0 }});
+                        }})()"#, serde_json::to_string(&login_identity).unwrap_or_else(|_| "\"\"".to_string()), serde_json::to_string(&pwd).unwrap_or_else(|_| "\"\"".to_string()));
+
                         let mut final_bx = bx;
                         let mut final_by = by;
-                        if let Ok(b_val) = cdp.evaluate(btn_check_script).await {
+                        if let Ok(b_val) = cdp.evaluate(&sync_react_script).await {
                             if let Some(b_str) = b_val.as_str() {
                                 if let Ok(b_json) = serde_json::from_str::<serde_json::Value>(b_str) {
                                     let nx = b_json.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1047,6 +1112,9 @@ impl BrowserNurtureEngine {
                                 }
                             }
                         }
+
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        self.update_log(pid, "🖱️ Click nút Log in...".to_string(), "Click Log in");
 
                         if final_bx > 0.0 && final_by > 0.0 {
                             let _ = cdp.dispatch_mouse_click(final_bx, final_by).await;
@@ -1086,7 +1154,7 @@ impl BrowserNurtureEngine {
                     })()"#).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
 
                     if !page_recheck.is_empty() {
-                        self.set_error(pid, page_recheck);
+                        self.fail_with_evidence(pid, &cdp, "PROXY", page_recheck).await;
                         return;
                     }
                 } else {
@@ -1097,7 +1165,7 @@ impl BrowserNurtureEngine {
             // ── VÒNG LẶP XÁC THỰC ĐĂNG NHẬP (Lên tới 180s = 90 chu kỳ x 2s) ──
             let mut login_confirmed = false;
             let mut totp_submitted = false;
-            let mut email_otp_submitted = false;
+            let mut tried_email_otps: Vec<String> = Vec::new();
             let mut email_otp_poll_count = 0u32;
 
             for cycle in 1..=90 {
@@ -1108,8 +1176,6 @@ impl BrowserNurtureEngine {
                 let login_ok_expr = r#"(() => {
                     const hasAvatar = !!(
                         document.querySelector('[data-e2e="profile-icon"]') || 
-                        document.querySelector('img[alt*="avatar"]') || 
-                        document.querySelector('a[href*="/@"]') ||
                         document.querySelector('[data-e2e="inbox-icon"]')
                     );
                     const hasLoginBtn = !!(
@@ -1120,7 +1186,7 @@ impl BrowserNurtureEngine {
                         })
                     );
                     const notInLogin = !window.location.href.includes('/login');
-                    return (hasAvatar || (document.cookie.includes('sessionid=') && !hasLoginBtn)) && notInLogin;
+                    return hasAvatar && !hasLoginBtn && notInLogin;
                 })()"#;
                 let is_ok = cdp.evaluate(login_ok_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
                 if is_ok {
@@ -1159,16 +1225,20 @@ impl BrowserNurtureEngine {
                     const combined = (bodyText + ' ' + toastText).toLowerCase();
 
                     if (combined.includes('maximum number of attempts reached') || 
-                        combined.includes('try again later') || 
-                        combined.includes('too many attempts') ||
-                        combined.includes('số lần thử tối đa') ||
-                        combined.includes('vui lòng thử lại sau')) {
+                        combined.includes('too many attempts') || combined.includes('too many failed') ||
+                        combined.includes('số lần thử tối đa')) {
                         return 'Maximum number of attempts reached (Tài khoản hoặc IP bị giới hạn số lần đăng nhập. Tự động đóng trình duyệt và chờ 1h thử lại)';
                     }
-                    if (combined.includes('incorrect username or password') || combined.includes('wrong password') || combined.includes('sai mật khẩu')) {
+                    if (combined.includes('incorrect username or password') || combined.includes('wrong password') || combined.includes('sai mật khẩu') ||
+                        combined.includes('doesn\u2019t match our records') || combined.includes("doesn't match our records")) {
                         return 'Sai tên đăng nhập hoặc mật khẩu';
                     }
-                    if (combined.includes('account does not exist') || combined.includes('không tồn tại')) {
+                    if (combined.includes('account was banned') || combined.includes('account has been banned') ||
+                        combined.includes('account has been suspended') || combined.includes('permanently banned') ||
+                        combined.includes('account is suspended')) {
+                        return 'Tài khoản bị TikTok khóa/ban (banned/suspended)';
+                    }
+                    if (combined.includes('account does not exist') || combined.includes("account doesn't exist") || combined.includes('account doesn\u2019t exist') || combined.includes('không tồn tại')) {
                         return 'Tài khoản không tồn tại trên TikTok';
                     }
 
@@ -1181,7 +1251,8 @@ impl BrowserNurtureEngine {
                 })()"#;
                 let err_text = cdp.evaluate(err_expr).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
                 if !err_text.is_empty() && !err_text.to_lowercase().contains("enter") {
-                    self.set_error(pid, format!("❌ Đăng nhập TikTok thất bại: {}", err_text));
+                    let (code, _, _, _) = Self::classify_failure(&err_text);
+                    self.fail_with_evidence(pid, &cdp, code, format!("❌ Đăng nhập TikTok thất bại: {}", err_text)).await;
                     return;
                 }
 
@@ -1189,9 +1260,22 @@ impl BrowserNurtureEngine {
                 let challenge_detect_expr = r#"(() => {
                     const url = window.location.href.toLowerCase();
                     const bodyText = (document.body ? document.body.innerText : '').toLowerCase();
+
+                    // Tự động xử lý nếu xuất hiện modal chọn phương thức xác minh "Verify it’s really you"
+                    if (bodyText.includes("verify it’s really you") || bodyText.includes("verify your identity")) {
+                        const emailItem = document.querySelector('[class*="pc-home-item-IxNc0F"]') || 
+                                          document.querySelector('[class*="pc-home-item"]') ||
+                                          Array.from(document.querySelectorAll('*')).find(el => (el.innerText || '').includes('@') && (el.innerText || '').toLowerCase().includes('email'));
+                        if (emailItem && !bodyText.includes('enter 6-digit code')) {
+                            emailItem.click();
+                        }
+                    }
+
                     const is2fa = url.includes('/2sv/totp') ||
                                   (bodyText.includes('2-step verification') && (bodyText.includes('authenticator app') || bodyText.includes('enter the 6-digit code generated')));
                     const isEmail = url.includes('/2sv/email') || 
+                                    bodyText.includes('verify it’s really you') ||
+                                    bodyText.includes('verify your identity') ||
                                     bodyText.includes('your code was emailed to') ||
                                     bodyText.includes('enter 6-digit code') || 
                                     bodyText.includes('sent a code to') || 
@@ -1273,7 +1357,7 @@ impl BrowserNurtureEngine {
                                         if let Ok(val) = cdp.evaluate(&gen_totp_expr).await {
                                             if let Some(totp) = val.as_str() {
                                                 if totp.len() == 6 {
-                                                    self.update_log(pid, format!("🔑 Tìm thấy 2FA Secret C69! Đang tự động điền mã TOTP: {}...", totp), "Tự giải 2FA");
+                                                    self.update_log(pid, "🔑 Tìm thấy 2FA Secret C69! Đang tự động điền mã TOTP (đã ẩn)...".to_string(), "Tự giải 2FA");
                                                     let _ = fill_and_submit_otp(&cdp, totp).await;
                                                     totp_submitted = true;
                                                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1285,7 +1369,7 @@ impl BrowserNurtureEngine {
                             }
 
                             // Xử lý tự động Email OTP từ C69 Email Database
-                            if is_email && !email_otp_submitted {
+                            if is_email {
                                 email_otp_poll_count += 1;
                                 let mut email_id_opt = acc.accounts_emails;
                                 if email_id_opt.is_none() {
@@ -1306,25 +1390,40 @@ impl BrowserNurtureEngine {
                                     } else {
                                         self.update_log(
                                             pid, 
-                                            format!("Đang kiểm tra hòm thư C69 để lấy OTP (Email ID: #{}, lần {}/15)...", eid, email_otp_poll_count), 
+                                            format!("Đang kiểm tra hòm thư C69 để lấy OTP mới (Email ID: #{}, lần {}/40)...", eid, email_otp_poll_count), 
                                             "Đang đọc Email OTP"
                                         );
                                     }
 
-                                    match fetch_c69_email_otp(eid).await {
+                                    let fetched = fetch_c69_email_otp(eid).await;
+                                    // Mã đã thử rồi (stale) thì coi như chưa có mã mới, tiếp tục chờ
+                                    let fetched = match fetched {
+                                        Ok(Some(c)) if tried_email_otps.contains(&c) => Ok(None),
+                                        other => other,
+                                    };
+                                    match fetched {
                                         Ok(Some(otp_code)) => {
                                             self.update_log(
                                                 pid, 
-                                                format!("🎉 Lấy mã OTP thành công từ Email Database C69: {}! Đang tự động điền...", otp_code), 
+                                                "🎉 Lấy mã OTP thành công từ Email Database C69! Đang tự động điền...".to_string(), 
                                                 "Tự giải Email OTP"
                                             );
                                             let _ = fill_and_submit_otp(&cdp, &otp_code).await;
-                                            email_otp_submitted = true;
+                                            tried_email_otps.push(otp_code);
                                             tokio::time::sleep(Duration::from_secs(3)).await;
                                         }
                                         Ok(None) => {
-                                            if email_otp_poll_count >= 15 {
-                                                let err_msg = format!("Lỗi đọc email: Đã quá thời gian chờ OTP từ Email ID #{} (hòm thư chưa nhận được mã). Vui lòng kiểm tra lại sau!", eid);
+                                            // Thử quét xem có Magic Link / Login Link không
+                                            if let Ok(Some(login_link)) = fetch_c69_email_login_link(eid).await {
+                                                self.update_log(
+                                                    pid, 
+                                                    format!("🔗 Tìm thấy Link đăng nhập TikTok trong Email! Đang tự động mở link trên trình duyệt..."), 
+                                                    "Mở Login Link"
+                                                );
+                                                let _ = cdp.navigate(&login_link).await;
+                                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                            } else if email_otp_poll_count >= 40 {
+                                                let err_msg = format!("Lỗi đọc email: Đã quá thời gian chờ OTP/Link mới từ Email ID #{} (hòm thư chưa nhận được mã hoặc link mới). Vui lòng kiểm tra lại sau!", eid);
                                                 self.set_error(pid, format!("❌ {}", err_msg));
                                                 let aid = acc.id;
                                                 tokio::spawn(async move {
@@ -1364,17 +1463,19 @@ impl BrowserNurtureEngine {
 
                 // 5. Kiểm tra mã OTP gửi từ Web Dashboard
                 if let Some(user_otp) = self.take_otp(pid) {
-                    self.update_log(pid, format!("🚀 Đã nhận mã OTP '{}' từ Dashboard! Đang điền vào TikTok...", user_otp), "Điền mã OTP");
+                    self.update_log(pid, "🚀 Đã nhận mã OTP từ Dashboard! Đang điền vào TikTok...".to_string(), "Điền mã OTP");
                     let _ = fill_and_submit_otp(&cdp, &user_otp).await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             }
 
                 if !login_confirmed {
-                    self.set_error(
-                        pid, 
-                        "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 180s) hoặc chưa hoàn tất Captcha / Mã OTP xác thực. Dừng lại an toàn.".to_string()
-                    );
+                    self.fail_with_evidence(
+                        pid,
+                        &cdp,
+                        "LOGIN_TIMEOUT",
+                        "❌ Đăng nhập TikTok thất bại: Hết thời gian chờ (Timeout 180s) hoặc chưa hoàn tất Captcha / Mã OTP xác thực. Dừng lại an toàn.".to_string(),
+                    ).await;
                     return;
                 }
 
@@ -1404,6 +1505,18 @@ impl BrowserNurtureEngine {
         } else {
             c69_acc.as_ref().map(|a| a.username.clone()).unwrap_or_else(|| format!("acc_{}", pid))
         };
+
+        // 📸 BẮT BUỘC: CHỤP ẢNH BẰNG CHỨNG XÁC THỰC TÀI KHOẢN ĐÃ LOGIN RỒI TRƯỚC KHI NUÔI
+        self.update_log(pid, "Mở trang Hồ sơ cá nhân để chụp ảnh bằng chứng đã đăng nhập...".to_string(), "Chụp bằng chứng login");
+        let _ = cdp.navigate("https://www.tiktok.com/profile").await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+        let proof_login_name = format!("proof_logged_in_acc_{}_{}.png", pid, safe_un);
+        let _ = self.save_screenshot_proof(&cdp, &proof_login_name).await;
+        self.update_log(
+            pid,
+            format!("📸 ĐÃ CHỤP ẢNH XÁC NHẬN TÀI KHOẢN ĐÃ LOGIN THÀNH CÔNG TRƯỚC KHI NUÔI: {}", proof_login_name),
+            "Đã xác thực login"
+        );
 
         // 5. ĐIỀU HƯỚNG TỚI FEED FYP ELEMENT-DRIVEN (Thấy video/like icon/container là xem & tương tác ngay, không chờ mạng!)
         self.update_log(pid, "Mở feed FYP TikTok...".to_string(), "Vào FYP Feed");
@@ -1457,10 +1570,10 @@ impl BrowserNurtureEngine {
 
             // Tự động đóng modal pop-up "Get the full app experience" hoặc "Not now"
             let dismiss_modal_js = r#"(() => {
-                const btns = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-                const notNow = btns.find(b => {
+                const btns = Array.from(document.querySelectorAll('button, div[role="button"], a, span, div')).filter(b => (b.innerText || '').length < 40);
+                const notNow = btns.reverse().find(b => {
                     const t = (b.innerText || '').trim().toLowerCase();
-                    return t === 'not now' || t === 'không phải bây giờ' || t === 'để sau';
+                    return t === 'not now' || t === 'không phải bây giờ' || t === 'để sau' || t === 'agree' || t === 'accept all' || t === 'allow all' || t === 'decline optional cookies' || t === 'got it';
                 });
                 if (notNow) { notNow.click(); return true; }
                 const closeBtn = document.querySelector('button[aria-label*="close" i], button[aria-label*="đóng" i], .modal-close');
@@ -1479,26 +1592,38 @@ impl BrowserNurtureEngine {
             // 1. Thả tim (Like): Bắt buộc thực hiện ở video #1 hoặc khi chưa thả tim lần nào
             let will_like = (likes_count == 0) || (watched_count == 1) || rand::thread_rng().gen_bool(0.65);
             if will_like {
-                likes_count += 1;
+                // Chọn nút tim của video đang nằm giữa màn hình; bỏ qua nếu đã thả tim (tránh toggle gỡ tim)
                 let like_js = r#"(() => {
-                    const likeBtn = document.querySelector('[data-e2e="like-icon"]') || 
-                                     document.querySelector('[data-e2e="feed-like-icon"]') ||
-                                     document.querySelector('button[aria-label*="Like"]') ||
-                                     document.querySelector('button[aria-label*="Thích"]');
-                    if (likeBtn) { likeBtn.click(); return true; }
-                    return false;
+                    const sel = '[data-e2e="like-icon"], [data-e2e="feed-like-icon"], button[aria-label*="Like"], button[aria-label*="Thích"]';
+                    const mid = (window.innerHeight || 800) / 2;
+                    let best = null, bestD = 1e9;
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) continue;
+                        const d = Math.abs((r.top + r.height / 2) - mid);
+                        if (d < bestD) { bestD = d; best = el; }
+                    }
+                    if (!best) return 'none';
+                    const btn = best.closest('button') || best;
+                    if (btn.getAttribute('aria-pressed') === 'true') return 'already';
+                    btn.click();
+                    return 'clicked';
                 })()"#;
-                let _ = cdp.evaluate(like_js).await;
-                let _ = cdp.press_key("l", "KeyL", 76).await;
-                self.update_stats(
-                    pid, 
-                    watched_count, 
-                    likes_count, 
-                    comments_count, 
-                    shares_count, 
-                    format!("❤️ Đã thả tim video #{}!", watched_count), 
-                    "Đang lướt FYP"
-                );
+                let like_res = cdp.evaluate(like_js).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                if like_res == "clicked" {
+                    likes_count += 1;
+                    self.update_stats(
+                        pid, 
+                        watched_count, 
+                        likes_count, 
+                        comments_count, 
+                        shares_count, 
+                        format!("❤️ Đã thả tim video #{}!", watched_count), 
+                        "Đang lướt FYP"
+                    );
+                } else {
+                    self.update_log(pid, format!("ℹ️ Video #{}: không thả tim ({})", watched_count, like_res), "Đang lướt FYP");
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 
@@ -1525,10 +1650,45 @@ impl BrowserNurtureEngine {
                             "Nice content! 👏",
                             "Love this! ✨",
                             "Awesome! 👍",
+                            "This is so good 😍",
+                            "Wow, did not expect that 😂",
+                            "Needed this today 🙌",
+                            "Pure gold 🔥🔥",
+                            "Can't stop watching this",
+                            "Underrated for sure 👏",
+                            "Okay this is actually great",
+                            "Love the vibe ✨",
+                            "Made my day 😊",
+                            "Subscribed, more please!",
+                            "This is so satisfying",
+                            "Yesss 🙌",
+                            "Where has this been all my life",
+                            "Absolutely love it ❤️",
+                            "Such a vibe 🎶",
+                            "Too good 😭",
+                            "This deserves more views",
+                            "Instant follow 👏",
+                            "Killing it 🔥",
+                            "Fire 🔥",
+                            "So creative!",
+                            "Cannot get enough of this",
+                            "Big fan of this 😍",
+                            "Perfect 👌",
+                            "Honestly the best one today",
                         ];
                         let pick = comments_pool[rand::thread_rng().gen_range(0..comments_pool.len())];
-                        let _ = cdp.insert_text(pick).await;
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        let focus_js = r#"(() => {
+                            const box = document.querySelector('[data-e2e="comment-input"] [contenteditable="true"]') ||
+                                        document.querySelector('[data-e2e="comment-input"]') ||
+                                        document.querySelector('div[contenteditable="true"]');
+                            if (box) { box.focus(); return true; }
+                            return false;
+                        })()"#;
+                        let focused = cdp.evaluate(focus_js).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                        if focused {
+                            let _ = cdp.insert_text(pick).await;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
 
                         let post_js = r#"(() => {
                             const postBtn = document.querySelector('[data-e2e="comment-post"]') || 
@@ -1539,15 +1699,15 @@ impl BrowserNurtureEngine {
                             if (postBtn) { postBtn.click(); return true; }
                             return false;
                         })()"#;
-                        let _ = cdp.evaluate(post_js).await;
-                        comments_count += 1;
+                        let posted = focused && cdp.evaluate(post_js).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+                        if posted { comments_count += 1; }
                         self.update_stats(
                             pid,
                             watched_count,
                             likes_count,
                             comments_count,
                             shares_count,
-                            format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count),
+                            if posted { format!("💬 Đã bình luận '{}' vào video #{}!", pick, watched_count) } else { format!("ℹ️ Video #{}: không đăng được bình luận", watched_count) },
                             "Đang lướt FYP"
                         );
                         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1556,7 +1716,7 @@ impl BrowserNurtureEngine {
             }
 
             // Chụp ảnh bằng chứng tương tác FYP (có video + thả tim/bình luận/chia sẻ)
-            if (likes_count > 0 || comments_count > 0) && watched_count >= 2 {
+            if (likes_count > 0 || comments_count > 0) && watched_count == 2 {
                 let proof_interaction = format!("rust_proof_acc_{}_{}_interaction.png", pid, safe_un);
                 let _ = self.save_screenshot_proof(&cdp, &proof_interaction).await;
             }
@@ -1626,7 +1786,7 @@ impl BrowserNurtureEngine {
         }
         // Chỉ lưu bền vững ra đĩa nếu là trạng thái kết thúc (Thành công, Lỗi, Chờ 1h, Đã dừng)
         // Tránh tình trạng tắt tool mà đĩa vẫn kẹt chữ "Đang Nuôi"
-        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") {
+        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") || status.contains("Đang nuôi") {
             crate::api::update_profile_nurture_status(pid, status, None, None);
         }
     }
@@ -1640,39 +1800,67 @@ impl BrowserNurtureEngine {
             st.last_log = log.clone();
             st.status = status.to_string();
         }
-        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") {
+        if status.contains("thành công") || status.contains("Lỗi") || status.contains("Chờ 1h") || status.contains("Đã dừng") || status.contains("Đang nuôi") {
             crate::api::update_profile_nurture_status(pid, status, None, None);
+        }
+    }
+
+    /// Phân loại lỗi đăng nhập/nuôi theo MÃ LỖI tường minh. Ưu tiên thẻ [CODE] do điểm bắt lỗi gắn vào
+    /// (dựa trên bằng chứng DOM thật), chỉ khi không có thẻ mới dùng heuristic trên nội dung (call-site cũ).
+    /// Trả về: (code, nhãn trạng thái đầy đủ, retry_after_secs, nhãn ngắn). Nhãn ngắn luôn bắt đầu bằng "Lỗi"
+    /// hoặc là "Chờ 1h" để SlotGuard không ghi đè thành "Đã dừng".
+    fn classify_failure(err: &str) -> (&'static str, &'static str, Option<u64>, &'static str) {
+        let l = err.to_lowercase();
+        let tagged = |c: &str| l.contains(&format!("[{}]", c.to_lowercase()));
+        let code: &'static str = if tagged("RATE_LIMIT") { "RATE_LIMIT" }
+            else if tagged("WRONG_PASSWORD") { "WRONG_PASSWORD" }
+            else if tagged("NOT_EXIST") { "NOT_EXIST" }
+            else if tagged("BANNED") { "BANNED" }
+            else if tagged("PROXY") { "PROXY" }
+            else if tagged("EMAIL_OTP") { "EMAIL_OTP" }
+            else if tagged("NO_PASSWORD") { "NO_PASSWORD" }
+            else if tagged("LOGIN_TIMEOUT") { "LOGIN_TIMEOUT" }
+            else if tagged("BROWSER") { "BROWSER" }
+            else if tagged("UNKNOWN") { "UNKNOWN" }
+            else if l.contains("maximum number of attempts") || l.contains("too many attempts") || l.contains("too many failed") || l.contains("số lần thử tối đa") { "RATE_LIMIT" }
+            else if l.contains("sai tên đăng nhập") || l.contains("sai mật khẩu") || l.contains("incorrect username or password") || l.contains("doesn't match our records") || l.contains("doesn’t match our records") { "WRONG_PASSWORD" }
+            else if l.contains("không tồn tại") || l.contains("does not exist") { "NOT_EXIST" }
+            else if l.contains("bị khóa") || l.contains("banned") || l.contains("suspended") { "BANNED" }
+            else if l.contains("lỗi đọc email") { "EMAIL_OTP" }
+            else if l.contains("không có mật khẩu") { "NO_PASSWORD" }
+            else if l.contains("timeout 180s") { "LOGIN_TIMEOUT" }
+            else if l.contains("err_socks") || l.contains("proxy") || l.contains("lỗi mạng") { "PROXY" }
+            else if l.contains("khởi chạy browser") || l.contains("không tìm thấy tab") { "BROWSER" }
+            else { "UNKNOWN" };
+        match code {
+            "RATE_LIMIT" => (code, "Rate limit (Chờ 1h)", Some(3600), "Chờ 1h"),
+            "WRONG_PASSWORD" => (code, "Lỗi: Sai tài khoản/mật khẩu", None, "Lỗi: Sai mật khẩu"),
+            "NOT_EXIST" => (code, "Lỗi: Tài khoản không tồn tại", None, "Lỗi: Không tồn tại"),
+            "BANNED" => (code, "Lỗi: Tài khoản bị TikTok khóa", None, "Lỗi: Bị khóa"),
+            "PROXY" => (code, "Lỗi SOCKS5 Proxy", None, "Lỗi: Proxy"),
+            "EMAIL_OTP" => (code, "Lỗi đọc email", None, "Lỗi: Email OTP"),
+            "NO_PASSWORD" => (code, "Lỗi: Thiếu mật khẩu C69", None, "Lỗi: Thiếu mật khẩu"),
+            "LOGIN_TIMEOUT" => (code, "Lỗi: Hết thời gian đăng nhập", None, "Lỗi: Timeout login"),
+            "BROWSER" => (code, "Lỗi: Không mở được trình duyệt", None, "Lỗi: Trình duyệt"),
+            _ => (code, "Lỗi nuôi/đăng nhập (chưa phân loại)", None, "Lỗi: Chưa phân loại"),
         }
     }
 
     fn set_error(&self, pid: usize, err: String) {
         error!("❌ [Profile #{}] Lỗi nuôi TikTok: {}", pid, err);
-        let err_lower = err.to_lowercase();
-        let is_max_attempts = err_lower.contains("maximum number of attempts") 
-            || err_lower.contains("try again later")
-            || err_lower.contains("too many attempts")
-            || err_lower.contains("số lần thử tối đa")
-            || err_lower.contains("thử lại sau");
-        let is_wrong_pwd = err_lower.contains("sai tên đăng nhập") || err_lower.contains("sai mật khẩu") || err_lower.contains("incorrect username or password");
-        let is_not_exist = err_lower.contains("không tồn tại") || err_lower.contains("does not exist");
-        let is_email_error = err_lower.contains("lỗi đọc email");
-        let is_socks_error = err_lower.contains("err_socks") || err_lower.contains("proxy") || err_lower.contains("kết nối");
-
-        let (status_label, retry_after, short_st) = if is_max_attempts {
-            ("Rate limit (Chờ 1h)", Some(3600), "Chờ 1h")
-        } else if is_wrong_pwd {
-            ("Lỗi: Sai tài khoản/mật khẩu", None, "Sai mật khẩu")
-        } else if is_not_exist {
-            ("Lỗi: Tài khoản không tồn tại", None, "Không tồn tại")
-        } else if is_socks_error {
-            ("Lỗi SOCKS5 Proxy", None, "Lỗi Proxy")
-        } else if is_email_error {
-            ("Lỗi đọc email", None, "Lỗi email")
-        } else {
-            ("Lỗi nuôi/đăng nhập", None, "Lỗi")
-        };
+        let (code, status_label, retry_after, short_st) = Self::classify_failure(&err);
 
         crate::api::update_profile_nurture_status(pid, status_label, Some(&err), retry_after);
+
+        // Đẩy trạng thái + lỗi chính xác lên C69 (ghi vào note của tài khoản) để không phải đoán mò
+        if let Some(aid) = crate::api::get_profile_by_id(pid).and_then(|p| p.tiktok_account_id) {
+            if aid > 0 {
+                let note = format!("[{}] {} | {} | {}", code, status_label, chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), err);
+                tokio::spawn(async move {
+                    let _ = update_c69_account_note(aid, &note).await;
+                });
+            }
+        }
 
         if let Some(st) = self.statuses.write().get_mut(&pid) {
             st.is_running = false;
@@ -1685,7 +1873,33 @@ impl BrowserNurtureEngine {
 
         // Tự động đóng hoàn toàn cửa sổ Chrome của Profile để giải phóng RAM, cổng DevTools và lockfile
         crate::cdp_browser::stop_cdp_profile(pid);
-        info!("🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn sau trạng thái [{}]. Không để treo máy!", pid, status_label);
+        info!("🛑 [Profile #{}] Đã tự động đóng trình duyệt an toàn sau trạng thái [{}] ({}). Không để treo máy!", pid, status_label, code);
+    }
+
+    /// Dừng với BẰNG CHỨNG: chụp ảnh màn hình + ghi URL + nội dung trang thật tại thời điểm lỗi rồi mới set_error.
+    async fn fail_with_evidence(&self, pid: usize, cdp: &CdpClient, code: &str, msg: String) {
+        let ev = cdp
+            .evaluate(r#"(() => JSON.stringify({u: location.href, t: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 300)}))()"#)
+            .await
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let (url, text) = serde_json::from_str::<serde_json::Value>(&ev)
+            .map(|j| (
+                j.get("u").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                j.get("t").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            ))
+            .unwrap_or_default();
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let shot = format!("fail_{}_{}_{}.png", pid, code.to_lowercase(), epoch);
+        let _ = self.save_screenshot_proof(cdp, &shot).await;
+        self.set_error(
+            pid,
+            format!("[{}] {} | URL: {} | Trang hiển thị: \"{}\" | Ảnh: scratch/{}", code, msg, url, text, shot),
+        );
     }
 
     /// Background scheduler tự động quét và thử lại đăng nhập cho các Profile bị Rate Limit (Chờ 1h)
@@ -1739,7 +1953,7 @@ impl BrowserNurtureEngine {
             let _ = crate::cdp_browser::launch_cdp_profile(&p).await?;
         }
 
-        let port = get_free_port(9222 + (pid as u16 % 500));
+        let port = crate::cdp_browser::profile_port(pid).unwrap_or(9222 + (pid as u16 % 500));
         let mut target_ws_url = None;
         for _ in 1..=20 {
             tokio::time::sleep(Duration::from_millis(600)).await;
@@ -1851,81 +2065,357 @@ impl BrowserNurtureEngine {
         Ok(())
     }
 
-    /// Tự động tạo tài khoản TikTok bằng Gmail OAuth + Setup Password + Bật 2FA + Sync C69
+    /// Tự động đăng ký TikTok WEB bằng EMAIL + OTP đọc từ C69 (Mun Browser / CDP).
+    /// Mỗi bước đều được verify bằng DOM thật; KHÔNG báo thành công nếu chưa có cookie `sessionid`.
+    /// (Tên hàm giữ nguyên để tương thích route `/api/browser/nurture/auto-reg-gmail`.)
     pub async fn auto_register_tiktok_by_gmail(&self, pid: usize, email_id: u64) -> Result<(), String> {
-        let p = crate::api::get_profile_by_id(pid).ok_or_else(|| format!("Profile #{} không tồn tại", pid))?;
-        self.update_log(pid, format!("🚀 Bắt đầu tự động tạo nick TikTok qua Google OAuth (Email ID #{})", email_id), "Khởi động Reg");
+        let res = self.web_signup_inner(pid, email_id).await;
+        if let Err(ref e) = res {
+            self.update_log(pid, format!("❌ Đăng ký TikTok thất bại: {}", e), "Reg thất bại");
+            crate::api::update_profile_nurture_status(pid, "Reg thất bại", Some(e.as_str()), None);
+        }
+        res
+    }
 
+    async fn web_signup_inner(&self, pid: usize, email_id: u64) -> Result<(), String> {
+        let p = crate::api::get_profile_by_id(pid).ok_or_else(|| format!("Profile #{} không tồn tại", pid))?;
+        self.update_log(pid, format!("🚀 Bắt đầu đăng ký TikTok web bằng email C69 #{}", email_id), "Khởi động Reg");
+
+        // 1) Email + kiểm tra đọc được hòm thư (VERIFY #1)
+        let (email, _) = fetch_c69_email_address(email_id).await?;
+        let readable = tokio::task::spawn_blocking(move || crate::xml_login::check_c69_email_readable(email_id))
+            .await
+            .unwrap_or(false);
+        if !readable {
+            return Err(format!("EMAIL_UNREADABLE: hòm thư C69 #{} không đọc được", email_id));
+        }
+        self.update_log(pid, format!("✔ Hòm thư {} đọc được trên C69", email), "Verify email");
+
+        // 2) Sinh danh tính (không giữ ThreadRng qua await)
+        let (password, month, day, year) = {
+            let mut rng = rand::thread_rng();
+            let pw = crate::xml_login::signup::gen_password(&mut rng);
+            let (m, d, y) = crate::xml_login::signup::gen_birthday(&mut rng);
+            (pw, m, d, y)
+        };
+        const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        let month_name = MONTHS[(month as usize).clamp(1, 12) - 1];
+
+        // 3) Mở trình duyệt + kết nối CDP
         if !crate::cdp_browser::is_profile_active(pid) {
             let _ = crate::cdp_browser::launch_cdp_profile(&p).await?;
         }
-
-        let port = get_free_port(9222 + (pid as u16 % 500));
-        let mut target_ws_url = None;
-        for _ in 1..=20 {
+        let port = crate::cdp_browser::profile_port(pid).unwrap_or(9222 + (pid as u16 % 500));
+        let mut ws_url = None;
+        for _ in 1..=25 {
             tokio::time::sleep(Duration::from_millis(600)).await;
-            let url = format!("http://127.0.0.1:{}/json/list", port);
-            if let Ok(resp) = reqwest::get(&url).await {
+            if let Ok(resp) = reqwest::get(&format!("http://127.0.0.1:{}/json/list", port)).await {
                 if let Ok(targets) = resp.json::<Vec<serde_json::Value>>().await {
-                    for t in targets {
+                    ws_url = targets.iter().find_map(|t| {
                         if t.get("type").and_then(|v| v.as_str()) == Some("page") {
-                            if let Some(ws) = t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
-                                target_ws_url = Some(ws.to_string());
-                                break;
-                            }
+                            t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
                         }
+                    });
+                }
+            }
+            if ws_url.is_some() {
+                break;
+            }
+        }
+        let ws_url = ws_url.ok_or_else(|| format!("Không tìm thấy tab Chrome trên port {}", port))?;
+        let cdp = CdpClient::connect(&ws_url).await?;
+
+        // 4) Mở form đăng ký email
+        self.update_log(pid, "Mở form đăng ký email TikTok...".to_string(), "Mở Signup");
+        cdp.navigate(WEB_SIGNUP_URL).await?;
+        let combo = |i: usize| {
+            format!(
+                r#"(Array.from(document.querySelectorAll('[role="combobox"]')).filter(e => e.offsetParent !== null)[{i}] || Array.from(document.querySelectorAll('div,span')).filter(e => e.offsetParent !== null && e.children.length <= 2 && ['month','day','year'][{i}] === (e.innerText||'').trim().toLowerCase())[0])"#,
+                i = i
+            )
+        };
+        if !web_wait_exists(&cdp, &combo(0), 25).await {
+            let t = web_page_text(&cdp).await;
+            return Err(web_classify_error(&t).unwrap_or_else(|| "FORM_NOT_FOUND: không thấy form ngày sinh".to_string()));
+        }
+
+        // 5) Ngày sinh (VERIFY #2: text combobox phải khớp)
+        for (i, want) in [(0usize, month_name.to_string()), (1, day.to_string()), (2, year.to_string())] {
+            let mut ok = false;
+            for _ in 0..3 {
+                if !web_click(&cdp, &combo(i)).await {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let opt = format!(
+                    r#"(Array.from(document.querySelectorAll('[role="option"]')).find(e => (e.innerText||'').trim() === {w:?}) || Array.from(document.querySelectorAll('li,div')).find(e => e.offsetParent !== null && e.children.length === 0 && (e.innerText||'').trim() === {w:?}))"#,
+                    w = want
+                );
+                if web_wait_click(&cdp, &opt, 4).await {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    let txt = cdp
+                        .evaluate(&format!(r#"(() => {{ const e = {}; return e ? (e.innerText||'').trim() : ''; }})()"#, combo(i)))
+                        .await
+                        .ok()
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    if txt == want {
+                        ok = true;
+                        break;
                     }
                 }
             }
-            if target_ws_url.is_some() { break; }
-        }
-
-        let ws_url = target_ws_url.ok_or_else(|| format!("Không tìm thấy tab Chrome trên port {}", port))?;
-        let cdp = CdpClient::connect(&ws_url).await?;
-
-        self.update_log(pid, "Mở trang đăng ký TikTok (https://www.tiktok.com/signup)...".to_string(), "Mở trang Signup");
-        let _ = cdp.navigate("https://www.tiktok.com/signup").await;
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        self.update_log(pid, "Chọn phương thức 'Continue with Google' (One-Click OAuth trust)...".to_string(), "OAuth Google");
-        let click_google_script = r#"(() => {
-            const googleBtn = Array.from(document.querySelectorAll('div, a, button, span')).find(el => {
-                const t = (el.innerText || '').trim().toLowerCase();
-                return t.includes('continue with google') || t.includes('tiếp tục với google');
-            });
-            if (googleBtn) {
-                googleBtn.click();
-                return true;
+            if !ok {
+                return Err(format!("BIRTHDAY_FAIL: không chọn được '{}' ở ô #{}", want, i));
             }
-            return false;
-        })()"#;
+        }
+        self.update_log(pid, format!("✔ Ngày sinh {} {}, {} (đã verify trên DOM)", month_name, day, year), "Ngày sinh");
 
-        let _ = cdp.evaluate(click_google_script).await;
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // 6) Email + mật khẩu (VERIFY #3: value input khớp)
+        let email_inp = r#"(document.querySelector('input[name="email"]') || document.querySelector('input[placeholder*="mail" i]'))"#;
+        let pw_inp = r#"document.querySelector('input[type="password"]')"#;
+        web_type_into(&cdp, email_inp, &email).await.map_err(|e| format!("EMAIL_INPUT: {}", e))?;
+        web_type_into(&cdp, pw_inp, &password).await.map_err(|e| format!("PASSWORD_INPUT: {}", e))?;
+        self.update_log(pid, "✔ Đã nhập email + mật khẩu (verify value)".to_string(), "Nhập email");
 
-        self.update_log(pid, "Thiết lập thông tin ngày sinh (>18 tuổi: 1995-2002)...".to_string(), "Chọn ngày sinh");
-        let set_birthday_script = r#"(() => {
-            const monthSelect = document.querySelector('[aria-label="Month"]') || document.querySelectorAll('div[data-e2e="select-box"]')[0];
-            const daySelect = document.querySelector('[aria-label="Day"]') || document.querySelectorAll('div[data-e2e="select-box"]')[1];
-            const yearSelect = document.querySelector('[aria-label="Year"]') || document.querySelectorAll('div[data-e2e="select-box"]')[2];
-            return true;
-        })()"#;
-        let _ = cdp.evaluate(set_birthday_script).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // 7) Baseline OTP (chống dùng mã cũ) rồi bấm Send code
+        let mut used: Vec<String> = Vec::new();
+        if let Ok(Some(c)) = tokio::task::spawn_blocking(move || crate::xml_login::fetch_otp_from_c69(email_id)).await {
+            used.push(c);
+        }
+        let send_btn = r#"Array.from(document.querySelectorAll('button')).find(b => /send code|gửi mã/i.test(b.innerText||'') && !b.disabled && b.offsetParent !== null)"#;
+        if !web_wait_click(&cdp, send_btn, 15).await {
+            let t = web_page_text(&cdp).await;
+            return Err(web_classify_error(&t).unwrap_or_else(|| "SEND_CODE_BTN: nút Send code không bấm được".to_string()));
+        }
+        let code_inp = r#"(document.querySelector('input[placeholder*="6-digit" i]') || document.querySelector('input[name="code"]') || document.querySelector('input[placeholder*="code" i]'))"#;
+        // VERIFY #4a: nút phải chuyển sang "Resend code: NNs"; nếu click chuột không ăn thì click bằng JS
+        let sent_js = r#"(() => { const b = document.querySelector('[data-e2e="send-code-button"]'); return !!b && /resend|\d+\s*s/i.test(b.innerText || ''); })()"#;
+        let mut code_ready = false;
+        for round in 0..20 {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            let t = web_page_text(&cdp).await;
+            if let Some(err) = web_classify_error(&t) {
+                return Err(err);
+            }
+            if cdp.evaluate(sent_js).await.ok().and_then(|v| v.as_bool()).unwrap_or(false) && web_exists(&cdp, code_inp).await {
+                code_ready = true;
+                break;
+            }
+            if round == 4 || round == 10 {
+                let _ = cdp.evaluate(r#"(() => { const b = document.querySelector('[data-e2e="send-code-button"]') || Array.from(document.querySelectorAll('button')).find(x => /send code/i.test(x.innerText||'')); if (b && !b.disabled) { b.click(); return true; } return false; })()"#).await;
+            }
+        }
+        if !code_ready {
+            return Err("CODE_FORM: TikTok không hiện ô nhập mã sau Send code".to_string());
+        }
+        self.update_log(pid, "✔ TikTok đã gửi mã, đang chờ OTP từ C69...".to_string(), "Chờ OTP");
 
-        // Trích xuất mã OTP từ hòm thư C69 nếu TikTok yêu cầu
-        self.update_log(pid, "Đang kiểm tra hòm thư C69 để sẵn sàng trích xuất OTP xác minh...".to_string(), "Sẵn sàng OTP");
-        if let Ok(Some(otp)) = fetch_c69_email_otp(email_id).await {
-            self.update_log(pid, format!("🎉 Đã lấy mã OTP từ C69 Email #{}: {}! Đang tự động điền...", email_id, otp), "Nhập OTP");
-            let _ = fill_and_submit_otp(&cdp, &otp).await;
+        // 8) Chờ OTP tươi (VERIFY #4)
+        let mut otp: Option<String> = None;
+        for _ in 0..40 {
+            let u = used.clone();
+            let got = tokio::task::spawn_blocking(move || crate::xml_login::fetch_otp_from_c69(email_id))
+                .await
+                .ok()
+                .flatten();
+            if let Some(c) = got {
+                if !u.contains(&c) {
+                    otp = Some(c);
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+        let otp = otp.ok_or_else(|| "OTP_TIMEOUT: không có OTP mới trong 160s".to_string())?;
+        self.update_log(pid, format!("✔ Nhận OTP mới từ C69: {}", otp), "Nhập OTP");
+        web_type_into(&cdp, code_inp, &otp).await.map_err(|e| format!("CODE_INPUT: {}", e))?;
+        let next_btn = r#"Array.from(document.querySelectorAll('button')).find(b => /^(next|continue|verify|sign up|tiếp)/i.test((b.innerText||'').trim()) && !b.disabled && b.offsetParent !== null)"#;
+        if !web_wait_click(&cdp, next_btn, 8).await {
+            let _ = cdp.press_key("Enter", "Enter", 13).await;
         }
 
-        let _ = crate::cdp_browser::backup_thin_profile(pid);
-        self.update_log(pid, "✅ Đã tạo tài khoản TikTok thành công qua Gmail và sao lưu session an toàn!".to_string(), "Tạo nick xong");
-        crate::api::update_profile_nurture_status(pid, "Đã tạo tài khoản thành công", Some("Hoàn tất Reg TikTok by Gmail"), None);
+        // 9) Username (nếu có trang tạo username) rồi hoàn tất → đợi cookie sessionid
+        let user_inp = r#"(document.querySelector('input[placeholder*="sername" i]') || document.querySelector('input[name="username"]'))"#;
+        let mut username = String::new();
+        let mut has_session = false;
+        for i in 0..45 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let t = web_page_text(&cdp).await;
+            if let Some(err) = web_classify_error(&t) {
+                if err.starts_with("BAD_CODE") || err.starts_with("RATE_LIMIT") || err.starts_with("CAPTCHA") {
+                    return Err(err);
+                }
+            }
+            if let Ok(ck) = cdp.get_all_cookies().await {
+                if ck.as_array().map(|a| a.iter().any(|c| c.get("name").and_then(|n| n.as_str()) == Some("sessionid") && c.get("value").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))).unwrap_or(false) {
+                    has_session = true;
+                    break;
+                }
+            }
+            if username.is_empty() && web_exists(&cdp, user_inp).await {
+                username = web_input_value(&cdp, user_inp).await;
+                let signup_btn = r#"Array.from(document.querySelectorAll('button')).find(b => /^(sign up|next|continue|đăng ký)/i.test((b.innerText||'').trim()) && !b.disabled && b.offsetParent !== null)"#;
+                if !username.is_empty() {
+                    self.update_log(pid, format!("✔ Username gợi ý: @{}", username), "Username");
+                    let _ = web_click(&cdp, signup_btn).await;
+                }
+            } else if i % 8 == 7 {
+                // Nút "Skip" (bỏ qua bước tuỳ chọn nếu có)
+                let _ = web_click(&cdp, r#"Array.from(document.querySelectorAll('button,a,div[role="button"]')).find(b => /^skip$/i.test((b.innerText||'').trim()) && b.offsetParent !== null)"#).await;
+            }
+        }
+        if !has_session {
+            return Err("NO_SESSION: không thấy cookie sessionid sau khi nhập mã (TikTok chưa tạo nick)".to_string());
+        }
+        self.update_log(pid, "✔ Có cookie sessionid → nick đã được tạo".to_string(), "Verify session");
 
-        Ok(())
+        // 10) Lấy username thật từ trang chủ nếu chưa có
+        if username.is_empty() {
+            let _ = cdp.navigate("https://www.tiktok.com/foryou").await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let js = r#"(() => { try { const d = JSON.parse(document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__').textContent); return d['__DEFAULT_SCOPE__']['webapp.app-context'].user.uniqueId || ''; } catch(e) { return ''; } })()"#;
+            username = cdp.evaluate(js).await.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+        }
+        if username.is_empty() {
+            username = format!("user_{}", email_id);
+        }
+
+        // 11) Backup profile + lưu C69 + sync cookies
+        let _ = crate::cdp_browser::backup_thin_profile(pid);
+        let cookies = cdp.get_all_cookies().await.unwrap_or(json!([]));
+        let (u2, pw2, em2) = (username.clone(), password.clone(), email.clone());
+        let acc_id = tokio::task::spawn_blocking(move || {
+            let spec = crate::xml_login::signup::SignupSpec { email: em2, email_id: Some(email_id), password: pw2.clone(), client: None };
+            crate::xml_login::signup::register_on_c69(&u2, &spec, &pw2, email_id)
+        })
+        .await
+        .ok()
+        .flatten();
+        match acc_id {
+            Some(id) => {
+                let _ = sync_cookies_to_c69(id, cookies.to_string(), username.clone()).await;
+                self.update_log(pid, format!("✅ Đã tạo @{} và lưu C69 #{}", username, id), "Tạo nick xong");
+                crate::api::update_profile_nurture_status(pid, "Đã tạo tài khoản thành công", Some(&format!("@{} (C69 #{})", username, id)), None);
+                Ok(())
+            }
+            None => Err(format!("C69_SAVE: nick @{} đã tạo nhưng KHÔNG lưu được lên C69 (pass: {})", username, password)),
+        }
     }
+}
+
+const WEB_SIGNUP_URL: &str = "https://www.tiktok.com/signup/phone-or-email/email";
+
+/// Lấy (email, mật khẩu hòm thư) của hòm thư C69 theo id.
+async fn fetch_c69_email_address(email_id: u64) -> Result<(String, String), String> {
+    let url = format!("{}/dashboard/api/emails/{}/", DEFAULT_C69_API_URL, email_id);
+    let resp = http_client()
+        .get(&url)
+        .header("Authorization", c69_token())
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("C69 lỗi kết nối: {}", e))?;
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("C69 JSON: {}", e))?;
+    let email = data.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if email.is_empty() {
+        return Err(format!("EMAIL_NOT_FOUND: C69 #{} không có địa chỉ email", email_id));
+    }
+    Ok((email, data.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string()))
+}
+
+async fn web_rect(cdp: &CdpClient, find: &str) -> Option<(f64, f64)> {
+    let expr = format!(
+        r#"(() => {{ const el = ({find}); if (!el) return null; try {{ el.scrollIntoView({{block:'center'}}); }} catch(e) {{}} const r = el.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return null; return JSON.stringify({{x: r.left + r.width/2, y: r.top + r.height/2}}); }})()"#,
+        find = find
+    );
+    let v = cdp.evaluate(&expr).await.ok()?;
+    let j: serde_json::Value = serde_json::from_str(v.as_str()?).ok()?;
+    Some((j.get("x")?.as_f64()?, j.get("y")?.as_f64()?))
+}
+
+async fn web_click(cdp: &CdpClient, find: &str) -> bool {
+    match web_rect(cdp, find).await {
+        Some((x, y)) => cdp.dispatch_mouse_click(x, y).await.is_ok(),
+        None => false,
+    }
+}
+
+async fn web_exists(cdp: &CdpClient, find: &str) -> bool {
+    cdp.evaluate(&format!("!!({})", find)).await.ok().and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+async fn web_wait_exists(cdp: &CdpClient, find: &str, secs: u64) -> bool {
+    for _ in 0..secs {
+        if web_exists(cdp, find).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    false
+}
+
+async fn web_wait_click(cdp: &CdpClient, find: &str, secs: u64) -> bool {
+    for _ in 0..(secs * 2).max(1) {
+        if web_click(cdp, find).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+async fn web_page_text(cdp: &CdpClient) -> String {
+    cdp.evaluate("(document.body ? document.body.innerText : '').toLowerCase()")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+async fn web_input_value(cdp: &CdpClient, find: &str) -> String {
+    cdp.evaluate(&format!("(() => {{ const e = ({}); return e ? (e.value||'') : ''; }})()", find))
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+/// Click vào input, xoá nội dung cũ, gõ text và VERIFY value khớp (retry 3 lần).
+async fn web_type_into(cdp: &CdpClient, find: &str, text: &str) -> Result<(), String> {
+    for _ in 0..3 {
+        if !web_wait_click(cdp, find, 6).await {
+            return Err("không tìm thấy ô nhập".to_string());
+        }
+        let _ = cdp.evaluate(&format!("(() => {{ const e = ({}); if (e) {{ e.focus(); e.select && e.select(); }} return true; }})()", find)).await;
+        let _ = cdp.press_key("Backspace", "Backspace", 8).await;
+        let _ = cdp.type_text(text).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if web_input_value(cdp, find).await == text {
+            return Ok(());
+        }
+    }
+    Err("giá trị ô nhập không khớp sau 3 lần thử".to_string())
+}
+
+/// Phân loại lỗi hiển thị trên trang signup (text đã lowercase).
+fn web_classify_error(t: &str) -> Option<String> {
+    if t.contains("maximum number of attempts") || t.contains("too many attempts") || t.contains("try again later") {
+        return Some("RATE_LIMIT: TikTok báo quá số lần thử, cần đổi IP/profile".to_string());
+    }
+    if t.contains("verify to continue") || t.contains("drag the slider") || t.contains("select 2 objects") || t.contains("captcha") {
+        return Some("CAPTCHA: TikTok yêu cầu xác minh captcha".to_string());
+    }
+    if t.contains("verification code is incorrect") || t.contains("incorrect code") || t.contains("code is invalid") || t.contains("expired") {
+        return Some("BAD_CODE: mã xác minh sai/hết hạn".to_string());
+    }
+    if t.contains("already registered") || t.contains("already been used") || t.contains("already in use") {
+        return Some("EMAIL_USED: email đã được dùng cho TikTok".to_string());
+    }
+    None
 }
 
 /// Điền mã OTP vào ô nhập (hỗ trợ cả 6 ô ký tự riêng biệt và 1 ô tổng hợp) và bấm nút xác nhận
@@ -2006,11 +2496,14 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
 
     let submit_expr = r#"
         (() => {
-            const buttons = Array.from(document.querySelectorAll('button'));
-            const btn = buttons.find(b => {
-                const t = (b.innerText || '').trim().toLowerCase();
-                return (t.includes('log in') || t.includes('verify') || t.includes('next') || t.includes('confirm') || t.includes('xác nhận') || t.includes('tiếp tục')) && !b.disabled;
-            });
+            const visible = b => b.offsetParent !== null && !b.disabled;
+            const buttons = Array.from(document.querySelectorAll('button')).filter(visible);
+            const label = b => (b.innerText || '').trim().toLowerCase();
+            // Ưu tiên nút xác nhận của modal (khớp chính xác), 'log in' chỉ là phương án cuối vì nó nằm sau modal
+            const confirmWords = ['next', 'verify', 'confirm', 'submit', 'continue', 'xác nhận', 'tiếp tục', 'tiếp theo'];
+            let btn = buttons.find(b => confirmWords.includes(label(b)));
+            if (!btn) btn = buttons.find(b => confirmWords.some(w => label(b).includes(w)));
+            if (!btn) btn = buttons.find(b => label(b) === 'log in');
             if (btn) {
                 try { btn.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch(e) {}
                 btn.click();
@@ -2019,20 +2512,23 @@ async fn fill_and_submit_otp(cdp: &CdpClient, otp: &str) -> bool {
             return false;
         })()
     "#;
-    let _ = cdp.evaluate(submit_expr).await;
+    let clicked = cdp.evaluate(submit_expr).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+    if !clicked {
+        let _ = cdp.press_key("Enter", "Enter", 13).await;
+    }
     filled
 }
 
 /// Đồng bộ Cookies lên C69 Server sau khi đăng nhập thành công
 pub async fn sync_cookies_to_c69(acc_id: u64, cookies_json: String, username: String) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/update-cookies/", DEFAULT_C69_API_URL, acc_id);
     let payload = json!({
         "cookies": cookies_json,
         "username": username
     });
     let resp = client.post(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
         .json(&payload)
         .send()
@@ -2057,7 +2553,7 @@ pub async fn sync_nurture_done_to_c69(
     shares: u32,
     duration_secs: u64,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     // 1. Ghi log thống kê phiên nuôi vào endpoint /dashboard/api/accounts/<id>/log-nurture/
     let log_url = format!("{}/dashboard/api/accounts/{}/log-nurture/", DEFAULT_C69_API_URL, acc_id);
@@ -2071,7 +2567,7 @@ pub async fn sync_nurture_done_to_c69(
         "error": ""
     });
     let _ = client.post(&log_url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
         .json(&log_payload)
         .send()
@@ -2081,12 +2577,13 @@ pub async fn sync_nurture_done_to_c69(
     let acc_url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, acc_id);
     let summary = format!("Đã nuôi thành công ({} video, {} like, {} comment, {} share - {}s)", watched, likes, comments, shares, duration_secs);
     let patch_payload = json!({
-        "status": "active",
+        "status": 0,
         "note": summary,
+        "modified_by": "ruandejun",
         "username": username
     });
     let resp = client.patch(&acc_url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .header("User-Agent", "Mozilla/5.0 MunAutomation/1.0")
         .json(&patch_payload)
         .send()
@@ -2104,45 +2601,71 @@ pub async fn sync_nurture_done_to_c69(
 
 /// Lấy chi tiết tài khoản TikTok từ C69 Backend API theo Account ID
 pub async fn fetch_c69_account_by_id(account_id: u64) -> Result<C69Account, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, account_id);
 
     let resp = client
         .get(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .timeout(Duration::from_secs(8))
         .send()
-        .await
-        .map_err(|e| format!("Lỗi kết nối server C69: {}", e))?;
+        .await;
 
-    if !resp.status().is_success() {
-        return Err(format!("Server C69 trả về mã lỗi: {}", resp.status()));
+    if let Ok(r) = resp {
+        if r.status().is_success() {
+            if let Ok(item) = r.json::<serde_json::Value>().await {
+                let u = item.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = item.get("id").and_then(|v| v.as_u64()).unwrap_or(account_id);
+                let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let pwd = item.get("password").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let two_fa = item.get("two_factor_auth").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let st = item.get("status").cloned();
+                let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let acc_emails = item.get("accounts_emails").and_then(|v| v.as_u64())
+                    .or_else(|| item.get("email_info").and_then(|v| v.get("id")).and_then(|v| v.as_u64()));
+
+                return Ok(C69Account {
+                    id,
+                    username: u,
+                    email,
+                    password: pwd,
+                    two_factor_auth: two_fa,
+                    cookies,
+                    status: st,
+                    note: nt,
+                    accounts_emails: acc_emails,
+                    r#type: None,
+                    created_by: None,
+                    created: None,
+                    modified_by: None,
+                    modified: None,
+                    subscription: None,
+                    subscription_owner: None,
+                    email_info: None,
+                });
+            }
+        }
     }
 
-    let item: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi giải mã JSON C69: {}", e))?;
-    let u = item.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let id = item.get("id").and_then(|v| v.as_u64()).unwrap_or(account_id);
-    let email = item.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let pwd = item.get("password").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let two_fa = item.get("two_factor_auth").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let cookies = item.get("cookies").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let st = item.get("status").cloned();
-    let nt = item.get("note").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let acc_emails = item.get("accounts_emails").and_then(|v| v.as_u64())
-        .or_else(|| item.get("email_info").and_then(|v| v.get("id")).and_then(|v| v.as_u64()));
+    // Fallback: tìm trong file JSON cục bộ
+    let fallback_paths = [
+        "D:/Workspace/Python/QHTDautomation/target_unassigned_tiktok_accounts.json",
+        "target_unassigned_tiktok_accounts.json",
+        "D:/Workspace/Python/QHTDautomation/free_tiktok_accounts.json",
+        "free_tiktok_accounts.json",
+    ];
+    for fb in fallback_paths {
+        if let Ok(content) = std::fs::read_to_string(fb) {
+            if let Ok(accs) = serde_json::from_str::<Vec<C69Account>>(&content) {
+                if let Some(a) = accs.into_iter().find(|x| x.id == account_id) {
+                    return Ok(a);
+                }
+            }
+        }
+    }
 
-    Ok(C69Account {
-        id,
-        username: u,
-        email,
-        password: pwd,
-        two_factor_auth: two_fa,
-        cookies,
-        status: st,
-        note: nt,
-        accounts_emails: acc_emails,
-        ..Default::default()
-    })
+    Err(format!("Không tìm thấy tài khoản #{} cả trên server lẫn file cục bộ", account_id))
 }
 
 /// Lấy danh sách tài khoản TikTok từ C69 Backend API
@@ -2150,7 +2673,7 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/?type=tiktok&page_size=200", server_url);
 
     let mut req = client
@@ -2165,22 +2688,45 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
-    let resp = req.send()
-        .await
-        .map_err(|e| format!("Lỗi kết nối server C69: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Server C69 trả về mã lỗi: {}", resp.status()));
-    }
-
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi giải mã JSON C69: {}", e))?;
-    let results = data.get("results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let resp = req.send().await;
+    let results = match resp {
+        Ok(r) if r.status().is_success() => {
+            r.json::<serde_json::Value>().await.ok()
+                .and_then(|data| data.get("results").and_then(|v| v.as_array()).cloned())
+                .unwrap_or_default()
+        }
+        _ => {
+            // Fallback nạp từ file JSON cục bộ
+            let fallback_paths = [
+                "D:/Workspace/Python/QHTDautomation/target_unassigned_tiktok_accounts.json",
+                "target_unassigned_tiktok_accounts.json",
+                "D:/Workspace/Python/QHTDautomation/free_tiktok_accounts.json",
+                "free_tiktok_accounts.json",
+            ];
+            let mut loaded_accounts = Vec::new();
+            for fb in fallback_paths {
+                if let Ok(content) = std::fs::read_to_string(fb) {
+                    if let Ok(accs) = serde_json::from_str::<Vec<C69Account>>(&content) {
+                        if !accs.is_empty() {
+                            info!("📁 Đã nạp thành công {} tài khoản TikTok từ file {}", accs.len(), fb);
+                            loaded_accounts = accs;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !loaded_accounts.is_empty() {
+                return Ok(loaded_accounts);
+            }
+            Vec::new()
+        }
+    };
 
     let mut accounts = Vec::new();
     for item in results {
@@ -2231,7 +2777,11 @@ pub async fn fetch_c69_tiktok_accounts() -> Result<Vec<C69Account>, String> {
 /// Đăng nhập tài khoản C69 lưu session vào c69_session.json
 pub async fn login_c69(username: &str, password: &str, server_url_opt: Option<&str>) -> Result<C69Session, String> {
     let raw_url = server_url_opt.unwrap_or(DEFAULT_C69_API_URL).trim();
-    let server_url = if raw_url.is_empty() { DEFAULT_C69_API_URL } else { raw_url }.trim_end_matches('/');
+    let mut server_url = if raw_url.is_empty() { DEFAULT_C69_API_URL.to_string() } else { raw_url.to_string() };
+    if !server_url.starts_with("http://") && !server_url.starts_with("https://") {
+        server_url = format!("https://{}", server_url);
+    }
+    let server_url = server_url.trim_end_matches('/').to_string();
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
@@ -2291,7 +2841,7 @@ pub async fn login_c69(username: &str, password: &str, server_url_opt: Option<&s
         username: username.to_string(),
         server_url: server_url.to_string(),
         cookies: cookie_str,
-        token: Some(DEFAULT_C69_TOKEN.to_string()),
+        token: Some(c69_token().to_string()),
         email: email_opt,
         is_staff,
         last_login: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
@@ -2320,7 +2870,7 @@ pub async fn fetch_c69_accounts_full(
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
     let active_username = sess.as_ref().map(|s| s.username.clone()).unwrap_or_default();
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut query_params = Vec::new();
 
     let _is_main_tab = account_tab_filter.as_deref().map(|t| t.eq_ignore_ascii_case("main")).unwrap_or(false);
@@ -2410,10 +2960,10 @@ pub async fn fetch_c69_accounts_full(
         } else if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2430,7 +2980,7 @@ pub async fn bulk_main_c69_accounts(ids: Vec<u64>, action: &str) -> Result<serde
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/bulk-main/", server_url);
 
     let mut req = client.post(&url)
@@ -2444,10 +2994,10 @@ pub async fn bulk_main_c69_accounts(ids: Vec<u64>, action: &str) -> Result<serde
         } else if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let payload = serde_json::json!({
@@ -2467,17 +3017,19 @@ pub async fn bulk_main_c69_accounts(ids: Vec<u64>, action: &str) -> Result<serde
 
 /// Trích xuất mã OTP 6 chữ số từ chuỗi văn bản
 pub fn extract_6digit_otp(text: &str) -> Option<String> {
+    // Làm việc trên bytes để không panic khi gặp ký tự đa byte (emoji, tiếng Việt) trong thân email
     let bytes = text.as_bytes();
     let len = bytes.len();
-    for i in 0..len {
-        if i + 6 <= len {
-            let slice = &text[i..i + 6];
-            if slice.chars().all(|c| c.is_ascii_digit()) {
-                let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
-                let next_ok = i + 6 == len || !bytes[i + 6].is_ascii_digit();
-                if prev_ok && next_ok {
-                    return Some(slice.to_string());
-                }
+    if len < 6 {
+        return None;
+    }
+    for i in 0..=(len - 6) {
+        let window = &bytes[i..i + 6];
+        if window.iter().all(|b| b.is_ascii_digit()) {
+            let prev_ok = i == 0 || !bytes[i - 1].is_ascii_digit();
+            let next_ok = i + 6 == len || !bytes[i + 6].is_ascii_digit();
+            if prev_ok && next_ok {
+                return Some(String::from_utf8_lossy(window).to_string());
             }
         }
     }
@@ -2486,13 +3038,13 @@ pub fn extract_6digit_otp(text: &str) -> Option<String> {
 
 /// Tìm kiếm email ID trên C69 theo địa chỉ email
 pub async fn find_c69_email_id_by_address(email_addr: &str) -> Result<Option<u64>, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let encoded = urlencoding::encode(email_addr.trim());
     let url = format!("{}/dashboard/api/emails/?search={}", DEFAULT_C69_API_URL, encoded);
 
     let resp = client
         .get(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .timeout(Duration::from_secs(8))
         .send()
         .await
@@ -2515,12 +3067,20 @@ pub async fn find_c69_email_id_by_address(email_addr: &str) -> Result<Option<u64
 
 /// Đọc hòm thư email trên C69 và tự động trích xuất mã OTP TikTok 6 số
 pub async fn fetch_c69_email_otp(email_id: u64) -> Result<Option<String>, String> {
-    let client = reqwest::Client::new();
+    // Chống dùng mã cũ: bản xml_login::fetch_otp_from_c69 chỉ trả mã trong vòng 10 phút.
+    if let Ok(fresh) = tokio::task::spawn_blocking(move || crate::xml_login::fetch_otp_from_c69(email_id)).await {
+        return Ok(fresh);
+    }
+    fetch_c69_email_otp_unchecked(email_id).await
+}
+
+async fn fetch_c69_email_otp_unchecked(email_id: u64) -> Result<Option<String>, String> {
+    let client = http_client();
     let url = format!("{}/dashboard/api/emails/{}/read-mailbox/", DEFAULT_C69_API_URL, email_id);
 
     let resp = client
         .get(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .timeout(Duration::from_secs(12))
         .send()
         .await
@@ -2573,12 +3133,103 @@ pub async fn fetch_c69_email_otp(email_id: u64) -> Result<Option<String>, String
     Ok(None)
 }
 
+/// Trích xuất liên kết đăng nhập/xác minh TikTok (Magic link / Login link) từ email
+pub fn extract_tiktok_login_link(text: &str) -> Option<String> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    let lower = text.to_lowercase();
+    let mut search_idx = 0;
+
+    while let Some(pos) = lower[search_idx..].find("http") {
+        let actual_pos = search_idx + pos;
+        let slice = &text[actual_pos..];
+
+        let end_pos = slice.find(|c: char| {
+            c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>' || c == ')' || c == ']' || c == '}' || c == '\\'
+        }).unwrap_or(slice.len());
+
+        let mut url = slice[..end_pos].trim();
+        url = url.trim_end_matches(|c: char| c == '.' || c == ',' || c == ';' || c == '!' || c == '?' || c == ')' || c == ']');
+
+        let url_lower = url.to_lowercase();
+        if url_lower.contains("tiktok.com") {
+            let is_priority = url_lower.contains("login")
+                || url_lower.contains("magic")
+                || url_lower.contains("link")
+                || url_lower.contains("verify")
+                || url_lower.contains("auth")
+                || url_lower.contains("passport")
+                || url_lower.contains("token")
+                || url_lower.contains("confirm");
+
+            candidates.push((is_priority, url.to_string()));
+        }
+
+        search_idx = actual_pos + end_pos.max(4);
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().next().map(|(_, url)| url)
+}
+
+/// Đọc hòm thư email trên C69 và tự động trích xuất link đăng nhập (Magic Link) của TikTok
+pub async fn fetch_c69_email_login_link(email_id: u64) -> Result<Option<String>, String> {
+    let client = http_client();
+    let url = format!("{}/dashboard/api/emails/{}/read-mailbox/", DEFAULT_C69_API_URL, email_id);
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", c69_token())
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .map_err(|e| format!("Lỗi kết nối đọc hòm thư: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Lỗi server C69 đọc hòm thư: HTTP {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| format!("Lỗi parse JSON hòm thư: {}", e))?;
+
+    // 1. Kiểm tra email_data.latest_content
+    if let Some(email_data) = data.get("email_data") {
+        if let Some(content) = email_data.get("latest_content").and_then(|v| v.as_str()) {
+            if let Some(link) = extract_tiktok_login_link(content) {
+                return Ok(Some(link));
+            }
+        }
+    }
+
+    // 2. Quét danh sách emails nhận được
+    if let Some(emails) = data.get("emails").and_then(|v| v.as_array()) {
+        for email in emails {
+            let body = email.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            let html = email.get("html").and_then(|v| v.as_str()).unwrap_or("");
+            let snippet = email.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+
+            if let Some(link) = extract_tiktok_login_link(body) {
+                return Ok(Some(link));
+            }
+            if let Some(link) = extract_tiktok_login_link(html) {
+                return Ok(Some(link));
+            }
+            if let Some(link) = extract_tiktok_login_link(snippet) {
+                return Ok(Some(link));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Đọc trực tiếp hòm thư email trên C69 qua API, trả về full JSON phản hồi từ server
 pub async fn read_c69_email_mailbox(email_id: u64) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/emails/{}/read-mailbox/", server_url, email_id);
 
     let mut req = client.get(&url)
@@ -2592,10 +3243,10 @@ pub async fn read_c69_email_mailbox(email_id: u64) -> Result<serde_json::Value, 
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối đọc hòm thư: {}", e))?;
@@ -2611,7 +3262,7 @@ pub async fn read_c69_email_mailbox(email_id: u64) -> Result<serde_json::Value, 
 pub async fn fetch_c69_users_list() -> Result<Vec<serde_json::Value>, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/users-list/?status=active&page_size=100", server_url);
 
     let mut req = client.get(&url).timeout(Duration::from_secs(10));
@@ -2622,10 +3273,10 @@ pub async fn fetch_c69_users_list() -> Result<Vec<serde_json::Value>, String> {
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2646,7 +3297,7 @@ pub async fn fetch_c69_users_list() -> Result<Vec<serde_json::Value>, String> {
 pub async fn fetch_c69_account_detail(account_id: u64) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
 
     let mut req = client.get(&url).timeout(Duration::from_secs(10));
@@ -2657,10 +3308,10 @@ pub async fn fetch_c69_account_detail(account_id: u64) -> Result<serde_json::Val
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2675,7 +3326,7 @@ pub async fn fetch_c69_account_detail(account_id: u64) -> Result<serde_json::Val
 pub async fn update_c69_account_detail(account_id: u64, payload: serde_json::Value) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
 
     let mut req = client.patch(&url).json(&payload).timeout(Duration::from_secs(12));
@@ -2686,10 +3337,10 @@ pub async fn update_c69_account_detail(account_id: u64, payload: serde_json::Val
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2701,7 +3352,7 @@ pub async fn update_c69_account_detail(account_id: u64, payload: serde_json::Val
 pub async fn delete_c69_account_single(account_id: u64) -> Result<(), String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/", server_url, account_id);
 
     let mut req = client.delete(&url).timeout(Duration::from_secs(10));
@@ -2712,10 +3363,10 @@ pub async fn delete_c69_account_single(account_id: u64) -> Result<(), String> {
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2729,7 +3380,7 @@ pub async fn delete_c69_account_single(account_id: u64) -> Result<(), String> {
 pub async fn fetch_c69_account_2fa(account_id: u64) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/get-2fa/", server_url, account_id);
 
     let mut req = client.get(&url).timeout(Duration::from_secs(10));
@@ -2740,10 +3391,10 @@ pub async fn fetch_c69_account_2fa(account_id: u64) -> Result<serde_json::Value,
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2755,7 +3406,7 @@ pub async fn fetch_c69_account_2fa(account_id: u64) -> Result<serde_json::Value,
 pub async fn add_c69_account_manual(payload: serde_json::Value) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/add-manual/", server_url);
 
     let mut req = client.post(&url).json(&payload).timeout(Duration::from_secs(12));
@@ -2766,10 +3417,10 @@ pub async fn add_c69_account_manual(payload: serde_json::Value) -> Result<serde_
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2781,7 +3432,7 @@ pub async fn add_c69_account_manual(payload: serde_json::Value) -> Result<serde_
 pub async fn bulk_add_c69_accounts(accounts_data: &str, r#type: &str) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/bulk-add/", server_url);
 
     let payload = json!({
@@ -2797,10 +3448,10 @@ pub async fn bulk_add_c69_accounts(accounts_data: &str, r#type: &str) -> Result<
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2812,7 +3463,7 @@ pub async fn bulk_add_c69_accounts(accounts_data: &str, r#type: &str) -> Result<
 pub async fn bulk_delete_c69_accounts(ids: Vec<u64>) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/bulk-delete/", server_url);
 
     let payload = json!({ "ids": ids });
@@ -2824,10 +3475,10 @@ pub async fn bulk_delete_c69_accounts(ids: Vec<u64>) -> Result<serde_json::Value
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2839,7 +3490,7 @@ pub async fn bulk_delete_c69_accounts(ids: Vec<u64>) -> Result<serde_json::Value
 pub async fn bulk_status_c69_accounts(ids: Vec<u64>, status: i32) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/bulk-status/", server_url);
 
     let payload = json!({ "ids": ids, "status": status });
@@ -2851,10 +3502,10 @@ pub async fn bulk_status_c69_accounts(ids: Vec<u64>, status: i32) -> Result<serd
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2866,7 +3517,7 @@ pub async fn bulk_status_c69_accounts(ids: Vec<u64>, status: i32) -> Result<serd
 pub async fn bulk_sub_owner_c69_accounts(ids: Vec<u64>, sub_owner: &str) -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/bulk-sub-owner/", server_url);
 
     let payload = json!({ "ids": ids, "subscription_owner": sub_owner });
@@ -2878,10 +3529,10 @@ pub async fn bulk_sub_owner_c69_accounts(ids: Vec<u64>, sub_owner: &str) -> Resu
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2893,7 +3544,7 @@ pub async fn bulk_sub_owner_c69_accounts(ids: Vec<u64>, sub_owner: &str) -> Resu
 pub async fn fetch_c69_active_card() -> Result<serde_json::Value, String> {
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/cards/get-active-card/", server_url);
 
     let mut req = client.get(&url).timeout(Duration::from_secs(10));
@@ -2904,10 +3555,10 @@ pub async fn fetch_c69_active_card() -> Result<serde_json::Value, String> {
         if let Some(ref t) = s.token {
             req = req.header("Authorization", t);
         } else {
-            req = req.header("Authorization", DEFAULT_C69_TOKEN);
+            req = req.header("Authorization", c69_token());
         }
     } else {
-        req = req.header("Authorization", DEFAULT_C69_TOKEN);
+        req = req.header("Authorization", c69_token());
     }
 
     let resp = req.send().await.map_err(|e| format!("Lỗi kết nối C69: {}", e))?;
@@ -2917,13 +3568,13 @@ pub async fn fetch_c69_active_card() -> Result<serde_json::Value, String> {
 
 /// Cập nhật ghi chú trên tài khoản C69 (ví dụ: ghi lại lỗi đọc email)
 pub async fn update_c69_account_note(account_id: u64, note: &str) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/accounts/{}/", DEFAULT_C69_API_URL, account_id);
     let payload = json!({ "note": note });
 
     let _ = client
         .patch(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .json(&payload)
         .send()
         .await;
@@ -2933,12 +3584,12 @@ pub async fn update_c69_account_note(account_id: u64, note: &str) -> Result<(), 
 
 /// Đồng bộ Profiles từ C69 Profile API và lưu vào browser_profiles.json
 pub async fn sync_c69_profiles_to_local(profiles_path: PathBuf) -> Result<usize, String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/dashboard/api/profiles/?page_size=100", DEFAULT_C69_API_URL);
 
     let resp = client
         .get(&url)
-        .header("Authorization", DEFAULT_C69_TOKEN)
+        .header("Authorization", c69_token())
         .timeout(Duration::from_secs(10))
         .send()
         .await
@@ -3606,7 +4257,7 @@ pub async fn assign_socks_to_c69_accounts(account_ids: Vec<u64>, proxy_str: &str
     let mut updated_count = 0;
     let sess = load_c69_session();
     let server_url = sess.as_ref().map(|s| s.server_url.as_str()).unwrap_or(DEFAULT_C69_API_URL);
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     for acc_id in &account_ids {
         // Cập nhật profile tương ứng nếu có
@@ -3628,7 +4279,7 @@ pub async fn assign_socks_to_c69_accounts(account_ids: Vec<u64>, proxy_str: &str
             } else if let Some(ref t) = s.token {
                 req = req.header("Authorization", t);
             } else {
-                req = req.header("Authorization", DEFAULT_C69_TOKEN);
+                req = req.header("Authorization", c69_token());
             }
         }
         let _ = req.json(&serde_json::json!({ "socks5": proxy_str.trim() })).send().await;

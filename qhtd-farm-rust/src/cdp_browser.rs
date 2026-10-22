@@ -260,6 +260,40 @@ pub fn mark_profile_active(id: usize) {
 
 pub fn mark_profile_inactive(id: usize) {
     active_profiles().write().remove(&id);
+    release_profile_port(id);
+}
+
+static PROFILE_PORTS: OnceLock<parking_lot::Mutex<std::collections::HashMap<usize, u16>>> = OnceLock::new();
+
+fn profile_ports() -> &'static parking_lot::Mutex<std::collections::HashMap<usize, u16>> {
+    PROFILE_PORTS.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Cấp phát cổng DevTools riêng cho profile (không trùng với profile khác đang chạy, kể cả khi Chrome chưa kịp bind).
+pub fn allocate_profile_port(profile_id: usize) -> u16 {
+    let mut map = profile_ports().lock();
+    let start = 9222u16 + (profile_id as u16 % 500);
+    let reserved: std::collections::HashSet<u16> = map.iter().filter(|(k, _)| **k != profile_id).map(|(_, v)| *v).collect();
+    let mut chosen = None;
+    for port in start..start.saturating_add(400) {
+        if reserved.contains(&port) { continue; }
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            chosen = Some(port);
+            break;
+        }
+    }
+    let port = chosen.unwrap_or(9222);
+    map.insert(profile_id, port);
+    port
+}
+
+/// Cổng DevTools thực tế mà profile đang dùng (nếu đã launch).
+pub fn profile_port(profile_id: usize) -> Option<u16> {
+    profile_ports().lock().get(&profile_id).copied()
+}
+
+fn release_profile_port(profile_id: usize) {
+    profile_ports().lock().remove(&profile_id);
 }
 
 pub static GPU_POOL: &[(&str, &str)] = &[
@@ -372,485 +406,223 @@ pub fn get_free_port(start: u16) -> u16 {
     9222
 }
 
-/// Trích xuất phiên bản Chrome từ User-Agent
+/// Trích xuất phiên bản Chrome từ User-Agent (Chuẩn hóa Chrome 154)
 pub fn extract_chrome_version(ua: &str) -> (String, String) {
     if let Some(pos) = ua.find("Chrome/") {
         let after = &ua[pos + 7..];
-        let ver = after.split_whitespace().next().unwrap_or("135.0.7049.84");
-        let major = ver.split('.').next().unwrap_or("135");
+        let ver = after.split_whitespace().next().unwrap_or("154.0.8037.93");
+        let major = ver.split('.').next().unwrap_or("154");
         (major.to_string(), ver.to_string())
     } else {
-        ("135".to_string(), "135.0.7049.84".to_string())
+        ("154".to_string(), "154.0.8037.93".to_string())
     }
 }
 
-/// Tạo clean stealth injection script với HARDWARE độc lập và Fingerprint riêng biệt cho từng profile
+/// Tạo stealth injection script v15.0 - Tối giản, deterministic, không để lộ dấu vết patch (Proxy-native hooks).
+/// Nguyên tắc: CHỈ đổi những gì cần để mỗi profile có dấu vân tay riêng (Canvas/WebGL/Audio), mọi thứ còn lại
+/// (UA, Client Hints, hardwareConcurrency, deviceMemory, plugins...) giữ nguyên hoặc đổi bằng CDP native để nhất quán 100%.
 fn generate_stealth_script(profile: &BrowserProfile) -> String {
     let p_id = profile.id;
-
-    let is_mobile = profile.profile_os.eq_ignore_ascii_case("Android")
-        || profile.profile_os.eq_ignore_ascii_case("iOS")
-        || profile.profile_user_agent.contains("Mobile")
-        || profile.profile_user_agent.contains("Android")
-        || profile.profile_user_agent.contains("iPhone");
-
-    let (default_renderer, default_vendor) = if is_mobile {
-        let m_idx = p_id % MOBILE_GPU_POOL.len();
-        MOBILE_GPU_POOL[m_idx]
-    } else {
-        let gpu_idx = p_id % GPU_POOL.len();
-        GPU_POOL[gpu_idx]
+    let gpu_idx = p_id % GPU_POOL.len();
+    let (default_renderer, default_vendor) = GPU_POOL[gpu_idx];
+    let clean = |s: &&str| {
+        let t = s.trim();
+        !t.is_empty() && t != "None" && t != "null" && t != "undefined"
     };
-
     let renderer = profile
         .gpu_renderer
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
+        .filter(clean)
         .unwrap_or(default_renderer);
     let vendor = profile
         .gpu_vendor
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
+        .filter(clean)
         .unwrap_or(default_vendor);
 
-    let cpu = if profile.profile_cpu == 0 {
-        [4, 6, 8, 12, 16][p_id % 5]
-    } else {
-        profile.profile_cpu
-    };
+    let canvas_seed = profile
+        .canvas_seed
+        .unwrap_or((p_id as u64).wrapping_mul(1664525) ^ 0x5a5a5a5a)
+        % 4_294_967_296;
+    let audio_seed = profile
+        .audio_seed
+        .unwrap_or((p_id as u64).wrapping_mul(1103515245) ^ 0xa5a5a5a5)
+        % 4_294_967_296;
 
-    let ram = if profile.profile_ram == 0 {
-        match p_id % 5 {
-            0 => 16,
-            1 => 32,
-            2 => 16,
-            3 => 8,
-            _ => 16,
-        }
-    } else {
-        profile.profile_ram
-    };
-
-    let _resolution = if profile.profile_resolution.trim().is_empty() {
-        "1920x1080".to_string()
-    } else {
-        profile.profile_resolution.clone()
-    };
-
-    let platform = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
-        "iPhone"
-    } else if is_mobile {
-        "Linux armv8l"
-    } else {
-        "Win32"
-    };
-
-    let platform_title = if is_mobile {
-        if platform == "iPhone" { "iOS" } else { "Android" }
-    } else {
-        "Windows"
-    };
-
-    let touch_points = if is_mobile { 5 } else { 0 };
-
-    format!(
-        r#"// Mun Clean Pure Stealth Script v10.0 (Anti-Jungle Shield - Profile #{p_id})
-(function() {{
+    const TEMPLATE: &str = r#"// Mun Anti-Detect Core v15.0 (Profile #__PID__)
+(function() {
     'use strict';
+    var VENDOR = __VENDOR__;
+    var RENDERER = __RENDERER__;
+    var CSEED = (__CSEED__ ^ Math.imul(__PID__ + 1, 2654435761)) >>> 0;
+    var ASEED = (__ASEED__ ^ Math.imul(__PID__ + 7, 2246822519)) >>> 0;
 
-    // 1. WeakMap-based Native toString spoofing
-    var _origToString = Function.prototype.toString;
-    var _nativeCache = new WeakMap();
+    // ---- Native-looking hook infrastructure (Proxy: không có .prototype, name/length đúng, toString native) ----
+    var origToString = Function.prototype.toString;
+    var customMap = new WeakMap();
+    var nativeStr = function(name) { return 'function ' + name + '() { [native code] }'; };
+    var tsProxy = new Proxy(origToString, {
+        apply: function(target, thisArg, args) {
+            if (customMap.has(thisArg)) return customMap.get(thisArg);
+            return Reflect.apply(target, thisArg, args);
+        }
+    });
+    customMap.set(tsProxy, nativeStr('toString'));
+    Object.defineProperty(Function.prototype, 'toString', {
+        value: tsProxy, writable: true, enumerable: false, configurable: true
+    });
 
-    var toStringProxy = function toString() {{
-        if (_nativeCache.has(this)) {{
-            return _nativeCache.get(this);
-        }}
-        return _origToString.call(this);
-    }};
-    try {{ delete toStringProxy.prototype; }} catch(e) {{}}
-    _nativeCache.set(toStringProxy, 'function toString() {{ [native code] }}');
-    _nativeCache.set(_origToString, 'function toString() {{ [native code] }}');
-    Function.prototype.toString = toStringProxy;
+    function getOwn(obj, name) {
+        var d = obj && Object.getOwnPropertyDescriptor(obj, name);
+        return d && typeof d.value === 'function' ? d : null;
+    }
+    // Trả về hàm gốc, đồng thời thay bằng Proxy (handler nhận (origFn, thisArg, args))
+    function hook(obj, name, handler) {
+        var d = getOwn(obj, name);
+        if (!d) return null;
+        var orig = d.value;
+        var proxy = new Proxy(orig, {
+            apply: function(target, thisArg, args) { return handler(target, thisArg, args); }
+        });
+        customMap.set(proxy, nativeStr(name));
+        Object.defineProperty(obj, name, {
+            value: proxy, writable: d.writable, enumerable: d.enumerable, configurable: d.configurable
+        });
+        return orig;
+    }
 
-    function makeNative(fn, name) {{
-        try {{ delete fn.prototype; }} catch(e) {{}}
-        _nativeCache.set(fn, 'function ' + (name || fn.name || '') + '() {{ [native code] }}');
-        return fn;
-    }}
+    // Hash xác định (không dùng Math.random => cùng đầu vào luôn cho cùng đầu ra, không lộ "noise ngẫu nhiên")
+    function h32(a, b) {
+        var x = (a ^ Math.imul(b + 0x9e3779b9, 0x85ebca6b)) >>> 0;
+        x = Math.imul(x ^ (x >>> 15), 0x2c1b3c6d) >>> 0;
+        x = Math.imul(x ^ (x >>> 12), 0x297a2d39) >>> 0;
+        return (x ^ (x >>> 15)) >>> 0;
+    }
+    // Đổi bit thấp của một vài kênh màu tại các vị trí cố định theo seed (bỏ qua canvas nhỏ & pixel trong suốt)
+    function noisePixels(data, w, h) {
+        if (!data || w * h < 256) return;
+        var total = w * h;
+        var n = 6 + (CSEED % 5);
+        for (var i = 0; i < n; i++) {
+            var px = h32(CSEED, i) % total;
+            var idx = px * 4;
+            if (idx + 3 >= data.length || data[idx + 3] === 0) continue;
+            var ch = h32(CSEED, i + 101) % 3;
+            data[idx + ch] = data[idx + ch] ^ 1;
+        }
+    }
 
-    function overrideGetter(obj, prop, getterFn) {{
-        try {{
-            Object.defineProperty(getterFn, 'name', {{ value: 'get ' + prop, configurable: true }});
-        }} catch(e) {{}}
-        makeNative(getterFn, 'get ' + prop);
-        try {{
-            Object.defineProperty(obj, prop, {{
-                get: getterFn,
-                configurable: true,
-                enumerable: true
-            }});
-        }} catch(e) {{}}
-    }}
+    // ---- Canvas 2D: noise áp trên BẢN SAO, không đụng canvas gốc, luôn xuất PNG hợp lệ, idempotent ----
+    try {
+        var C2D = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+        var CV = window.HTMLCanvasElement && HTMLCanvasElement.prototype;
+        var origGetImageData = C2D ? getOwn(C2D, 'getImageData') : null;
+        origGetImageData = origGetImageData && origGetImageData.value;
+        var origPutImageData = C2D ? getOwn(C2D, 'putImageData') : null;
+        origPutImageData = origPutImageData && origPutImageData.value;
+        var origGetContext = CV ? getOwn(CV, 'getContext') : null;
+        origGetContext = origGetContext && origGetContext.value;
+        var origDrawImage = C2D ? getOwn(C2D, 'drawImage') : null;
+        origDrawImage = origDrawImage && origDrawImage.value;
 
-    function overrideValue(obj, prop, val) {{
-        if (typeof val === 'function') {{
-            try {{
-                Object.defineProperty(val, 'name', {{ value: prop, configurable: true }});
-            }} catch(e) {{}}
-            makeNative(val, prop);
-        }}
-        try {{
-            Object.defineProperty(obj, prop, {{
-                value: val,
-                writable: true,
-                configurable: true,
-                enumerable: true
-            }});
-        }} catch(e) {{}}
-    }}
+        var noisyCopy = function(src) {
+            try {
+                if (!origGetContext || !origGetImageData || !origPutImageData || !origDrawImage) return null;
+                var w = src.width, h = src.height;
+                if (!(w * h >= 256) || w * h > 4096 * 4096) return null;
+                var c = document.createElement('canvas');
+                c.width = w; c.height = h;
+                var ctx = origGetContext.call(c, '2d');
+                if (!ctx) return null;
+                origDrawImage.call(ctx, src, 0, 0);
+                var img = origGetImageData.call(ctx, 0, 0, w, h);
+                noisePixels(img.data, w, h);
+                origPutImageData.call(ctx, img, 0, 0);
+                return c;
+            } catch (e) { return null; }
+        };
 
-    function patchWindowContext(w) {{
-        if (!w || !w.navigator) return;
+        if (C2D && origGetImageData) {
+            hook(C2D, 'getImageData', function(target, thisArg, args) {
+                var img = Reflect.apply(target, thisArg, args);
+                try { noisePixels(img.data, img.width, img.height); } catch (e) {}
+                return img;
+            });
+        }
+        if (CV) {
+            var origToBlob = null;
+            var origToDataURL = hook(CV, 'toDataURL', function(target, thisArg, args) {
+                var c = (thisArg instanceof HTMLCanvasElement) ? noisyCopy(thisArg) : null;
+                return Reflect.apply(target, c || thisArg, args);
+            });
+            origToBlob = hook(CV, 'toBlob', function(target, thisArg, args) {
+                var c = (thisArg instanceof HTMLCanvasElement) ? noisyCopy(thisArg) : null;
+                return Reflect.apply(target, c || thisArg, args);
+            });
+        }
+    } catch (e) {}
 
-        // 1b. Neutralize console.debug to prevent devtools-detector getter traps (P1, F1 - jungle signal)
-        try {{
-            if (w.console) {{
-                var safeDebug = function debug() {{}};
-                Object.defineProperty(safeDebug, 'name', {{ value: 'debug', configurable: true }});
-                makeNative(safeDebug, 'debug');
-                w.console.debug = safeDebug;
-            }}
-        }} catch(e) {{}}
+    // ---- WebGL: UNMASKED vendor/renderer + readPixels noise (không gắn thuộc tính lạ lên context) ----
+    try {
+        var dbgCtx = new WeakSet();
+        var patchGL = function(proto) {
+            if (!proto) return;
+            hook(proto, 'getExtension', function(target, thisArg, args) {
+                var ext = Reflect.apply(target, thisArg, args);
+                if (ext && args[0] === 'WEBGL_debug_renderer_info') { try { dbgCtx.add(thisArg); } catch (e) {} }
+                return ext;
+            });
+            hook(proto, 'getParameter', function(target, thisArg, args) {
+                var p = args[0];
+                if ((p === 37445 || p === 37446) && dbgCtx.has(thisArg)) {
+                    return p === 37445 ? VENDOR : RENDERER;
+                }
+                return Reflect.apply(target, thisArg, args);
+            });
+            hook(proto, 'readPixels', function(target, thisArg, args) {
+                var ret = Reflect.apply(target, thisArg, args);
+                try {
+                    var w = args[2], h = args[3], px = args[6];
+                    if (px && px.length >= 16 && w * h >= 256) {
+                        var n = 4 + (CSEED % 4);
+                        for (var i = 0; i < n; i++) {
+                            var idx = (h32(CSEED, i + 7) % (w * h)) * 4;
+                            if (idx + 3 < px.length && px[idx + 3] !== 0) px[idx] = px[idx] ^ 1;
+                        }
+                    }
+                } catch (e) {}
+                return ret;
+            });
+        };
+        if (window.WebGLRenderingContext) patchGL(WebGLRenderingContext.prototype);
+        if (window.WebGL2RenderingContext) patchGL(WebGL2RenderingContext.prototype);
+    } catch (e) {}
 
-        // 2. Xóa triệt để các biến và cờ tự động hoá CDP / Selenium / Playwright
-        try {{
-            var keysToRemove = [
-                'callPhantom', '_phantom', 'phantom',
-                'cdc_adoQpoasnfa76pfcZLmcfl_Array',
-                'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
-                'cdc_adoQpoasnfa76pfcZLmcfl_Symbol',
-                'cdc_adoQpoasnfa76pfcZLmcfl',
-                '$cdc_asdjflasutopfhvcZLmcfl_',
-                'CDCJStestRunStatus',
-                '_Selenium_IDE_Recorder',
-                'callSelenium',
-                '_selenium',
-                'selenium',
-                '__phantomas',
-                '__pwInitScripts',
-                '__playwright__binding__',
-                'domAutomationController',
-                'domAutomation',
-                'awesomium',
-                '$wdc_',
-                '_WEBDRIVER_ELEM_CACHE',
-                'spawn',
-                '__nightmare',
-                'hcaptchaCallbackZenno',
-                '__webdriver_script_fn',
-                '__webdriver_script_func',
-                '$chrome_asyncScriptInfo',
-                '__driver_evaluate',
-                '__webdriver_evaluate',
-                '__selenium_evaluate',
-                '__fxdriver_evaluate',
-                '__driver_unwrapped',
-                '__webdriver_unwrapped',
-                '__selenium_unwrapped',
-                '__fxdriver_unwrapped'
-            ];
-            for (var i = 0; i < keysToRemove.length; i++) {{
-                try {{ delete w[keysToRemove[i]]; }} catch(e) {{}}
-            }}
-            try {{ delete w.webdriver; }} catch(e) {{}}
-            if (w.document && w.document.documentElement) {{
-                var attrsToRemove = ['webdriver', 'selenium', 'driver', 'data-automation', 'data-headless', 'data-test'];
-                for (var j = 0; j < attrsToRemove.length; j++) {{
-                    try {{ w.document.documentElement.removeAttribute(attrsToRemove[j]); }} catch(e) {{}}
-                }}
-            }}
-        }} catch(e) {{}}
+    // ---- Audio: noise vi mô, một lần/buffer, đủ lớn để không bị làm tròn float32 ----
+    try {
+        if (window.AudioBuffer) {
+            var seen = new WeakSet();
+            hook(AudioBuffer.prototype, 'getChannelData', function(target, thisArg, args) {
+                var data = Reflect.apply(target, thisArg, args);
+                try {
+                    if (data && data.length > 64 && !seen.has(data)) {
+                        seen.add(data);
+                        var i = data.length >= 5000 ? 4500 + (h32(ASEED, 3) % 500) : 8 + (h32(ASEED, 3) % (data.length - 9));
+                        data[i] = data[i] + (((ASEED % 9) + 1) * 1e-6);
+                    }
+                } catch (e) {}
+                return data;
+            });
+        }
+    } catch (e) {}
+})();"#;
 
-        // 3. Chuẩn hoá navigator.webdriver = false (chuẩn W3C spec, không bao giờ undefined)
-        try {{
-            var nav = w.navigator;
-            try {{ delete nav.webdriver; }} catch(e) {{}}
-            var navProto = Object.getPrototypeOf(nav) || nav;
-            try {{ delete navProto.webdriver; }} catch(e) {{}}
-            Object.defineProperty(navProto, 'webdriver', {{
-                get: makeNative(function webdriver() {{ return false; }}, 'webdriver'),
-                set: undefined,
-                enumerable: true,
-                configurable: true
-            }});
-        }} catch(e) {{}}
-
-        // 4. Hardware specs & Platform trên Navigator.prototype
-        try {{
-            var navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
-            overrideGetter(navProto, 'hardwareConcurrency', function() {{ return {cpu}; }});
-            overrideGetter(navProto, 'deviceMemory', function() {{ return {ram}; }});
-            overrideGetter(navProto, 'maxTouchPoints', function() {{ return {touch_points}; }});
-            overrideGetter(navProto, 'platform', function() {{ return '{platform}'; }});
-            overrideGetter(navProto, 'language', function() {{ return 'en-US'; }});
-            overrideGetter(navProto, 'languages', function() {{ return ['en-US', 'en']; }});
-
-            if (w.navigator.userAgentData) {{
-                var uadProto = Object.getPrototypeOf(w.navigator.userAgentData) || w.navigator.userAgentData;
-                overrideGetter(uadProto, 'mobile', function() {{ return {is_mobile}; }});
-                overrideGetter(uadProto, 'platform', function() {{ return '{platform_title}'; }});
-            }}
-        }} catch(e) {{}}
-
-        // 5. Chuẩn hoá plugins & mimeTypes (Khớp 100% Google Chrome)
-        try {{
-            var isMobile = {is_mobile};
-            var navProto = Object.getPrototypeOf(w.navigator) || w.navigator;
-
-            if (isMobile) {{
-                var emptyPluginArray = Object.create(w.PluginArray ? w.PluginArray.prototype : Object.prototype);
-                overrideValue(emptyPluginArray, 'length', 0);
-                emptyPluginArray.item = makeNative(function(i) {{ return null; }}, 'item');
-                emptyPluginArray.namedItem = makeNative(function(n) {{ return null; }}, 'namedItem');
-                emptyPluginArray.refresh = makeNative(function() {{}}, 'refresh');
-
-                var emptyMimeTypeArray = Object.create(w.MimeTypeArray ? w.MimeTypeArray.prototype : Object.prototype);
-                overrideValue(emptyMimeTypeArray, 'length', 0);
-                emptyMimeTypeArray.item = makeNative(function(i) {{ return null; }}, 'item');
-                emptyMimeTypeArray.namedItem = makeNative(function(n) {{ return null; }}, 'namedItem');
-
-                overrideGetter(navProto, 'plugins', function() {{ return emptyPluginArray; }});
-                overrideGetter(navProto, 'mimeTypes', function() {{ return emptyMimeTypeArray; }});
-            }} else {{
-                // Desktop: 5 plugin PDF chuẩn của Google Chrome
-                var rawPluginsData = [
-                    {{ name: 'PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}, {{ type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
-                    {{ name: 'Chrome PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
-                    {{ name: 'Chromium PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
-                    {{ name: 'Microsoft Edge PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }},
-                    {{ name: 'WebKit built-in PDF', description: 'Portable Document Format', filename: 'internal-pdf-viewer', mimeTypes: [{{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }}] }}
-                ];
-
-                var pluginsList = [];
-                var mimeTypesList = [];
-
-                for (var pi = 0; pi < rawPluginsData.length; pi++) {{
-                    var pData = rawPluginsData[pi];
-                    var plugin = Object.create(w.Plugin ? w.Plugin.prototype : Object.prototype);
-                    overrideValue(plugin, 'name', pData.name);
-                    overrideValue(plugin, 'description', pData.description);
-                    overrideValue(plugin, 'filename', pData.filename);
-                    overrideValue(plugin, 'length', pData.mimeTypes.length);
-
-                    var pMimes = [];
-                    for (var mi = 0; mi < pData.mimeTypes.length; mi++) {{
-                        var mData = pData.mimeTypes[mi];
-                        var mime = Object.create(w.MimeType ? w.MimeType.prototype : Object.prototype);
-                        overrideValue(mime, 'type', mData.type);
-                        overrideValue(mime, 'suffixes', mData.suffixes);
-                        overrideValue(mime, 'description', mData.description);
-                        overrideValue(mime, 'enabledPlugin', plugin);
-                        overrideValue(plugin, mData.type, mime);
-                        overrideValue(plugin, mi, mime);
-                        pMimes.push(mime);
-                        mimeTypesList.push(mime);
-                    }}
-
-                    plugin.item = makeNative(function(idx) {{ return pMimes[idx] || null; }}, 'item');
-                    plugin.namedItem = makeNative(function(name) {{
-                        for (var k = 0; k < pMimes.length; k++) {{ if (pMimes[k].type === name) return pMimes[k]; }}
-                        return null;
-                    }}, 'namedItem');
-
-                    pluginsList.push(plugin);
-                }}
-
-                var pluginArray = Object.create(w.PluginArray ? w.PluginArray.prototype : Object.prototype);
-                overrideValue(pluginArray, 'length', pluginsList.length);
-                for (var pj = 0; pj < pluginsList.length; pj++) {{
-                    overrideValue(pluginArray, pj, pluginsList[pj]);
-                    overrideValue(pluginArray, pluginsList[pj].name, pluginsList[pj]);
-                }}
-                pluginArray.item = makeNative(function(idx) {{ return pluginsList[idx] || null; }}, 'item');
-                pluginArray.namedItem = makeNative(function(name) {{
-                    for (var k = 0; k < pluginsList.length; k++) {{ if (pluginsList[k].name === name) return pluginsList[k]; }}
-                    return null;
-                }}, 'namedItem');
-                pluginArray.refresh = makeNative(function() {{}}, 'refresh');
-
-                var mimeTypeArray = Object.create(w.MimeTypeArray ? w.MimeTypeArray.prototype : Object.prototype);
-                overrideValue(mimeTypeArray, 'length', mimeTypesList.length);
-                for (var mj = 0; mj < mimeTypesList.length; mj++) {{
-                    overrideValue(mimeTypeArray, mj, mimeTypesList[mj]);
-                    overrideValue(mimeTypeArray, mimeTypesList[mj].type, mimeTypesList[mj]);
-                }}
-                mimeTypeArray.item = makeNative(function(idx) {{ return mimeTypesList[idx] || null; }}, 'item');
-                mimeTypeArray.namedItem = makeNative(function(name) {{
-                    for (var k = 0; k < mimeTypesList.length; k++) {{ if (mimeTypesList[k].type === name) return mimeTypesList[k]; }}
-                    return null;
-                }}, 'namedItem');
-
-                overrideGetter(navProto, 'plugins', function() {{ return pluginArray; }});
-                overrideGetter(navProto, 'mimeTypes', function() {{ return mimeTypeArray; }});
-            }}
-        }} catch(e) {{}}
-
-        // 6. Cấu trúc window.chrome hoàn chỉnh (app, csi, loadTimes, runtime)
-        try {{
-            if (!w.chrome) {{
-                w.chrome = {{}};
-            }}
-            var chromeObj = w.chrome;
-
-            if (!chromeObj.app) {{
-                chromeObj.app = {{
-                    isInstalled: false,
-                    InstallState: {{ DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }},
-                    RunningState: {{ CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }},
-                    getDetails: makeNative(function() {{ return null; }}, 'getDetails'),
-                    getIsInstalled: makeNative(function() {{ return false; }}, 'getIsInstalled')
-                }};
-            }}
-
-            if (!chromeObj.csi) {{
-                chromeObj.csi = makeNative(function() {{
-                    return {{
-                        onloadT: Date.now(),
-                        startE: Date.now(),
-                        pageT: Math.floor(Math.random() * 1500) + 400,
-                        tran: 15
-                    }};
-                }}, 'csi');
-            }}
-
-            if (!chromeObj.loadTimes) {{
-                chromeObj.loadTimes = makeNative(function() {{
-                    var now = Date.now() / 1000;
-                    return {{
-                        commitLoadTime: now,
-                        connectionInfo: 'h2',
-                        finishDocumentLoadTime: now + 0.3,
-                        finishLoadTime: now + 0.6,
-                        firstPaintAfterLoadTime: 0,
-                        firstPaintTime: now + 0.2,
-                        navigationType: 'Other',
-                        npnNegotiatedProtocol: 'h2',
-                        requestTime: now - 0.8,
-                        startLoadTime: now - 0.4,
-                        wasAlternateProtocolAvailable: false,
-                        wasFetchedViaSpdy: true,
-                        wasNpnNegotiated: true
-                    }};
-                }}, 'loadTimes');
-            }}
-
-            if (!chromeObj.runtime) {{
-                chromeObj.runtime = {{
-                    connect: makeNative(function() {{}}, 'connect'),
-                    sendMessage: makeNative(function() {{}}, 'sendMessage'),
-                    id: undefined,
-                    PlatformOs: {{ MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' }},
-                    PlatformArch: {{ ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' }},
-                    PlatformNaclArch: {{ ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' }},
-                    OnInstalledReason: {{ INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' }},
-                    RequestUpdateCheckStatus: {{ THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available' }}
-                }};
-            }}
-        }} catch(e) {{}}
-
-        // 7. Đồng bộ navigator.permissions.query với Notification.permission
-        try {{
-            if (w.navigator.permissions && w.navigator.permissions.query) {{
-                var origQuery = w.navigator.permissions.query.bind(w.navigator.permissions);
-                var patchedQuery = function query(params) {{
-                    if (params && params.name === 'notifications') {{
-                        var perm = (typeof Notification !== 'undefined' && Notification.permission) ? Notification.permission : 'default';
-                        return Promise.resolve({{ state: perm, onchange: null }});
-                    }}
-                    return origQuery(params);
-                }};
-                makeNative(patchedQuery, 'query');
-                w.navigator.permissions.query = patchedQuery;
-            }}
-        }} catch(e) {{}}
-
-        // 8. Masking WebGL GPU Vendor & Renderer
-        try {{
-            var patchGL = function(proto) {{
-                if (!proto || !proto.getParameter) return;
-                var origGetParam = proto.getParameter;
-                var patchedGetParam = function getParameter(param) {{
-                    if (param === 37445) return '{vendor}';
-                    if (param === 37446) return '{renderer}';
-                    if (param === 7936) return 'WebKit';
-                    if (param === 7937) return 'WebKit WebGL';
-                    return origGetParam.apply(this, arguments);
-                }};
-                makeNative(patchedGetParam, 'getParameter');
-                proto.getParameter = patchedGetParam;
-            }};
-            if (w.WebGLRenderingContext) patchGL(w.WebGLRenderingContext.prototype);
-            if (w.WebGL2RenderingContext) patchGL(w.WebGL2RenderingContext.prototype);
-        }} catch(e) {{}}
-
-        // 9. WebRTC IP Leak Protection (Khử rò rỉ IP thật qua STUN)
-        try {{
-            var OrigRTC = w.RTCPeerConnection || w.webkitRTCPeerConnection;
-            if (OrigRTC) {{
-                var PatchedRTC = function RTCPeerConnection(config, constraints) {{
-                    if (config && config.iceServers) {{
-                        config.iceServers = config.iceServers.filter(function(s) {{
-                            var urls = s.urls || s.url || [];
-                            if (typeof urls === 'string') urls = [urls];
-                            for (var ui = 0; ui < urls.length; ui++) {{
-                                if (typeof urls[ui] === 'string' && urls[ui].toLowerCase().indexOf('stun:') === 0) {{
-                                    return false;
-                                }}
-                            }}
-                            return true;
-                        }});
-                    }}
-                    return constraints ? new OrigRTC(config, constraints) : new OrigRTC(config);
-                }};
-                PatchedRTC.prototype = OrigRTC.prototype;
-                makeNative(PatchedRTC, 'RTCPeerConnection');
-                w.RTCPeerConnection = PatchedRTC;
-                if (w.webkitRTCPeerConnection) w.webkitRTCPeerConnection = PatchedRTC;
-            }}
-        }} catch(e) {{}}
-    }}
-
-    // Áp dụng bảo vệ cho window chính
-    patchWindowContext(window);
-
-    // Kế thừa bảo vệ cho tất cả iframe
-    try {{
-        var origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
-        if (origContentWindow && origContentWindow.get) {{
-            var cwGetter = function() {{
-                var win = origContentWindow.get.call(this);
-                if (win) patchWindowContext(win);
-                return win;
-            }};
-            makeNative(cwGetter, 'get contentWindow');
-            Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {{
-                get: cwGetter,
-                configurable: true
-            }});
-        }}
-    }} catch(e) {{}}
-}})();"#,
-        p_id = p_id,
-        cpu = cpu,
-        ram = ram,
-        renderer = renderer,
-        vendor = vendor,
-        platform = platform,
-        platform_title = platform_title,
-        is_mobile = is_mobile,
-        touch_points = touch_points,
-    )
+    TEMPLATE
+        .replace("__PID__", &p_id.to_string())
+        .replace("__VENDOR__", &serde_json::to_string(vendor).unwrap_or_else(|_| "\"\"".to_string()))
+        .replace("__RENDERER__", &serde_json::to_string(renderer).unwrap_or_else(|_| "\"\"".to_string()))
+        .replace("__CSEED__", &canvas_seed.to_string())
+        .replace("__ASEED__", &audio_seed.to_string())
 }
 
 /// Dọn dẹp tiến trình Chrome cũ và lockfile của profile trước khi khởi chạy
@@ -861,7 +633,7 @@ fn cleanup_profile_process_and_locks(profile_id: usize, user_data_dir: &std::pat
             "-NoProfile",
             "-Command",
             &format!(
-                "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" | Where-Object {{ $_.CommandLine -like '*{}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
+                "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" | Where-Object {{ $_.CommandLine -match '{}(?!\\d)' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}",
                 dir_name
             ),
         ])
@@ -894,21 +666,11 @@ pub fn get_profile_backup_dir() -> PathBuf {
     fallback
 }
 
-/// Lấy thư mục lưu trữ profile thực tế (ưu tiên browser_profiles_data persistent, fallback sang temp_dir)
+/// Lấy thư mục lưu trữ profile thực tế (CỐ ĐỊNH 100% trên D:, tuyệt đối không fallback sang Temp)
 pub fn get_profile_data_dir(profile_id: usize) -> PathBuf {
-    let p1 = PathBuf::from(format!(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles_data\mun_profile_{}", profile_id));
-    if p1.exists() {
-        return p1;
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p2 = parent.join("browser_profiles_data").join(format!("mun_profile_{}", profile_id));
-            if p2.exists() {
-                return p2;
-            }
-        }
-    }
-    std::env::temp_dir().join(format!("mun_profile_{}", profile_id))
+    let p = PathBuf::from(format!(r"D:\Workspace\Python\QHTDautomation\MunAutomationDesktop\browser_profiles_data\mun_profile_{}", profile_id));
+    let _ = std::fs::create_dir_all(&p);
+    p
 }
 
 /// Helper duyệt tất cả các file trong thư mục con
@@ -1040,10 +802,6 @@ pub fn stop_cdp_profile(profile_id: usize) {
     info!("🛑 Dừng tiến trình Chrome của Profile #{}", profile_id);
     let user_data_dir = get_profile_data_dir(profile_id);
     cleanup_profile_process_and_locks(profile_id, &user_data_dir);
-
-    // Tự động sao lưu phiên đăng nhập (Thin Profile Backup) khi trình duyệt tắt
-    let _ = backup_thin_profile(profile_id);
-
     mark_profile_inactive(profile_id);
 }
 
@@ -1371,7 +1129,7 @@ pub async fn launch_cdp_profile_with_bounds(
         .ok_or_else(|| "Không tìm thấy file thực thi trình duyệt (chrome.exe hoặc qhtd-browser.exe)".to_string())?;
 
     let _is_native_engine = engine_label.contains("Native C++");
-    let port = get_free_port(9222 + (profile.id as u16 % 500));
+    let port = allocate_profile_port(profile.id);
     
     // Thư mục dữ liệu riêng biệt cho từng profile
     let user_data_dir = get_profile_data_dir(profile.id);
@@ -1380,12 +1138,7 @@ pub async fn launch_cdp_profile_with_bounds(
     // Xóa triệt để zombie chrome và lockfile của profile này
     cleanup_profile_process_and_locks(profile.id, &user_data_dir);
 
-    // Tự động phục hồi Thin Profile (nếu có bản sao lưu trước đó) - Đảm bảo Zero Login
-    if let Ok(restored) = restore_thin_profile(profile.id) {
-        if restored {
-            info!("⚡ Đã nạp thành công Thin Profile (Zero-Login) cho Profile #{}", profile.id);
-        }
-    }
+    // Tuyệt đối không phục hồi zip cũ để đảm bảo Profile luôn sạch 100% khi khởi chạy mới
 
     let start_url = if profile.profile_start_url.trim().is_empty() {
         "https://www.tiktok.com".to_string()
@@ -1444,9 +1197,9 @@ pub async fn launch_cdp_profile_with_bounds(
         .arg(format!("--window-position={},{}", offset_x, offset_y))
         .arg("--lang=en-US,en")
         .arg("--new-window")
-        .arg(&start_url);
+        .arg("about:blank");
 
-    if has_custom_ua {
+    if has_custom_ua && is_mobile {
         cmd.arg(format!("--user-agent={}", profile.profile_user_agent.trim()));
     }
 
@@ -1460,12 +1213,18 @@ pub async fn launch_cdp_profile_with_bounds(
     let renderer = profile
         .gpu_renderer
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
+        .filter(|s| {
+            let t = s.trim();
+            !t.is_empty() && t != "None" && t != "null" && t != "undefined"
+        })
         .unwrap_or(default_renderer);
     let vendor = profile
         .gpu_vendor
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
+        .filter(|s| {
+            let t = s.trim();
+            !t.is_empty() && t != "None" && t != "null" && t != "undefined"
+        })
         .unwrap_or(default_vendor);
 
     let cpu = if profile.profile_cpu == 0 {
@@ -1510,8 +1269,7 @@ pub async fn launch_cdp_profile_with_bounds(
                 ).await {
                     Ok((local_port, tx)) => {
                         info!("🚀 Đã kích hoạt Local SOCKS5 Bridge 127.0.0.1:{} -> {}:{} cho Profile #{}", local_port, parsed_proxy.host, parsed_proxy.port, profile.id);
-                        cmd.arg(format!("--proxy-server=socks5://127.0.0.1:{}", local_port))
-                            .arg("--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1");
+                        cmd.arg(format!("--proxy-server=socks5://127.0.0.1:{}", local_port));
                         proxy_bridge_shutdown = Some(tx);
                     }
                     Err(e) => {
@@ -1604,12 +1362,25 @@ pub async fn launch_cdp_profile_with_bounds(
     // Theo dõi tiến trình Chrome nền, khi tắt thì cập nhật trạng thái và giải phóng bridge
     std::thread::spawn(move || {
         let _ = child.wait();
+        // Chrome launcher có thể thoát sớm (hand-off sang process thật). Chỉ coi là đã đóng khi
+        // cổng DevTools thật sự không còn phản hồi (2 lần liên tiếp).
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut misses = 0;
+        while misses < 2 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok() {
+                misses = 0;
+            } else {
+                misses += 1;
+            }
+        }
         info!("🛑 Cửa sổ Chrome của Profile #{} đã đóng.", p_id);
         mark_profile_inactive(p_id);
         if let Some(tx) = proxy_bridge_shutdown {
             let _ = tx.send(());
         }
     });
+
 
     // Chờ Chrome mở cổng DevTools
     let client = reqwest::Client::builder()
@@ -1665,7 +1436,7 @@ pub async fn launch_cdp_profile_with_bounds(
         "method": "Target.setAutoAttach",
         "params": {
             "autoAttach": true,
-            "waitForDebuggerOnStart": false,
+            "waitForDebuggerOnStart": true,
             "flatten": true
         }
     });
@@ -1675,44 +1446,44 @@ pub async fn launch_cdp_profile_with_bounds(
     info!("📍 [Profile #{}] Proxy Geo: {} ({}, {}) [Locale: {}]", profile.id, geo_info.timezone, geo_info.latitude, geo_info.longitude, geo_info.locale);
 
     let stealth_js = generate_stealth_script(profile);
+    let hw_cpu: u32 = (cpu as u32).clamp(2, 32);
     let profile_id = profile.id;
 
-    let custom_ua_cmds = if has_custom_ua {
+    let custom_ua_cmds = if has_custom_ua && is_mobile {
         let (major_ver, full_ver) = extract_chrome_version(&profile.profile_user_agent);
         let platform_str = if profile.profile_os.eq_ignore_ascii_case("iOS") || profile.profile_user_agent.contains("iPhone") {
             "iPhone"
-        } else if is_mobile {
+        } else {
             "Linux armv8l"
-        } else {
-            "Win32"
         };
-        let platform_title = if is_mobile {
-            if platform_str == "iPhone" { "iOS" } else { "Android" }
-        } else {
-            "Windows"
-        };
-        let model_str = if is_mobile { "Pixel 8 Pro" } else { "" };
-        let platform_ver_str = if is_mobile { "14.0.0" } else { "15.0.0" };
+        let platform_title = if platform_str == "iPhone" { "iOS" } else { "Android" };
+        let model_str = "Pixel 8 Pro";
+        let platform_ver_str = "14.0.0";
 
         Some((
             json!({
                 "method": "Emulation.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "en-US,en;q=0.9",
+                    "acceptLanguage": "en-US,en",
                     "platform": platform_str,
                     "userAgentMetadata": {
                         "brands": [
                             {"brand": "Chromium", "version": major_ver},
-                            {"brand": "Not:A-Brand", "version": "24"},
-                            {"brand": "Google Chrome", "version": major_ver}
+                            {"brand": "Google Chrome", "version": major_ver},
+                            {"brand": "Not A(Brand", "version": "99"}
+                        ],
+                        "fullVersionList": [
+                            {"brand": "Chromium", "version": full_ver},
+                            {"brand": "Google Chrome", "version": full_ver},
+                            {"brand": "Not A(Brand", "version": "99.0.0.0"}
                         ],
                         "fullVersion": full_ver,
                         "platform": platform_title,
                         "platformVersion": platform_ver_str,
-                        "architecture": if is_mobile { "arm" } else { "x86" },
+                        "architecture": "arm",
                         "model": model_str,
-                        "mobile": is_mobile,
+                        "mobile": true,
                         "bitness": "64",
                         "wow64": false
                     }
@@ -1722,7 +1493,7 @@ pub async fn launch_cdp_profile_with_bounds(
                 "method": "Network.setUserAgentOverride",
                 "params": {
                     "userAgent": profile.profile_user_agent,
-                    "acceptLanguage": "en-US,en;q=0.9",
+                    "acceptLanguage": "en-US,en",
                     "platform": platform_str
                 }
             })
@@ -1832,20 +1603,30 @@ pub async fn launch_cdp_profile_with_bounds(
                                     let _ = tx.send(Message::Text(c2.to_string()));
                                 }
 
-                                // 2a. Đồng bộ Client Hints HTTP Headers qua Network.setExtraHTTPHeaders
+                                // 2a. Client Hints: desktop giữ nguyên header native của Chrome (thứ tự header chuẩn);
+                                // chỉ mobile mới cần ép sec-ch-ua-mobile/platform.
+                                if is_mobile {
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Network.setExtraHTTPHeaders",
+                                        "params": {
+                                            "headers": {
+                                                "sec-ch-ua-mobile": "?1",
+                                                "sec-ch-ua-platform": "\"Android\""
+                                            }
+                                        }
+                                    }).to_string()));
+                                }
+
+                                // 2a'. hardwareConcurrency qua CDP native (phủ cả Worker/ServiceWorker, không để lại dấu vết JS)
                                 cmd_id += 1;
-                                let platform_header = if is_mobile { "\"Android\"" } else { "\"Windows\"" };
-                                let mobile_header = if is_mobile { "?1" } else { "?0" };
                                 let _ = tx.send(Message::Text(json!({
                                     "id": cmd_id,
                                     "sessionId": session_id,
-                                    "method": "Network.setExtraHTTPHeaders",
-                                    "params": {
-                                        "headers": {
-                                            "sec-ch-ua-mobile": mobile_header,
-                                            "sec-ch-ua-platform": platform_header
-                                        }
-                                    }
+                                    "method": "Emulation.setHardwareConcurrencyOverride",
+                                    "params": { "hardwareConcurrency": hw_cpu }
                                 }).to_string()));
 
                                 // 2b. Mô phỏng Mobile Phone Device Metrics và Touch nếu là profile phone (Vừa khít khung cửa sổ App Mode)
@@ -1878,27 +1659,19 @@ pub async fn launch_cdp_profile_with_bounds(
                                     }).to_string()));
                                 }
 
-                                // 3. Tiêm Clean Stealth Script cho MỌI lần chuyển trang trong frame/tab này
-                                cmd_id += 1;
-                                let _ = tx.send(Message::Text(json!({
-                                    "id": cmd_id,
-                                    "sessionId": session_id,
-                                    "method": "Page.addScriptToEvaluateOnNewDocument",
-                                    "params": {
-                                        "source": stealth_js
-                                    }
-                                }).to_string()));
+                                // 3. Tiêm Clean Stealth Script nếu có (mặc định để trống để giữ Chrome Pure Native sạch 100%)
+                                if !stealth_js.trim().is_empty() {
+                                    cmd_id += 1;
+                                    let _ = tx.send(Message::Text(json!({
+                                        "id": cmd_id,
+                                        "sessionId": session_id,
+                                        "method": "Page.addScriptToEvaluateOnNewDocument",
+                                        "params": {
+                                            "source": stealth_js
+                                        }
+                                    }).to_string()));
 
-                                // 4. Đánh giá ngay lập tức trên document hiện tại (đảm bảo iframe có dữ liệu tức thì)
-                                cmd_id += 1;
-                                let _ = tx.send(Message::Text(json!({
-                                    "id": cmd_id,
-                                    "sessionId": session_id,
-                                    "method": "Runtime.evaluate",
-                                    "params": {
-                                        "expression": stealth_js
-                                    }
-                                }).to_string()));
+                                }
 
                                 // 5. Nếu là tab ban đầu của window, điều hướng tới start_url và bringToFront (không áp dụng cho iframe nhúng)
                                 if is_page && is_first_tab {
@@ -1931,6 +1704,14 @@ pub async fn launch_cdp_profile_with_bounds(
 
                                 let type_label = if is_page { "Tab" } else { "Iframe (OOPIF)" };
                                 info!("🛡️ [Profile #{}] Đã tự động kích hoạt Stealth Shield cho {} mới (Session: {})", profile_id, type_label, session_id);
+                            } else if !session_id.is_empty() {
+                                // Worker / service worker / target khác: phải resume vì đang chờ debugger
+                                cmd_id += 1;
+                                let _ = tx.send(Message::Text(json!({
+                                    "id": cmd_id,
+                                    "sessionId": session_id,
+                                    "method": "Runtime.runIfWaitingForDebugger"
+                                }).to_string()));
                             }
                         }
                     }
@@ -2158,10 +1939,8 @@ async fn check_and_handle_tiktok_login_cdp(
                     const combined = (bodyText + ' ' + toastText).toLowerCase();
 
                     const isRateLimit = combined.includes('maximum number of attempts reached') || 
-                                        combined.includes('try again later') || 
                                         combined.includes('too many attempts') ||
-                                        combined.includes('số lần thử tối đa') ||
-                                        combined.includes('vui lòng thử lại sau');
+                                        combined.includes('số lần thử tối đa');
 
                     if (isRateLimit) {{
                         clearInterval(timer);

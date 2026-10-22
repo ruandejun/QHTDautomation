@@ -160,7 +160,17 @@ impl AdbManager {
         if serials.is_empty() {
             return Vec::new();
         }
-        serials.into_iter().map(|(s, st)| self.get_device_detail(&s, &st)).collect()
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (s, st) in &serials {
+                let s_clone = s.clone();
+                let st_clone = st.clone();
+                handles.push(scope.spawn(move || {
+                    self.get_device_detail(&s_clone, &st_clone)
+                }));
+            }
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        })
     }
 
     pub fn get_prop(&self, serial: &str, prop: &str) -> Option<String> {

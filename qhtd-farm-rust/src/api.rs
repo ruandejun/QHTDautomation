@@ -17,6 +17,7 @@ pub struct AppState {
     pub stream: Arc<StreamManager>,
     pub nurture: Arc<TikTokNurtureEngine>,
     pub browser_nurture: Arc<crate::browser_nurture::BrowserNurtureEngine>,
+    pub farm_container: Arc<crate::farm_container::FarmContainerEngine>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +123,25 @@ pub fn create_router(state: AppState) -> Router {
         // ── Android Farm APIs ──
         .route("/api/devices", get(list_devices_handler))
         .route("/api/devices/install-tiktok", post(install_tiktok_all_handler))
+        .route("/api/farm/auto-reg-tiktok", post(farm_auto_reg_tiktok_handler))
+        .route("/api/farm/auto-reg-tiktok/status", get(farm_auto_reg_tiktok_status_handler))
+        .route("/api/farm/factory-pipeline/start", post(factory_pipeline_start_handler))
+        .route("/api/farm/factory-pipeline/stop", post(factory_pipeline_stop_handler))
+        .route("/api/farm/factory-pipeline/status", get(factory_pipeline_status_handler))
+        .route("/api/farm/container/fresh", post(farm_container_fresh_handler))
+        .route("/api/farm/container/export", post(farm_container_export_handler))
+        .route("/api/farm/container/switch", post(farm_container_switch_handler))
+        .route("/api/farm/container/list", get(farm_container_list_handler))
+        .route("/api/farm/xml-login/start", post(xml_login_start_handler))
+        .route("/api/farm/xml-login/status", get(xml_login_status_handler))
+        .route("/api/farm/xml-login/stop", post(xml_login_stop_handler))
+        .route("/api/farm/xml-signup/start", post(xml_signup_start_handler))
+        .route("/api/farm/xml-signup/status", get(xml_signup_status_handler))
+        .route("/api/farm/xml-signup/stop", post(xml_signup_stop_handler))
+        .route("/api/farm/change-info-all", post(change_info_all_handler))
+        .route("/api/farm/reset-all", post(reset_all_farm_handler))
+        .route("/api/farm/soft-reboot-all", post(soft_reboot_all_handler))
+        .route("/api/farm/reboot-all", post(reboot_all_handler))
         .route("/api/farm/optimize-resolution", post(optimize_resolution_handler))
         .route("/api/farm/launch-scrcpy", post(launch_scrcpy_handler))
         .route("/api/devices/:serial/action", post(device_action_handler))
@@ -132,6 +152,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/nurture/start", post(start_nurture_handler))
         .route("/api/nurture/stop", post(stop_nurture_handler))
         .route("/api/nurture/status", get(nurture_status_handler))
+        // ── Telegram Notification APIs ──
+        .route("/api/telegram/status", get(telegram_status_handler))
+        .route("/api/telegram/link", post(telegram_link_client_handler))
+        .route("/api/telegram/test", post(telegram_test_notify_handler))
         .route("/ws/stream/:serial", get(ws_stream_handler))
         // ── Mun Anti Browser APIs ──
         .route("/api/browser/profiles", get(list_browser_profiles_handler))
@@ -145,6 +169,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/browser/active", get(get_active_browser_profiles_handler))
         .route("/api/browser/core-status", get(browser_core_status_handler))
         .route("/api/browser/profiles/:id", delete(delete_browser_profile_handler))
+        .route("/api/browser/profiles/:id/clear", post(clear_browser_profile_cache_handler).get(clear_browser_profile_cache_handler))
         .route("/api/browser/tiktok/rate-limit-signal", post(tiktok_rate_limit_signal_handler))
         .route("/api/browser/tiktok/login-success-signal", post(tiktok_login_success_signal_handler))
         // ── Mun Anti Browser TikTok Nurture & C69 APIs ──
@@ -207,6 +232,346 @@ async fn list_devices_handler(State(state): State<AppState>) -> Json<Vec<DeviceI
         adb.get_all_devices()
     }).await.unwrap_or_default();
     Json(devices)
+}
+
+// ── Native XML Login (100% Rust) ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct XmlLoginAccountIn {
+    pub id: Option<u64>,
+    pub username: String,
+    pub password: String,
+    #[serde(default, alias = "secret")]
+    pub two_factor_auth: Option<String>,
+    #[serde(default)]
+    pub email_id: Option<u64>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub client: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct XmlLoginStartPayload {
+    /// ID tài khoản trên C69 (tool tự lấy username/password/2FA từ C69)
+    pub account_ids: Option<Vec<u64>>,
+    /// Hoặc truyền thẳng tài khoản
+    pub accounts: Option<Vec<XmlLoginAccountIn>>,
+    /// Giới hạn danh sách máy (mặc định: tất cả máy online)
+    pub serials: Option<Vec<String>>,
+    /// Đăng xuất nick cũ nếu máy đang login nick khác (mặc định true)
+    pub force_logout: Option<bool>,
+    /// Client sở hữu tài khoản (để gửi thông báo Telegram)
+    #[serde(default)]
+    pub client: Option<String>,
+}
+
+async fn xml_login_start_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<XmlLoginStartPayload>,
+) -> Json<serde_json::Value> {
+    let mut accounts: Vec<crate::xml_login::LoginAccount> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for a in payload.accounts.unwrap_or_default() {
+        accounts.push(crate::xml_login::LoginAccount {
+            id: a.id,
+            username: a.username.trim().to_string(),
+            password: a.password,
+            secret: a.two_factor_auth.unwrap_or_default(),
+            email_id: a.email_id,
+            email: a.email,
+            client: a.client.or_else(|| payload.client.clone()),
+        });
+    }
+    for id in payload.account_ids.unwrap_or_default() {
+        match crate::browser_nurture::fetch_c69_account_by_id(id).await {
+            Ok(acc) => match acc.password.clone().filter(|p| !p.is_empty()) {
+                Some(pwd) => accounts.push(crate::xml_login::LoginAccount {
+                    id: Some(acc.id),
+                    username: acc.username.trim().to_string(),
+                    password: pwd,
+                    secret: acc.two_factor_auth.clone().unwrap_or_default(),
+                    email_id: acc.accounts_emails,
+                    email: acc.email,
+                    client: acc.created_by.clone().or_else(|| payload.client.clone()),
+                }),
+                None => errors.push(format!("Tài khoản C69 #{} ({}) không có mật khẩu", id, acc.username)),
+            },
+            Err(e) => errors.push(format!("C69 #{}: {}", id, e)),
+        }
+    }
+
+    let adb = state.adb.clone();
+    let serials: Vec<String> = match payload.serials.filter(|s| !s.is_empty()) {
+        Some(s) => s,
+        None => tokio::task::spawn_blocking(move || {
+            adb.list_device_serials()
+                .into_iter()
+                .filter(|(_, st)| st == "device")
+                .map(|(s, _)| s)
+                .collect()
+        })
+        .await
+        .unwrap_or_default(),
+    };
+
+    let adb_path = state.adb.get_adb_path().to_path_buf();
+    let force_logout = payload.force_logout.unwrap_or(true);
+    let usernames: Vec<String> = accounts.iter().map(|a| a.username.clone()).collect();
+    match crate::xml_login::start(adb_path, serials.clone(), accounts, force_logout) {
+        Ok(n) => Json(serde_json::json!({
+            "success": true,
+            "devices": serials.len(),
+            "accounts": usernames,
+            "will_login": n,
+            "warnings": errors,
+            "message": format!("Đang login đồng loạt {} máy bằng Native XML (Rust)...", n)
+        })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e, "warnings": errors })),
+    }
+}
+
+async fn xml_login_status_handler() -> Json<serde_json::Value> {
+    let items = crate::xml_login::snapshot();
+    let (total_q, succ_q, fail_q, skip_q, rem_q) = crate::xml_login::queue_stats();
+    let done = items.iter().filter(|s| s.state == "success").count();
+    let failed = items.iter().filter(|s| s.state == "failed").count();
+    Json(serde_json::json!({
+        "running": crate::xml_login::is_running(),
+        "success": if total_q > 0 { succ_q } else { done },
+        "failed": if total_q > 0 { fail_q } else { failed },
+        "skipped_manual": skip_q,
+        "queue_total": total_q,
+        "queue_remaining": rem_q,
+        "total": items.len(),
+        "devices": items,
+    }))
+}
+
+async fn xml_login_stop_handler() -> Json<serde_json::Value> {
+    crate::xml_login::stop();
+    Json(serde_json::json!({ "success": true }))
+}
+
+#[derive(Debug, Deserialize)]
+struct XmlSignupStartPayload {
+    /// Danh sách email cụ thể; bỏ trống thì tự chọn từ C69 (chưa dùng TikTok + đọc được hòm thư).
+    #[serde(default)]
+    emails: Vec<crate::xml_login::signup::SignupSpec>,
+    /// Số email tự chọn từ C69 khi `emails` rỗng (mặc định = số máy).
+    #[serde(default)]
+    auto_count: Option<usize>,
+    #[serde(default)]
+    serials: Option<Vec<String>>,
+    #[serde(default)]
+    client: Option<String>,
+}
+
+async fn xml_signup_start_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<XmlSignupStartPayload>,
+) -> Json<serde_json::Value> {
+    let adb = state.adb.clone();
+    let serials: Vec<String> = match payload.serials.filter(|s| !s.is_empty()) {
+        Some(s) => s,
+        None => tokio::task::spawn_blocking(move || {
+            adb.list_device_serials()
+                .into_iter()
+                .filter(|(_, st)| st == "device")
+                .map(|(s, _)| s)
+                .collect()
+        })
+        .await
+        .unwrap_or_default(),
+    };
+    let mut specs = payload.emails;
+    if specs.is_empty() {
+        let n = payload.auto_count.unwrap_or(serials.len()).max(1);
+        let picked = tokio::task::spawn_blocking(move || crate::xml_login::signup::pick_unused_emails(n))
+            .await
+            .unwrap_or_default();
+        for (id, email) in picked {
+            specs.push(crate::xml_login::signup::SignupSpec {
+                email,
+                email_id: Some(id),
+                password: String::new(),
+                client: None,
+            });
+        }
+    }
+    if let Some(c) = payload.client {
+        for s in specs.iter_mut() {
+            if s.client.is_none() {
+                s.client = Some(c.clone());
+            }
+        }
+    }
+    let emails: Vec<String> = specs.iter().map(|s| s.email.clone()).collect();
+    let adb_path = state.adb.get_adb_path().to_path_buf();
+    match crate::xml_login::signup::start_signup(adb_path, serials.clone(), specs) {
+        Ok(n) => Json(serde_json::json!({
+            "success": true,
+            "devices": serials.len(),
+            "emails": emails,
+            "queued": n,
+            "message": format!("Đang đăng ký TikTok {} email bằng Native XML (Rust)...", n)
+        })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
+}
+
+async fn xml_signup_status_handler() -> Json<serde_json::Value> {
+    let items = crate::xml_login::signup::signup_snapshot();
+    Json(serde_json::json!({
+        "running": crate::xml_login::signup::signup_is_running(),
+        "success": items.iter().filter(|s| s.state == "success").count(),
+        "failed": items.iter().filter(|s| s.state == "failed").count(),
+        "total": items.len(),
+        "devices": items,
+    }))
+}
+
+async fn xml_signup_stop_handler() -> Json<serde_json::Value> {
+    crate::xml_login::signup::signup_stop();
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn telegram_status_handler() -> Json<serde_json::Value> {
+    let clients = crate::telegram_notifier::get_linked_clients();
+    Json(serde_json::json!({
+        "success": true,
+        "bot_username": "C69autobot",
+        "bot_link": "https://t.me/C69autobot",
+        "clients": clients,
+        "total_linked": clients.len()
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct TelegramLinkPayload {
+    pub client_name: String,
+    pub chat_id: i64,
+}
+
+async fn telegram_link_client_handler(Json(p): Json<TelegramLinkPayload>) -> Json<serde_json::Value> {
+    crate::telegram_notifier::link_client_chat_id(&p.client_name, p.chat_id, None, None);
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã liên kết client '{}' với Telegram ID {}", p.client_name, p.chat_id)
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct TelegramTestPayload {
+    pub client_name: String,
+    pub message: Option<String>,
+}
+
+async fn telegram_test_notify_handler(Json(p): Json<TelegramTestPayload>) -> Json<serde_json::Value> {
+    let msg = p.message.unwrap_or_else(|| "Tin nhắn kiểm tra kết nối từ tool C69 Phone Farm!".into());
+    crate::telegram_notifier::notify_client(&p.client_name, "Kiểm Tra Kết Nối Telegram", &msg);
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã gửi tin nhắn test cho client '{}'", p.client_name)
+    }))
+}
+
+async fn change_info_all_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let adb = state.adb.clone();
+    let serials: Vec<String> = adb.list_device_serials().into_iter().filter(|(_, st)| st == "device").map(|(s, _)| s).collect();
+    let count = serials.len();
+
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("python");
+        cmd.arg("D:/Workspace/Python/QHTDautomation/randomize_all_farm_identities.py");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let _ = cmd.spawn();
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đang kích hoạt đổi info phần cứng song song cho toàn bộ {} thiết bị phone farm...", count)
+    }))
+}
+
+async fn reset_all_farm_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let adb = state.adb.clone();
+    let serials: Vec<String> = adb.list_device_serials().into_iter().filter(|(_, st)| st == "device").map(|(s, _)| s).collect();
+    let count = serials.len();
+
+    tokio::task::spawn_blocking(move || {
+        let adb_path = adb.get_adb_path();
+        for s in &serials {
+            let mut cmd = std::process::Command::new(adb_path);
+            cmd.args(["-s", s, "shell", "am force-stop com.zhiliaoapp.musically; am force-stop com.minsoftware.maxchanger; pm clear com.zhiliaoapp.musically; rm -rf /sdcard/Android/data/com.zhiliaoapp.musically/* /sdcard/tiktok_backups/*; input keyevent 3"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            let _ = cmd.output();
+        }
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã Reset sạch toàn bộ ứng dụng và dữ liệu trên {} thiết bị phone farm!", count)
+    }))
+}
+
+async fn soft_reboot_all_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let adb = state.adb.clone();
+    let serials: Vec<String> = adb.list_device_serials().into_iter().filter(|(_, st)| st == "device").map(|(s, _)| s).collect();
+    let count = serials.len();
+
+    tokio::task::spawn_blocking(move || {
+        let adb_path = adb.get_adb_path();
+        for s in &serials {
+            let mut cmd = std::process::Command::new(adb_path);
+            cmd.args(["-s", s, "shell", "su -c 'kill -9 $(pidof zygote64)'"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            let _ = cmd.output();
+        }
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("⚡ Đang Soft-Reboot (khởi động lại Android Framework 5s) cho toàn bộ {} thiết bị mà không mất info!", count)
+    }))
+}
+
+async fn reboot_all_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let adb = state.adb.clone();
+    let serials: Vec<String> = adb.list_device_serials().into_iter().filter(|(_, st)| st == "device").map(|(s, _)| s).collect();
+    let count = serials.len();
+
+    tokio::task::spawn_blocking(move || {
+        let adb_path = adb.get_adb_path();
+        for s in &serials {
+            let mut cmd = std::process::Command::new(adb_path);
+            cmd.args(["-s", s, "reboot"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            let _ = cmd.output();
+        }
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("🔄 Đang khởi động lại phần cứng (Full Reboot 45s) cho toàn bộ {} thiết bị phone farm!", count)
+    }))
 }
 
 async fn optimize_resolution_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -276,6 +641,172 @@ async fn install_tiktok_all_handler(State(state): State<AppState>) -> Json<serde
     }))
 }
 
+#[derive(Deserialize)]
+pub struct FactoryPipelineStartPayload {
+    pub count: Option<usize>,
+}
+
+async fn factory_pipeline_start_handler(
+    Json(payload): Json<FactoryPipelineStartPayload>,
+) -> Json<serde_json::Value> {
+    let count = payload.count.unwrap_or(10);
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("python");
+        cmd.arg("D:/Workspace/Python/QHTDautomation/factory_pipeline_engine.py");
+        cmd.arg(count.to_string());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let _ = cmd.spawn();
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đang khởi động Nhà máy tự động tạo & nuôi {} tài khoản TikTok US trên dàn Phone Farm...", count)
+    }))
+}
+
+async fn factory_pipeline_stop_handler() -> Json<serde_json::Value> {
+    tokio::task::spawn_blocking(move || {
+        let progress_path = "D:/Workspace/Python/QHTDautomation/factory_pipeline_progress.json";
+        if let Ok(mut f) = std::fs::File::create(progress_path) {
+            use std::io::Write;
+            let _ = write!(f, "{{\"status\": \"stopped\", \"message\": \"Đã nhận lệnh Dừng từ người dùng\"}}");
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("powershell")
+                .args(&["-NoProfile", "-Command", "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*factory_pipeline*' -or $_.CommandLine -like '*run_farm_auto_reg*' -or $_.CommandLine -like '*create_batch*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"])
+                .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("pkill")
+                .args(&["-f", "factory_pipeline_engine"])
+                .output();
+        }
+    });
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": "🛑 ĐÃ DỪNG THÀNH CÔNG toàn bộ tiến trình Nhà Máy Tạo & Nuôi Nick!"
+    }))
+}
+
+async fn factory_pipeline_status_handler() -> Json<serde_json::Value> {
+    let p = std::path::Path::new("D:/Workspace/Python/QHTDautomation/factory_pipeline_progress.json");
+    if p.exists() {
+        if let Ok(content) = std::fs::read_to_string(p) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                return Json(v);
+            }
+        }
+    }
+    Json(serde_json::json!({
+        "status": "idle",
+        "completed": 0,
+        "target_count": 0
+    }))
+}
+
+async fn farm_auto_reg_tiktok_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    // 100% Rust: không còn chạy run_farm_auto_reg_all.py. Tự chọn email C69 chưa dùng TikTok rồi đăng ký bằng XML.
+    let adb = state.adb.clone();
+    let serials: Vec<String> = tokio::task::spawn_blocking(move || {
+        adb.list_device_serials()
+            .into_iter()
+            .filter(|(_, st)| st == "device")
+            .map(|(s, _)| s)
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    let n = serials.len().max(1);
+    let picked = tokio::task::spawn_blocking(move || crate::xml_login::signup::pick_unused_emails(n))
+        .await
+        .unwrap_or_default();
+    let specs: Vec<crate::xml_login::signup::SignupSpec> = picked
+        .into_iter()
+        .map(|(id, email)| crate::xml_login::signup::SignupSpec { email, email_id: Some(id), password: String::new(), client: None })
+        .collect();
+    let adb_path = state.adb.get_adb_path().to_path_buf();
+    match crate::xml_login::signup::start_signup(adb_path, serials, specs) {
+        Ok(n) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Đang tự động tạo {} tài khoản TikTok bằng Native XML (Rust). Theo dõi: /api/farm/xml-signup/status", n)
+        })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
+}
+
+async fn farm_auto_reg_tiktok_status_handler() -> Json<serde_json::Value> {
+    let items = crate::xml_login::signup::signup_snapshot();
+    let done = items.iter().filter(|s| s.state == "success").count();
+    let msg = if items.is_empty() {
+        "Sẵn sàng khởi chạy".to_string()
+    } else {
+        items.iter().map(|s| format!("{}: {} {}", s.serial, s.step, s.message)).collect::<Vec<_>>().join(" | ")
+    };
+    Json(serde_json::json!({
+        "is_running": crate::xml_login::signup::signup_is_running(),
+        "current_index": done,
+        "total_devices": items.len(),
+        "status_message": msg,
+        "results": items,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct FarmContainerActionPayload {
+    pub serial: String,
+    pub profile_name: Option<String>,
+}
+
+async fn farm_container_fresh_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<FarmContainerActionPayload>,
+) -> Json<serde_json::Value> {
+    match state.farm_container.make_device_fresh(&payload.serial).await {
+        Ok(meta) => Json(serde_json::json!({ "success": true, "meta": meta })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
+}
+
+async fn farm_container_export_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<FarmContainerActionPayload>,
+) -> Json<serde_json::Value> {
+    let name = payload.profile_name.unwrap_or_else(|| format!("profile_{}", chrono::Local::now().format("%Y%m%d_%H%M%S")));
+    match state.farm_container.export_profile(&payload.serial, &name).await {
+        Ok(meta) => Json(serde_json::json!({ "success": true, "meta": meta })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
+}
+
+async fn farm_container_switch_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<FarmContainerActionPayload>,
+) -> Json<serde_json::Value> {
+    let name = match payload.profile_name {
+        Some(n) => n,
+        None => return Json(serde_json::json!({ "success": false, "error": "Thiếu profile_name" })),
+    };
+    match state.farm_container.switch_profile(&payload.serial, &name).await {
+        Ok(meta) => Json(serde_json::json!({ "success": true, "meta": meta })),
+        Err(e) => Json(serde_json::json!({ "success": false, "error": e })),
+    }
+}
+
+async fn farm_container_list_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let list = state.farm_container.list_profiles();
+    Json(serde_json::json!({ "success": true, "profiles": list }))
+}
+
 async fn device_action_handler(
     State(state): State<AppState>,
     Path(serial): Path<String>,
@@ -312,11 +843,11 @@ async fn device_action_handler(
                 }
             }
             "launch" => {
-                let pkg = payload.package.as_deref().unwrap_or("com.ss.android.ugc.trill");
+                let pkg = payload.package.as_deref().unwrap_or("com.zhiliaoapp.musically");
                 let _ = adb.launch_app(&serial, pkg);
             }
             "stop" => {
-                let pkg = payload.package.as_deref().unwrap_or("com.ss.android.ugc.trill");
+                let pkg = payload.package.as_deref().unwrap_or("com.zhiliaoapp.musically");
                 let _ = adb.force_stop(&serial, pkg);
             }
             "wake" => { let _ = adb.wake_up(&serial); },
@@ -837,7 +1368,14 @@ async fn create_browser_profile_handler(Json(mut new_prof): Json<BrowserProfile>
         let gpu_idx = next_id % crate::cdp_browser::GPU_POOL.len();
         crate::cdp_browser::GPU_POOL[gpu_idx]
     };
-    if new_prof.gpu_renderer.is_none() || new_prof.gpu_renderer.as_ref().unwrap().trim().is_empty() {
+    let need_gpu = match &new_prof.gpu_renderer {
+        None => true,
+        Some(s) => {
+            let t = s.trim();
+            t.is_empty() || t == "None" || t == "null" || t == "undefined"
+        }
+    };
+    if need_gpu {
         new_prof.gpu_renderer = Some(def_rend.to_string());
         new_prof.gpu_vendor = Some(def_vend.to_string());
     }
@@ -1075,9 +1613,29 @@ async fn delete_browser_profile_handler(Path(id): Path<usize>) -> Json<serde_jso
         let _ = std::fs::write(&path, json_str);
     }
 
+    // Xóa sạch toàn bộ dữ liệu cache/cookies của profile trên đĩa
+    let p_dir = crate::cdp_browser::get_profile_data_dir(id);
+    let _ = std::fs::remove_dir_all(&p_dir);
+    let temp_dir = std::env::temp_dir().join(format!("mun_profile_{}", id));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
     Json(serde_json::json!({
         "success": true,
         "message": format!("Đã xóa profile #{}", id)
+    }))
+}
+
+async fn clear_browser_profile_cache_handler(Path(id): Path<usize>) -> Json<serde_json::Value> {
+    let p_dir = crate::cdp_browser::get_profile_data_dir(id);
+    let _ = std::fs::remove_dir_all(&p_dir);
+    let temp_dir = std::env::temp_dir().join(format!("mun_profile_{}", id));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let backup_zip = crate::cdp_browser::get_profile_backup_dir().join(format!("profile_{}.zip", id));
+    let _ = std::fs::remove_file(&backup_zip);
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Đã clear sạch hoàn toàn dữ liệu cache, temp & backup zip của profile #{}", id)
     }))
 }
 
@@ -2182,7 +2740,7 @@ async fn router_rotate_handler() -> Json<serde_json::Value> {
 
 // ── Auto-Update Handlers ─────────────────────────────────────────────────────
 
-pub const APP_VERSION: &str = "2.3.0";
+pub const APP_VERSION: &str = "2.4.0";
 
 fn is_newer_semver(server: &str, current: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> {
@@ -3219,11 +3777,11 @@ async fn dashboard_handler() -> Html<&'static str> {
                 Đăng nhập tài khoản <b>C69.us</b> để xác thực bản quyền & liên kết dữ liệu Farm, Profile và Proxy.
             </div>
 
-            <form id="c69-login-form" onsubmit="submitC69Login(); return false;" style="display:flex; flex-direction:column; gap:14px; text-align:left;">
+            <form id="c69-login-form" onsubmit="event.preventDefault(); submitC69Login(); return false;" style="display:flex; flex-direction:column; gap:14px; text-align:left;">
                 <div>
                     <label style="font-size:11px; font-weight:700; color:#cbd5e1; margin-bottom:5px; display:block;">TÊN ĐĂNG NHẬP / EMAIL C69:</label>
                     <div style="position:relative;">
-                        <input type="text" id="c69-login-username" required placeholder="Nhập username hoặc email C69..." style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#fff; padding:10px 12px 10px 36px; border-radius:8px; font-size:13px; outline:none; transition:border-color 0.2s;" onfocus="this.style.borderColor='#38bdf8'" onblur="this.style.borderColor='rgba(148,163,184,0.3)'" onkeydown="if(event.key==='Enter') submitC69Login()">
+                        <input type="text" id="c69-login-username" required placeholder="Nhập username hoặc email C69..." style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#fff; padding:10px 12px 10px 36px; border-radius:8px; font-size:13px; outline:none; transition:border-color 0.2s;" onfocus="this.style.borderColor='#38bdf8'" onblur="this.style.borderColor='rgba(148,163,184,0.3)'" onkeydown="if(event.key==='Enter'){event.preventDefault();submitC69Login();}">
                         <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); font-size:14px; opacity:0.7;">👤</span>
                     </div>
                 </div>
@@ -3231,7 +3789,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                 <div>
                     <label style="font-size:11px; font-weight:700; color:#cbd5e1; margin-bottom:5px; display:block;">MẬT KHẨU C69:</label>
                     <div style="position:relative;">
-                        <input type="password" id="c69-login-password" required placeholder="Nhập mật khẩu tài khoản..." style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#fff; padding:10px 12px 10px 36px; border-radius:8px; font-size:13px; outline:none; transition:border-color 0.2s;" onfocus="this.style.borderColor='#38bdf8'" onblur="this.style.borderColor='rgba(148,163,184,0.3)'" onkeydown="if(event.key==='Enter') submitC69Login()">
+                        <input type="password" id="c69-login-password" required placeholder="Nhập mật khẩu tài khoản..." style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#fff; padding:10px 12px 10px 36px; border-radius:8px; font-size:13px; outline:none; transition:border-color 0.2s;" onfocus="this.style.borderColor='#38bdf8'" onblur="this.style.borderColor='rgba(148,163,184,0.3)'" onkeydown="if(event.key==='Enter'){event.preventDefault();submitC69Login();}">
                         <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); font-size:14px; opacity:0.7;">🔑</span>
                     </div>
                 </div>
@@ -3239,16 +3797,16 @@ async fn dashboard_handler() -> Html<&'static str> {
                 <!-- Advanced Server URL -->
                 <div style="margin-top:-4px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:10px; color:#64748b; cursor:pointer;" onclick="toggleC69ServerUrl()">⚙️ Máy chủ: <span id="c69-server-display">https://cu.c69.us</span></span>
+                        <span style="font-size:10px; color:#64748b; cursor:pointer;" onclick="toggleC69ServerUrl()">⚙️ Máy chủ: <span id="c69-server-display">https://c69.us</span></span>
                     </div>
                     <div id="c69-server-input-wrap" style="display:none; margin-top:6px;">
-                        <input type="text" id="c69-login-server" value="https://cu.c69.us" placeholder="https://cu.c69.us" style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#94a3b8; padding:6px 10px; border-radius:6px; font-size:11px;">
+                        <input type="text" id="c69-login-server" value="https://c69.us" placeholder="https://c69.us" style="width:100%; box-sizing:border-box; background:rgba(15,23,42,0.8); border:1px solid rgba(148,163,184,0.3); color:#94a3b8; padding:6px 10px; border-radius:6px; font-size:11px;">
                     </div>
                 </div>
 
                 <div id="c69-login-msg" style="display:none; font-size:12px; padding:10px 12px; border-radius:6px; margin-top:4px; font-weight:600;"></div>
 
-                <button type="button" onclick="submitC69Login()" id="btn-c69-login-submit" style="width:100%; margin-top:6px; background:linear-gradient(135deg, #0284c7, #38bdf8); color:#030712; font-weight:800; font-size:13px; padding:11px; border:none; border-radius:8px; cursor:pointer; box-shadow:0 4px 15px rgba(56,189,248,0.4); transition:all 0.2s; display:flex; align-items:center; justify-content:center; gap:8px;">
+                <button type="submit" id="btn-c69-login-submit" style="width:100%; margin-top:6px; background:linear-gradient(135deg, #0284c7, #38bdf8); color:#030712; font-weight:800; font-size:13px; padding:11px; border:none; border-radius:8px; cursor:pointer; box-shadow:0 4px 15px rgba(56,189,248,0.4); transition:all 0.2s; display:flex; align-items:center; justify-content:center; gap:8px;">
                     <span>⚡ Đăng Nhập & Mở Khóa Tool</span>
                 </button>
             </form>
@@ -3353,10 +3911,22 @@ async fn dashboard_handler() -> Html<&'static str> {
                     </label>
                     <button class="btn btn-purple" onclick="installTikTokAll()">📥 Cài TikTok APK</button>
                     <button class="btn btn-primary" onclick="optimizeResolution()">⚡ Tối Ưu HD+ (Giảm Lag)</button>
+                    <button class="btn btn-dark" style="background:#8b5cf6; color:#fff; font-weight:700;" onclick="changeInfoAllFarm()">🎲 Đổi Info Toàn Giàn</button>
+                    <button class="btn btn-dark" style="background:#f59e0b; color:#fff; font-weight:700;" onclick="softRebootAllFarm()">⚡ Soft Reboot All (5s)</button>
+                    <button class="btn btn-dark" style="background:#dc2626; color:#fff; font-weight:700;" onclick="resetAllFarm()">🔄 Reset All</button>
                     <button class="btn btn-dark" style="background:#0284c7;" onclick="launchScrcpy()">🚀 Scrcpy 60 FPS</button>
+                    <div style="display:inline-flex; align-items:center; gap:6px; background:rgba(30,41,59,0.7); padding:3px 8px; border-radius:6px; border:1px solid rgba(236,72,153,0.4);">
+                        <span style="font-size:11px; font-weight:700; color:#ec4899;">Số lượng:</span>
+                        <input type="number" id="factory-reg-count" value="10" min="1" max="100" style="width:48px; background:#0f172a; border:1px solid #475569; color:#fff; font-weight:bold; border-radius:4px; padding:2px 4px; text-align:center; font-size:11px;">
+                        <button class="btn" style="background:linear-gradient(135deg, #ec4899, #8b5cf6); color:#fff; font-weight:800; border:none; box-shadow:0 0 15px rgba(236,72,153,0.4);" onclick="startFactoryPipeline()">🏭 Chạy Nhà Máy Tạo & Nuôi Nick Hàng Loạt</button>
+                        <button class="btn" style="background:linear-gradient(135deg, #ef4444, #b91c1c); color:#fff; font-weight:800; border:none; box-shadow:0 0 12px rgba(239,68,68,0.5); padding:4px 10px;" onclick="stopFactoryPipeline()">🛑 DỪNG NHÀ MÁY</button>
+                    </div>
                 </div>
                 <div class="toolbar-group">
+                    <button class="btn btn-dark" id="btn-toggle-all-stream" style="border-color:#10b981; color:#10b981; font-weight:700;" onclick="toggleAllStreams()" title="Mặc định TẮT để tiết kiệm 100% CPU & RAM. Bấm để bật xem toàn bộ 19 màn hình">📺 Bật Stream 19 Máy</button>
+                    <button class="btn btn-dark" style="border-color:#38bdf8; color:#38bdf8; font-weight:700;" onclick="snapshotAllGrid()" title="Chụp ảnh 1 lần xem nhanh màn hình toàn bộ 19 máy mà không tốn CPU">📸 Chụp Nhanh Toàn Giàn</button>
                     <button class="btn btn-dark" style="border-color:var(--primary); color:var(--primary);" onclick="openWifiModal('all')">📶 Quản Lý Wi-Fi</button>
+                    <button class="btn btn-dark" style="background:linear-gradient(135deg,#0ea5e9,#6366f1); color:#fff; font-weight:800;" onclick="openXmlLoginModal()">🔐 Login Native XML</button>
                     <button class="btn btn-success" onclick="startNurtureAll()">🌱 Bắt Đầu Nuôi</button>
                     <button class="btn btn-danger" onclick="stopNurtureAll()">⏹️ Dừng Nuôi</button>
                     <button class="btn btn-dark" onclick="batchAction('wake')">⚡ Mở All</button>
@@ -3692,7 +4262,7 @@ async fn dashboard_handler() -> Html<&'static str> {
                     <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); padding: 12px 16px; border-radius: 10px;">
                         <div>
                             <div style="font-size: 10px; color: #94a3b8; text-transform: uppercase;">Phiên bản hiện tại</div>
-                            <div id="update-current-ver" style="font-weight: 700; color: #f8fafc; font-size: 14px;">v2.3.0</div>
+                            <div id="update-current-ver" style="font-weight: 700; color: #f8fafc; font-size: 14px;">v2.4.0</div>
                         </div>
                         <div style="font-size: 18px; color: #38bdf8;">➔</div>
                         <div style="text-align: right;">
@@ -4793,6 +5363,7 @@ mail3@domain.com|pass3|refresh_token"></textarea>
         const API_BASE = window.location.origin;
         const WS_BASE = `ws://${window.location.host}`;
         const activeSockets = {};
+        let globalStreamEnabled = false;
         let currentDevices = [];
         let allProfiles = [];
         let activeWifiSerial = null;
@@ -4820,16 +5391,41 @@ mail3@domain.com|pass3|refresh_token"></textarea>
         }
 
         async function refreshAll() {
-            // Không dùng await tuần tự để không chặn loadBrowserProfiles() nếu ADB đang quét
-            refreshDevices();
+            showToast('🔄 Đang quét lại toàn bộ giàn máy...', 'info', 1500);
+            await refreshDevices();
             loadBrowserProfiles();
             loadIosDevices();
+            if (currentDevices && currentDevices.length > 0) {
+                showToast(`✅ Đã quét xong: Phát hiện ${currentDevices.length} thiết bị Android online!`, 'success', 2500);
+            }
         }
+
+        const CANONICAL_FARM_SLOTS = [
+            { slot: 1, serial: "ce0117112dccec3404", name: "Máy 1", short: "ec3404" },
+            { slot: 2, serial: "ce03171371483c3c05", name: "Máy 2", short: "3c3c05" },
+            { slot: 3, serial: "ce031713edfb4f3702", name: "Máy 3", short: "4f3702" },
+            { slot: 4, serial: "ce031713f138907a0c", name: "Máy 4", short: "907a0c" },
+            { slot: 5, serial: "ce04171409d8062401", name: "Máy 5", short: "062401" },
+            { slot: 6, serial: "ce0417140c8138370c", name: "Máy 6", short: "38370c" },
+            { slot: 7, serial: "ce0417145ce4a0e80c", name: "Máy 7", short: "a0e80c" },
+            { slot: 8, serial: "ce041714a2d2211102", name: "Máy 8", short: "211102" },
+            { slot: 9, serial: "ce051715c86d871f03", name: "Máy 9", short: "871f03" },
+            { slot: 10, serial: "ce0918298272403101", name: "Máy 10", short: "403101" },
+            { slot: 11, serial: "ce011711c21da00403", name: "Máy 11", short: "a00403" },
+            { slot: 12, serial: "ce02182260b5580f04", name: "Máy 12", short: "580f04" },
+            { slot: 13, serial: "ce0317131000e70803", name: "Máy 13", short: "e70803" },
+            { slot: 14, serial: "ce0317139c3058f60d", name: "Máy 14", short: "58f60d" },
+            { slot: 15, serial: "ce031713a40b80030c", name: "Máy 15", short: "80030c" },
+            { slot: 16, serial: "ce04171428e364860d", name: "Máy 16", short: "64860d" },
+            { slot: 17, serial: "ce0517153333513202", name: "Máy 17", short: "513202" },
+            { slot: 18, serial: "ce081718a56b1e2802", name: "Máy 18", short: "1e2802" },
+            { slot: 19, serial: "ce091719b40aa53b05", name: "Máy 19", short: "a53b05" }
+        ];
 
         async function refreshDevices() {
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                const timeoutId = setTimeout(() => controller.abort(), 12000);
                 const res = await fetch(`${API_BASE}/api/devices`, { signal: controller.signal });
                 clearTimeout(timeoutId);
 
@@ -4841,73 +5437,112 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                 const grid = document.getElementById('device-grid');
                 if (!grid) return;
 
-                if (currentDevices.length === 0) {
-                    // Dọn dẹp kết nối websocket cũ nếu có
-                    Object.keys(activeSockets).forEach(s => {
-                        if (activeSockets[s]) {
-                            try { activeSockets[s].close(); } catch(err) {}
-                            delete activeSockets[s];
-                        }
-                    });
-                    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
-                        <div style="font-size: 38px; margin-bottom: 12px;">📱</div>
-                        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px; color: #fff;">Chưa phát hiện thiết bị Samsung / Android nào qua ADB</div>
-                        <div style="font-size: 12px; margin-bottom: 18px; line-height: 1.6;">Vui lòng cắm giàn máy vào cổng USB và bật <b>"Gỡ lỗi USB"</b> (USB Debugging).<br>Bạn có thể chuyển ngay sang tab Anti Browser để quản lý và nuôi nick TikTok trên trình duyệt.</div>
-                        <div style="display: flex; gap: 10px; justify-content: center;">
-                            <button class="btn btn-primary" style="padding: 8px 18px; font-size: 12px;" onclick="switchNav('browser')">🌐 Chuyển Sang Tab Anti Browser</button>
-                            <button class="btn btn-dark" style="padding: 8px 18px; font-size: 12px;" onclick="refreshDevices()">🔄 Quét Lại Thiết Bị</button>
-                        </div>
-                    </div>`;
-                    return;
+                // Xây dựng danh sách toàn bộ các ô máy (10 máy cố định + máy mở rộng nếu có)
+                const slots = [...CANONICAL_FARM_SLOTS];
+                (devices || []).forEach(d => {
+                    if (!slots.some(s => s.serial === d.serial)) {
+                        slots.push({
+                            slot: slots.length + 1,
+                            serial: d.serial,
+                            name: `Máy ${slots.length + 1}`,
+                            short: d.serial.slice(-6)
+                        });
+                    }
+                });
+
+                // Xóa placeholder "Chưa phát hiện thiết bị" nếu đang có
+                const placeholder = grid.querySelector('div[style*="grid-column: 1 / -1"]');
+                if (placeholder) {
+                    grid.innerHTML = '';
                 }
 
-                grid.innerHTML = '';
-                devices.forEach(dev => {
-                    const card = document.createElement('div');
-                    card.className = 'phone-card';
-                    card.innerHTML = `
-                        <div class="phone-header">
-                            <b>📱 ${dev.brand} ${dev.model}</b>
-                            <span style="color: ${dev.battery > 20 ? '#10b981' : '#ef4444'}">🔋 ${dev.battery}%</span>
-                        </div>
-                        <div class="screen-container" id="screen-box-${dev.serial}">
-                            <canvas class="screen-img" id="canvas-${dev.serial}" width="360" height="740"></canvas>
-                            <div class="touch-indicator" id="indicator-${dev.serial}"></div>
-                        </div>
-                        <div class="phone-control-bar">
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'wake')">⚡ Mở</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'unlock')">🔓 Unlock</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'launch')">🎵 TikTok</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'key', {keycode: 3})">🏠 Home</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'key', {keycode: 4})">◀ Back</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'recents')">📑 Đa nhiệm</button>
-                            <button class="ctrl-btn" onclick="sendAction('${dev.serial}', 'vol_up')">🔊 Vol+</button>
-                            <button class="ctrl-btn" style="color:var(--primary);" onclick="openWifiModal('${dev.serial}')">📶 Wi-Fi</button>
-                        </div>
-                        <div class="phone-footer">
-                            <span>S/N: <b>${dev.serial}</b></span>
-                            <span id="status-${dev.serial}">Live ⚡</span>
-                        </div>
-                    `;
-                    grid.appendChild(card);
-                    setupStreamAndTouch(dev.serial, dev.width, dev.height);
+                // CỐ ĐỊNH 100% CÁC Ô THEO THỨ TỰ SLOT — TUYỆT ĐỐI KHÔNG XÓA CARD, KHÔNG DỒN MÁY!
+                slots.forEach((item, idx) => {
+                    let card = document.getElementById(`phone-card-${item.serial}`);
+                    if (!card) {
+                        card = document.createElement('div');
+                        card.className = 'phone-card';
+                        card.id = `phone-card-${item.serial}`;
+                        card.dataset.slot = item.slot;
+                        card.innerHTML = `
+                            <div class="phone-header" id="phone-header-${item.serial}">
+                                <b id="header-title-${item.serial}">📱 [MÁY #${item.slot}] ${item.name}</b>
+                                <span id="header-battery-${item.serial}" style="color: #94a3b8;">--%</span>
+                            </div>
+                            <div class="screen-container" id="screen-box-${item.serial}">
+                                <canvas class="screen-img" id="canvas-${item.serial}" width="360" height="740"></canvas>
+                                <div class="touch-indicator" id="indicator-${item.serial}"></div>
+                                <div id="stream-placeholder-${item.serial}" style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#080d1e; cursor:pointer; z-index:10; border-radius:6px; transition:all 0.2s;" onclick="toggleSingleDeviceStream('${item.serial}')">
+                                    <div style="font-size:32px; margin-bottom:8px;">📱</div>
+                                    <div style="font-size:12px; color:#38bdf8; font-weight:700;">Bấm để xem màn hình</div>
+                                    <div style="font-size:10px; color:#64748b; margin-top:4px;">Tiết kiệm 100% CPU & RAM</div>
+                                    <button class="btn btn-dark" style="margin-top:10px; padding:3px 10px; font-size:10px; border-color:#38bdf8; color:#38bdf8; pointer-events:none;">▶️ Bật Stream</button>
+                                </div>
+                                <div id="reboot-overlay-${item.serial}" style="display:none; position:absolute; inset:0; background:rgba(15,23,42,0.85); flex-direction:column; align-items:center; justify-content:center; color:#f59e0b; font-weight:700; z-index:15; border-radius:6px; pointer-events:none;">
+                                    <div style="font-size:32px; margin-bottom:8px; animation:spin 2s linear infinite;">🔄</div>
+                                    <div style="font-size:14px; color:#f59e0b;">Đang Khởi Động Lại...</div>
+                                    <div style="font-size:11px; color:#94a3b8; margin-top:4px;">Cố định Máy #${item.slot} (${item.short})</div>
+                                </div>
+                            </div>
+                            <div class="phone-control-bar" id="ctrl-bar-${item.serial}">
+                                <button class="ctrl-btn" style="color:#10b981; font-weight:700;" id="stream-btn-${item.serial}" onclick="toggleSingleDeviceStream('${item.serial}')">👁️ Stream</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'wake')">⚡ Mở</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'unlock')">🔓 Unlock</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'launch')">🎵 TikTok</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'key', {keycode: 3})">🏠 Home</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'key', {keycode: 4})">◀ Back</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'recents')">📑 Đa nhiệm</button>
+                                <button class="ctrl-btn" onclick="sendAction('${item.serial}', 'vol_up')">🔊 Vol+</button>
+                                <button class="ctrl-btn" style="color:var(--primary);" onclick="openWifiModal('${item.serial}')">📶 Wi-Fi</button>
+                            </div>
+                            <div class="phone-footer">
+                                <span>S/N: <b>...${item.short}</b></span>
+                                <span id="status-${item.serial}">Đang quét...</span>
+                            </div>
+                        `;
+                        const existingCards = grid.querySelectorAll('.phone-card');
+                        if (idx < existingCards.length) {
+                            grid.insertBefore(card, existingCards[idx]);
+                        } else {
+                            grid.appendChild(card);
+                        }
+                    }
+
+                    // Cập nhật trạng thái từng máy (Online vs Rebooting)
+                    const dev = (devices || []).find(d => d.serial === item.serial);
+                    const titleEl = document.getElementById(`header-title-${item.serial}`);
+                    const battEl = document.getElementById(`header-battery-${item.serial}`);
+                    const statusEl = document.getElementById(`status-${item.serial}`);
+                    const overlay = document.getElementById(`reboot-overlay-${item.serial}`);
+
+                    if (dev) {
+                        // Máy ĐANG ONLINE
+                        if (titleEl) titleEl.innerHTML = `📱 [MÁY #${item.slot}] ${dev.brand} ${dev.model}`;
+                        if (battEl) battEl.innerHTML = `<span style="color: ${dev.battery > 20 ? '#10b981' : '#ef4444'}">🔋 ${dev.battery}%</span>`;
+                        if (overlay) overlay.style.display = 'none';
+
+                        // CHẾ ĐỘ TIẾT KIỆM 100% CPU: Mặc định TẮT STREAM toàn giàn, chỉ mở khi user bật
+                        if (globalStreamEnabled && !activeSockets[item.serial]) {
+                            setupStreamAndTouch(item.serial, dev.width || 720, dev.height || 1480);
+                        } else if (!activeSockets[item.serial]) {
+                            if (statusEl) statusEl.innerHTML = `<span style="color:#64748b;">Sẵn sàng (0% CPU)</span>`;
+                        }
+                    } else {
+                        // MÁY ĐANG REBOOT HOẶC MẤT KẾT NỐI TẠM THỜI -> GIỮ NGUYÊN Ô, KHÔNG DỒN MÁY!
+                        if (titleEl) titleEl.innerHTML = `📱 [MÁY #${item.slot}] ĐANG REBOOT...`;
+                        if (battEl) battEl.innerHTML = `<span style="color: #f59e0b; font-weight:700;">⏳ Reboot</span>`;
+                        if (statusEl) statusEl.innerHTML = `<span style="color:#f59e0b; font-weight:700;">🔄 Đang khởi động...</span>`;
+                        if (overlay) overlay.style.display = 'flex';
+
+                        // Đóng socket cũ nếu có để tránh lỗi luồng
+                        if (activeSockets[item.serial]) {
+                            try { activeSockets[item.serial].close(); } catch(err) {}
+                            delete activeSockets[item.serial];
+                        }
+                    }
                 });
             } catch (e) {
                 console.warn('Lỗi quét thiết bị ADB:', e);
-                const countEl = document.getElementById('android-count');
-                if (countEl) countEl.innerText = '0';
-                const grid = document.getElementById('device-grid');
-                if (grid && (!currentDevices || currentDevices.length === 0)) {
-                    grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 60px 20px; color: var(--text-muted);">
-                        <div style="font-size: 38px; margin-bottom: 12px;">⚠️</div>
-                        <div style="font-weight: 700; font-size: 15px; margin-bottom: 6px; color: #fff;">Chưa phát hiện thiết bị Android nào qua ADB</div>
-                        <div style="font-size: 12px; margin-bottom: 18px; line-height: 1.6;">Không thể kết nối hoặc chưa có thiết bị cắm vào máy tính.<br>Bạn có thể chuyển ngay sang tab Anti Browser để tiếp tục làm việc.</div>
-                        <div style="display: flex; gap: 10px; justify-content: center;">
-                            <button class="btn btn-primary" style="padding: 8px 18px; font-size: 12px;" onclick="switchNav('browser')">🌐 Chuyển Sang Tab Anti Browser</button>
-                            <button class="btn btn-dark" style="padding: 8px 18px; font-size: 12px;" onclick="refreshDevices()">🔄 Thử Lại</button>
-                        </div>
-                    </div>`;
-                }
             }
         }
 
@@ -4916,6 +5551,16 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                 activeSockets[serial].close();
                 delete activeSockets[serial];
             }
+
+            const ph = document.getElementById(`stream-placeholder-${serial}`);
+            if (ph) ph.style.display = 'none';
+            const sbtn = document.getElementById(`stream-btn-${serial}`);
+            if (sbtn) {
+                sbtn.innerHTML = '🛑 Dừng';
+                sbtn.style.color = '#ef4444';
+            }
+            const statusEl = document.getElementById(`status-${serial}`);
+            if (statusEl) statusEl.innerHTML = `<span style="color:#10b981; font-weight:700;">Live ⚡</span>`;
 
             const canvas = document.getElementById(`canvas-${serial}`);
             const ctx = canvas.getContext('2d', { alpha: false });
@@ -5149,6 +5794,84 @@ mail3@domain.com|pass3|refresh_token"></textarea>
             });
         }
 
+        function toggleAllStreams() {
+            globalStreamEnabled = !globalStreamEnabled;
+            const btn = document.getElementById('btn-toggle-all-stream');
+            if (globalStreamEnabled) {
+                if (btn) {
+                    btn.innerHTML = '🛑 TẮT Stream 19 Máy';
+                    btn.style.borderColor = '#ef4444';
+                    btn.style.color = '#ef4444';
+                }
+                showToast('📺 Đang mở Stream 19 máy...', 'info', 2000);
+                (currentDevices || []).forEach(d => {
+                    setupStreamAndTouch(d.serial, d.width || 720, d.height || 1480);
+                });
+            } else {
+                if (btn) {
+                    btn.innerHTML = '📺 Bật Stream 19 Máy';
+                    btn.style.borderColor = '#10b981';
+                    btn.style.color = '#10b981';
+                }
+                showToast('⚡ Đã tắt Stream toàn bộ để tiết kiệm 100% CPU & RAM!', 'success', 2000);
+                Object.keys(activeSockets).forEach(s => {
+                    stopDeviceStream(s);
+                });
+            }
+        }
+
+        function toggleSingleDeviceStream(serial) {
+            const dev = (currentDevices || []).find(d => d.serial === serial);
+            const w = dev ? (dev.width || 720) : 720;
+            const h = dev ? (dev.height || 1480) : 1480;
+
+            if (activeSockets[serial]) {
+                stopDeviceStream(serial);
+                showToast(`⏸️ Đã ngắt stream máy ...${serial.slice(-6)} (0% CPU)`, 'info', 1500);
+            } else {
+                setupStreamAndTouch(serial, w, h);
+                showToast(`▶️ Đang mở stream máy ...${serial.slice(-6)}`, 'success', 1500);
+            }
+        }
+
+        function stopDeviceStream(serial) {
+            if (activeSockets[serial]) {
+                try { activeSockets[serial].close(); } catch(e) {}
+                delete activeSockets[serial];
+            }
+            const ph = document.getElementById(`stream-placeholder-${serial}`);
+            if (ph) ph.style.display = 'flex';
+            const sbtn = document.getElementById(`stream-btn-${serial}`);
+            if (sbtn) {
+                sbtn.innerHTML = '👁️ Stream';
+                sbtn.style.color = '#10b981';
+            }
+            const statusEl = document.getElementById(`status-${serial}`);
+            if (statusEl) statusEl.innerHTML = `<span style="color:#64748b;">Sẵn sàng (0% CPU)</span>`;
+        }
+
+        async function snapshotAllGrid() {
+            showToast('📸 Đang chụp nhanh toàn bộ 19 máy...', 'info', 2000);
+            (currentDevices || []).forEach(async (d) => {
+                const canvas = document.getElementById(`canvas-${d.serial}`);
+                if (!canvas) return;
+                try {
+                    const res = await fetch(`${API_BASE}/api/farm/screenshot/${d.serial}`);
+                    if (res.ok) {
+                        const blob = await res.blob();
+                        const img = new Image();
+                        img.onload = () => {
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            const ph = document.getElementById(`stream-placeholder-${d.serial}`);
+                            if (ph) ph.style.display = 'none';
+                        };
+                        img.src = URL.createObjectURL(blob);
+                    }
+                } catch(e) {}
+            });
+        }
+
         function dispatchActionToTargets(sourceSerial, isSync, wsCallback, fallbackPayload) {
             if (isSync) {
                 Object.values(activeSockets).forEach(ws => {
@@ -5330,11 +6053,98 @@ mail3@domain.com|pass3|refresh_token"></textarea>
             showToast(d.message || 'Đang cài đặt TikTok trên các máy...', 'info');
         }
 
+        async function startFactoryPipeline() {
+            const count = parseInt(document.getElementById('factory-reg-count').value) || 10;
+            if (!confirm(`Bạn có chắc chắn muốn khởi chạy Nhà Máy Tự Động Tạo & Nuôi ${count} Nick TikTok US trên 10 máy Phone Farm (Tự động đổi IP + Fake phần cứng + Up Avatar + Nuôi FYP)?`)) return;
+            const res = await fetch(`${API_BASE}/api/farm/factory-pipeline/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ count })
+            });
+            const d = await res.json();
+            showToast(d.message || `Đang khởi động Nhà máy tạo ${count} nick...`, 'success');
+            pollFarmRegProgress();
+        }
+
+        async function stopFactoryPipeline() {
+            if (!confirm('🛑 Bạn có chắc chắn muốn DỪNG ngay lập tức toàn bộ tiến trình Nhà Máy Tạo & Nuôi Nick?')) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/farm/factory-pipeline/stop`, { method: 'POST' });
+                const d = await res.json();
+                showToast(d.message || 'Đã gửi lệnh dừng Nhà máy thành công!', 'warning');
+                if (farmRegTimer) { clearTimeout(farmRegTimer); farmRegTimer = null; }
+            } catch(e) {
+                showToast('Lỗi khi gửi lệnh dừng: ' + e, 'error');
+            }
+        }
+
+        async function startAutoRegFarm() {
+            if (!confirm('Bạn có chắc chắn muốn khởi chạy tạo tự động tài khoản TikTok US trên toàn bộ giàn Phone Farm bằng kho email C69 và bật 2FA?')) return;
+            const res = await fetch(`${API_BASE}/api/farm/auto-reg-tiktok`, { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message || 'Đang tạo tài khoản TikTok US trên toàn giàn...', 'success');
+            pollFarmRegProgress();
+        }
+
+        let farmRegTimer = null;
+        async function pollFarmRegProgress() {
+            try {
+                const res = await fetch(`${API_BASE}/api/farm/auto-reg-tiktok/status`);
+                const d = await res.json();
+                if (d.status_message) {
+                    showToast(`[${d.current_index}/${d.total_devices}] ${d.status_message}`, d.is_running ? 'info' : 'success');
+                }
+                if (d.is_running) {
+                    if (farmRegTimer) clearTimeout(farmRegTimer);
+                    farmRegTimer = setTimeout(pollFarmRegProgress, 5000);
+                }
+            } catch(e) {}
+        }
+
         async function optimizeResolution() {
             const res = await fetch(`${API_BASE}/api/farm/optimize-resolution`, { method: 'POST' });
             const d = await res.json();
             showToast(d.message || 'Đã tối ưu độ phân giải HD+ (720x1480)!', 'success');
             setTimeout(refreshDevices, 1000);
+        }
+
+        async function changeInfoAllFarm() {
+            if (!confirm('🎲 Bạn có chắc chắn muốn TỰ ĐỘNG ĐỔI INFO PHẦN CỨNG (Fake Model, IMEI, Android ID độc nhất) cho toàn bộ giàn Phone Farm ngay bây giờ?')) return;
+            showToast('⏳ Đang tiến hành đổi info song song cho cả 10 máy...', 'info');
+            try {
+                const res = await fetch(`${API_BASE}/api/farm/change-info-all`, { method: 'POST' });
+                const d = await res.json();
+                showToast(d.message || 'Đã gửi lệnh đổi info thành công!', 'success');
+                setTimeout(refreshDevices, 5000);
+            } catch(e) {
+                showToast('Lỗi khi đổi info: ' + e, 'error');
+            }
+        }
+
+        async function softRebootAllFarm() {
+            if (!confirm('⚡ Bạn có muốn SOFT-REBOOT TOÀN BỘ 10 MÁY (Khởi động lại Android Framework trong 5s để giải phóng 100% RAM/Process mà KHÔNG MẤT THÔNG SỐ ĐÃ ĐỔI)?')) return;
+            showToast('⏳ Đang Soft-Reboot cả 10 máy song song...', 'info');
+            try {
+                const res = await fetch(`${API_BASE}/api/farm/soft-reboot-all`, { method: 'POST' });
+                const d = await res.json();
+                showToast(d.message || 'Đã Soft-Reboot toàn giàn thành công!', 'success');
+                setTimeout(refreshDevices, 6000);
+            } catch(e) {
+                showToast('Lỗi khi Soft-Reboot: ' + e, 'error');
+            }
+        }
+
+        async function resetAllFarm() {
+            if (!confirm('⚠️ CẢNH BÁO: Bạn có chắc chắn muốn RESET SẠCH TOÀN BỘ dữ liệu app TikTok và cache rác trên toàn bộ 10 máy Phone Farm về trạng thái ban đầu?')) return;
+            showToast('⏳ Đang dọn sạch toàn bộ ứng dụng và dữ liệu trên giàn máy...', 'info');
+            try {
+                const res = await fetch(`${API_BASE}/api/farm/reset-all`, { method: 'POST' });
+                const d = await res.json();
+                showToast(d.message || 'Đã reset toàn giàn máy thành công!', 'success');
+                setTimeout(refreshDevices, 2000);
+            } catch(e) {
+                showToast('Lỗi khi reset: ' + e, 'error');
+            }
         }
 
         async function launchScrcpy() {
@@ -5343,7 +6153,143 @@ mail3@domain.com|pass3|refresh_token"></textarea>
             showToast(d.message || 'Đã khởi chạy Scrcpy Hardware Stream 60 FPS!', 'success');
         }
 
-        async function startNurtureAll() {
+        // ===== Login Native XML (Rust) =====
+let xmlLoginTimer = null;
+function openXmlLoginModal() {
+    let m = document.getElementById('xml-login-modal');
+    if (!m) {
+        m = document.createElement('div');
+        m.id = 'xml-login-modal';
+        m.style.cssText = 'position:fixed;inset:0;background:rgba(2,6,23,.85);z-index:99999;display:flex;align-items:center;justify-content:center;';
+        m.innerHTML = `<div style="background:#0f172a;border:1px solid #334155;border-radius:12px;padding:18px;width:min(880px,94vw);max-height:90vh;overflow:auto;color:#e2e8f0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="font-size:15px;">🔐 Login TikTok đồng loạt (Native XML · Pure Rust)</b><button class="btn btn-dark" onclick="closeXmlLoginModal()">✖</button></div>
+            <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:8px 12px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-weight:600;font-size:12px;color:#38bdf8;">🤖 Thông báo Telegram qua Bot <a href="https://t.me/C69autobot" target="_blank" style="color:#60a5fa;text-decoration:underline;">@C69autobot</a></span>
+                    <button class="btn btn-dark" style="font-size:10px;padding:2px 6px;" onclick="loadTelegramStatus()">🔄 Làm mới</button>
+                </div>
+                <div style="font-size:11px;color:#94a3b8;margin-top:3px;">
+                    Client mở Telegram gửi <code>/start &lt;tên_client&gt;</code> vào <b>@C69autobot</b> để liên kết cố định nhận thông báo tự động.
+                </div>
+                <div id="telegram-linked-clients" style="margin-top:4px;font-size:11px;"></div>
+            </div>
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">Mỗi dòng: <code>username|password|2FA_secret|email_id</code>. Máy đang login đúng nick sẽ được giữ nguyên.</div>
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <button class="btn btn-dark" style="background:#0284c7;color:#fff;font-size:11px;padding:3px 8px;" onclick="loadC69AccountsToXmlLogin()">📥 Nạp 10 nick từ C69</button>
+                <button class="btn btn-dark" style="background:#475569;color:#fff;font-size:11px;padding:3px 8px;" onclick="document.getElementById('xml-login-accounts').value=''">🗑️ Xóa trắng</button>
+            </div>
+            <textarea id="xml-login-accounts" rows="6" style="width:100%;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;font-family:monospace;font-size:11px;" placeholder="user|pass|2FASECRET|email_id (hoặc bấm nút Nạp từ C69)"></textarea>
+            <label style="font-size:12px;display:block;margin:6px 0;"><input type="checkbox" id="xml-login-force" checked> Tự đăng xuất nick cũ nếu máy đang login nick khác</label>
+            <div style="display:flex;gap:8px;margin-bottom:8px;"><button class="btn btn-success" onclick="startXmlLogin()">▶ Bắt đầu Login</button><button class="btn btn-danger" onclick="stopXmlLogin()">⏹ Dừng</button></div>
+            <div id="xml-login-summary" style="font-size:12px;margin-bottom:6px;color:#38bdf8;"></div>
+            <div id="xml-login-table" style="font-size:11px;"></div></div>`;
+        document.body.appendChild(m);
+    }
+    m.style.display = 'flex';
+    loadTelegramStatus();
+    pollXmlLogin();
+}
+function closeXmlLoginModal() {
+    const m = document.getElementById('xml-login-modal');
+    if (m) m.style.display = 'none';
+    if (xmlLoginTimer) { clearTimeout(xmlLoginTimer); xmlLoginTimer = null; }
+}
+async function loadC69AccountsToXmlLogin() {
+    try {
+        const res = await fetch(`${API_BASE}/api/browser/c69/accounts`);
+        const data = await res.json();
+        const accs = data.accounts || [];
+        if (!accs.length) {
+            showToast('Không tìm thấy tài khoản nào từ C69!', 'warning');
+            return;
+        }
+        const lines = accs.slice(0, 10).map(a => `${a.tiktok_username || a.username || a.email}|${a.tiktok_password || a.password || 'Lvkzvg6#'}|${a.two_factor_auth || a.two_factor_secret || a.two_factor_key || ''}|${a.accounts_emails || (a.email_info ? a.email_info.id : '') || ''}`);
+        document.getElementById('xml-login-accounts').value = lines.join('\n');
+        showToast(`Đã nạp ${lines.length} tài khoản từ C69!`, 'success');
+    } catch (e) {
+        showToast('Lỗi khi nạp từ C69: ' + e, 'error');
+    }
+}
+async function loadTelegramStatus() {
+    try {
+        const r = await fetch(`${API_BASE}/api/telegram/status`);
+        const d = await r.json();
+        const el = document.getElementById('telegram-linked-clients');
+        if (!el) return;
+        const clients = Object.values(d.clients || {});
+        if (!clients.length) {
+            el.innerHTML = '<span style="color:#f59e0b;">Chưa có client nào liên kết Telegram. Client mở Telegram gửi <code>/start &lt;tên_client&gt;</code> vào <a href="https://t.me/C69autobot" target="_blank" style="color:#38bdf8;">@C69autobot</a> để kích hoạt.</span>';
+        } else {
+            el.innerHTML = '<b>Client đã liên kết:</b> ' + clients.map(c => `<span style="background:rgba(16,185,129,0.15);border:1px solid #10b981;border-radius:4px;padding:2px 6px;margin-right:6px;display:inline-block;margin-top:2px;">👤 <b>${c.client_name}</b> (ID: <code>${c.chat_id}</code>) ✓</span>`).join('');
+        }
+    } catch(e) {}
+}
+async function startXmlLogin() {
+    const lines = (document.getElementById('xml-login-accounts').value || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const body = { force_logout: document.getElementById('xml-login-force').checked };
+    if (lines.length) {
+        body.accounts = lines.map(l => { 
+            const p = l.split('|'); 
+            return { 
+                username: (p[0] || '').trim(), 
+                password: (p[1] || '').trim(), 
+                two_factor_auth: (p[2] || '').trim(),
+                email_id: p[3] && !isNaN(parseInt(p[3])) ? parseInt(p[3]) : null
+            }; 
+        });
+    } else if (typeof selectedC69AccIds !== 'undefined' && selectedC69AccIds.size > 0) {
+        body.account_ids = Array.from(selectedC69AccIds);
+    } else {
+        showToast('Nhập danh sách nick hoặc chọn nick C69 trước', 'warning');
+        return;
+    }
+    try {
+        const r = await fetch(`${API_BASE}/api/farm/xml-login/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json();
+        showToast(d.message || (d.success ? 'Đã bắt đầu' : 'Lỗi'), d.success ? 'success' : 'error');
+    } catch (e) { showToast('Lỗi gọi API login: ' + e, 'error'); }
+    pollXmlLogin();
+}
+async function stopXmlLogin() {
+    try { await fetch(`${API_BASE}/api/farm/xml-login/stop`, { method: 'POST' }); showToast('Đã gửi lệnh dừng', 'info'); } catch (e) {}
+}
+async function pollXmlLogin() {
+    const m = document.getElementById('xml-login-modal');
+    if (!m || m.style.display === 'none') return;
+    try {
+        const d = await (await fetch(`${API_BASE}/api/farm/xml-login/status`)).json();
+        document.getElementById('xml-login-summary').textContent = `Tổng ${d.total} · ✅ ${d.success} · ❌ ${d.failed} · ${d.running ? '⏳ đang chạy' : 'rảnh'}`;
+        const esc = s => String(s == null ? '' : s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+        const devMap = {};
+        (d.devices || []).forEach(x => { devMap[x.serial] = x; });
+
+        const rows = CANONICAL_FARM_SLOTS.map(slot => {
+            const x = devMap[slot.serial];
+            if (x) {
+                const stateColor = x.state === 'running' ? '#38bdf8' : (x.state === 'success' ? '#10b981' : '#f59e0b');
+                return `<tr style="border-top:1px solid #1e293b;">
+                    <td><b>[Máy #${slot.slot}]</b> ...${esc(slot.short)}</td>
+                    <td>@${esc(x.username)}</td>
+                    <td>${esc(x.current_user)}</td>
+                    <td><span style="color:${stateColor}; font-weight:700;">${esc(x.state)}</span></td>
+                    <td>${esc(x.message || x.step)}</td>
+                </tr>`;
+            } else {
+                return `<tr style="border-top:1px solid #1e293b; opacity:0.6;">
+                    <td><b>[Máy #${slot.slot}]</b> ...${esc(slot.short)}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td><span style="color:#f59e0b; font-weight:700;">🔄 Đang Reboot</span></td>
+                    <td>Chờ thiết bị online</td>
+                </tr>`;
+            }
+        }).join('');
+        document.getElementById('xml-login-table').innerHTML = '<table style="width:100%;border-collapse:collapse;"><tr style="color:#94a3b8;text-align:left;"><th>Máy</th><th>Nick</th><th>Đang login</th><th>Trạng thái</th><th>Bước/Kết quả</th></tr>' + rows + '</table>';
+    } catch (e) {}
+    xmlLoginTimer = setTimeout(pollXmlLogin, 2500);
+}
+
+async function startNurtureAll() {
             await fetch(`${API_BASE}/api/nurture/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -6616,25 +7562,43 @@ mail3@domain.com|pass3|refresh_token"></textarea>
         }
 
         async function submitC69Login() {
-            const user = document.getElementById('c69-login-username')?.value.trim();
-            const pass = document.getElementById('c69-login-password')?.value;
-            const server = document.getElementById('c69-login-server')?.value.trim() || 'https://cu.c69.us';
+            const userEl = document.getElementById('c69-login-username');
+            const passEl = document.getElementById('c69-login-password');
+            const serverEl = document.getElementById('c69-login-server');
             const btn = document.getElementById('btn-c69-login-submit');
             const msgEl = document.getElementById('c69-login-msg');
+
+            const user = userEl ? userEl.value.trim() : '';
+            const pass = passEl ? passEl.value : '';
+            let server = serverEl ? serverEl.value.trim() : 'https://c69.us';
+            if (!server) server = 'https://c69.us';
+            if (!server.startsWith('http://') && !server.startsWith('https://')) {
+                server = 'https://' + server;
+            }
+            server = server.replace(/\/+$/, '');
 
             if (!user || !pass) {
                 if (msgEl) {
                     msgEl.style.display = 'block';
-                    msgEl.style.background = 'rgba(239, 68, 68, 0.15)';
+                    msgEl.style.background = 'rgba(239, 68, 68, 0.2)';
+                    msgEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
                     msgEl.style.color = '#fca5a5';
-                    msgEl.innerText = 'Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!';
+                    msgEl.innerText = '⚠️ Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!';
                 }
+                showToast('Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!', 'warning');
                 return;
             }
 
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = `<span>⏳ Đang xác thực với ${server}...</span>`;
+                btn.innerHTML = `<span>⏳ Đang kiểm tra đăng nhập với ${server}...</span>`;
+            }
+            if (msgEl) {
+                msgEl.style.display = 'block';
+                msgEl.style.background = 'rgba(56, 189, 248, 0.15)';
+                msgEl.style.border = '1px solid rgba(56, 189, 248, 0.3)';
+                msgEl.style.color = '#38bdf8';
+                msgEl.innerText = '⏳ Đang xác thực thông tin tài khoản...';
             }
 
             try {
@@ -6651,9 +7615,10 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                 if (d.success) {
                     if (msgEl) {
                         msgEl.style.display = 'block';
-                        msgEl.style.background = 'rgba(16, 185, 129, 0.15)';
+                        msgEl.style.background = 'rgba(16, 185, 129, 0.2)';
+                        msgEl.style.border = '1px solid rgba(16, 185, 129, 0.4)';
                         msgEl.style.color = '#6ee7b7';
-                        msgEl.innerText = d.message || 'Đăng nhập thành công!';
+                        msgEl.innerText = '✅ ' + (d.message || 'Đăng nhập C69 thành công!');
                     }
                     showToast(d.message || `Đăng nhập C69 thành công với @${user}!`, 'success');
                     setTimeout(() => {
@@ -6668,16 +7633,17 @@ mail3@domain.com|pass3|refresh_token"></textarea>
                         msgEl.style.background = 'rgba(239, 68, 68, 0.2)';
                         msgEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
                         msgEl.style.color = '#fca5a5';
-                        msgEl.innerText = '❌ ' + (d.message || 'Đăng nhập thất bại. Kiểm tra lại thông tin tài khoản!');
+                        msgEl.innerText = '❌ ' + (d.message || 'Sai tài khoản hoặc mật khẩu C69!');
                     }
-                    showToast(d.message || 'Đăng nhập C69 thất bại!', 'error');
+                    showToast(d.message || 'Sai tài khoản hoặc mật khẩu C69!', 'error');
                 }
             } catch (e) {
                 if (msgEl) {
                     msgEl.style.display = 'block';
-                    msgEl.style.background = 'rgba(239, 68, 68, 0.15)';
+                    msgEl.style.background = 'rgba(239, 68, 68, 0.2)';
+                    msgEl.style.border = '1px solid rgba(239, 68, 68, 0.4)';
                     msgEl.style.color = '#fca5a5';
-                    msgEl.innerText = 'Lỗi kết nối: ' + e;
+                    msgEl.innerText = '❌ Lỗi kết nối C69: ' + e;
                 }
                 showToast('Lỗi kết nối C69: ' + e, 'error');
             } finally {

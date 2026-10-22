@@ -1,6 +1,6 @@
 [package]
 name = "qhtd-farm-core"
-version = "2.3.0"
+version = "2.4.0"
 edition = "2021"
 authors = ["QHTD Automation Team"]
 description = "High Performance Android Phone Farm & TikTok Nurture Engine in Rust"
@@ -12,7 +12,7 @@ tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 futures = "0.3"
 futures-util = "0.3"
 parking_lot = "0.12"
@@ -23,11 +23,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 urlencoding = "2.1"
 base64 = "0.22"
-wry = "0.40"
-tao = "0.28"
+hmac = "0.12"
+sha1 = "0.10"
+roxmltree = "0.20"
 tokio-tungstenite = "0.24"
 mimalloc = { version = "0.1", default-features = false }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+eframe = { version = "0.28", default-features = false, features = ["glow", "default_fonts"] }
 
 [[bin]]
 name = "qhtd-farm-core"
@@ -36,5 +38,5 @@ path = "src/main.rs"
 [profile.release]
 opt-level = 3
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = true
